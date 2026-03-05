@@ -3,7 +3,7 @@
   "version": "1.0.0",
   "main": "server.js",
   "scripts": {
-    "start": "node --max-old-space-size=400 server.js"
+    "start": "node --max-old-space-size=350 server.js"
   },
   "dependencies": {
     "cors": "^2.8.5",
