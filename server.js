@@ -2,7 +2,6 @@ const express=require("express"),cors=require("cors"),fetch=require("node-fetch"
 app.use(cors());
 const KEY="437fa5361a693ad65c0c97d75f55042da3529532df53b57d34fe28f89789c0e7",BASE="https://api.football-data-api.com";
 
-// All subscribed leagues - used to look up names
 const LEAGUE_NAMES={
   16504:"USA MLS",15000:"Scotland Premiership",14968:"Germany Bundesliga",
   14924:"UEFA Champions League",15050:"England Premier League",14930:"England Championship",
@@ -40,7 +39,6 @@ app.get("/api/*",async(req,res)=>{
 
 app.get("/",async(req,res)=>{
   try{
-    // Step 1: fetch weekend fixtures (just 2 requests)
     const[sat,sun]=getWeekendDates();
     console.log(`Fetching weekend: ${sat} and ${sun}`);
     const[satData,sunData]=await Promise.all([
@@ -48,20 +46,14 @@ app.get("/",async(req,res)=>{
       ftch(`${BASE}/todays-matches?date=${sun}&key=${KEY}`)
     ]);
     const allFixtures=[...(satData.data||[]),...(sunData.data||[])];
-    
-    // Step 2: find which leagues have games and are in our subscribed list
     const leagueFixtures={};
     for(const m of allFixtures){
       const sid=m.competition_id;
-      if(LEAGUE_NAMES[sid]){
-        if(!leagueFixtures[sid])leagueFixtures[sid]=[];
-        leagueFixtures[sid].push(m);
-      }
+      if(LEAGUE_NAMES[sid]){if(!leagueFixtures[sid])leagueFixtures[sid]=[];leagueFixtures[sid].push(m)}
     }
     const activeLeagues=Object.keys(leagueFixtures);
-    console.log(`Found ${allFixtures.length} fixtures across ${activeLeagues.length} subscribed leagues`);
+    console.log(`${allFixtures.length} fixtures across ${activeLeagues.length} leagues`);
 
-    // Step 3: fetch history only for active leagues (2 requests each)
     const leagueHistory={};
     await Promise.all(activeLeagues.map(async sid=>{
       try{
@@ -73,7 +65,6 @@ app.get("/",async(req,res)=>{
       }catch(e){console.error("History error",sid,e.message);leagueHistory[sid]=[]}
     }));
 
-    // Step 4: compute predictions
     const preds=[];
     for(const sid of activeLeagues){
       const completed=leagueHistory[sid]||[];
@@ -81,107 +72,189 @@ app.get("/",async(req,res)=>{
       if(completed.length<5)continue;
 
       const team={};
-      const en=n=>{if(!team[n])team[n]={hp:0,hs:0,hc:0,ap:0,as:0,ac:0,recent:[]}};
+      const en=n=>{if(!team[n])team[n]={hp:0,hs:0,hc:0,ap:0,as:0,ac:0,recentFH:[],recentFT:[]}};
       let totalFH=0;
       for(const m of completed){
         const ha=parseInt(m.ht_goals_team_a||0),hb=parseInt(m.ht_goals_team_b||0);
+        const fa=parseInt(m.homeGoalCount||0),fb=parseInt(m.awayGoalCount||0);
         en(m.home_name);en(m.away_name);
         team[m.home_name].hp++;team[m.home_name].hs+=ha;team[m.home_name].hc+=hb;
         team[m.away_name].ap++;team[m.away_name].as+=hb;team[m.away_name].ac+=ha;
         totalFH+=ha+hb;
-        team[m.home_name].recent.push({opp:m.away_name,scored:ha,conceded:hb,total:ha+hb,date:m.date_unix});
-        team[m.away_name].recent.push({opp:m.home_name,scored:hb,conceded:ha,total:ha+hb,date:m.date_unix});
+        team[m.home_name].recentFH.push({opp:m.away_name,scored:ha,conceded:hb,total:ha+hb,date:m.date_unix});
+        team[m.away_name].recentFH.push({opp:m.home_name,scored:hb,conceded:ha,total:ha+hb,date:m.date_unix});
+        team[m.home_name].recentFT.push({total:fa+fb,date:m.date_unix});
+        team[m.away_name].recentFT.push({total:fa+fb,date:m.date_unix});
       }
-      for(const t of Object.values(team)){t.recent.sort((a,b)=>b.date-a.date);t.recent=t.recent.slice(0,6)}
+      for(const t of Object.values(team)){
+        t.recentFH.sort((a,b)=>b.date-a.date);t.recentFH=t.recentFH.slice(0,6);
+        t.recentFT.sort((a,b)=>b.date-a.date);t.recentFT=t.recentFT.slice(0,4);
+      }
       const halfAvg=(totalFH/completed.length)/2||0.5;
       const h2hMap={};
-      for(const m of completed){const k=[m.home_name,m.away_name].sort().join("|");if(!h2hMap[k])h2hMap[k]=[];h2hMap[k].push(m)}
+      for(const m of completed){
+        const k=[m.home_name,m.away_name].sort().join("|");
+        if(!h2hMap[k])h2hMap[k]=[];
+        h2hMap[k].push(m);
+      }
 
       for(const m of fixtures){
         const h=m.home_name,a=m.away_name;
-        const hs=team[h]||{hp:1,hs:0,hc:0,ap:1,as:0,ac:0,recent:[]};
-        const as_=team[a]||{hp:1,hs:0,hc:0,ap:1,as:0,ac:0,recent:[]};
-        const hAtt=(hs.hs/Math.max(hs.hp,1))/halfAvg,hDef=(hs.hc/Math.max(hs.hp,1))/halfAvg;
-        const aAtt=(as_.as/Math.max(as_.ap,1))/halfAvg,aDef=(as_.ac/Math.max(as_.ap,1))/halfAvg;
+        const hs=team[h]||{hp:1,hs:0,hc:0,ap:1,as:0,ac:0,recentFH:[],recentFT:[]};
+        const as_=team[a]||{hp:1,hs:0,hc:0,ap:1,as:0,ac:0,recentFH:[],recentFT:[]};
+
+        // Averages
+        const hFHSc=hs.hs/Math.max(hs.hp,1);
+        const hFHCn=hs.hc/Math.max(hs.hp,1);
+        const aFHSc=as_.as/Math.max(as_.ap,1);
+        const aFHCn=as_.ac/Math.max(as_.ap,1);
+
+        // RULE 1: both teams avg FH scored > 1.0
+        if(hFHSc<=1.0||aFHSc<=1.0)continue;
+        // RULE 2: both teams avg FH conceded > 1.0
+        if(hFHCn<=1.0||aFHCn<=1.0)continue;
+
+        // H2H
+        const key=[h,a].sort().join("|");
+        const h2h=(h2hMap[key]||[]).slice(0,5).map(g=>({
+          home:g.home_name,away:g.away_name,
+          htH:parseInt(g.ht_goals_team_a||0),htA:parseInt(g.ht_goals_team_b||0),
+          ftH:parseInt(g.homeGoalCount||0),ftA:parseInt(g.awayGoalCount||0)
+        }));
+
+        // RULE 3: at least 1 H2H with FH >= 2 goals (over 1.5)
+        const h2hOver15=h2h.filter(g=>g.htH+g.htA>=2).length;
+        if(h2h.length>0&&h2hOver15===0)continue;
+
+        // RULE 4: both teams last 4 FT fixtures, at least 3 had 3+ goals
+        const hFTChaos=hs.recentFT.filter(r=>r.total>=3).length;
+        const aFTChaos=as_.recentFT.filter(r=>r.total>=3).length;
+        if(hFTChaos<3||aFTChaos<3)continue;
+
+        // Passed all rules — compute probability
+        const hAtt=hFHSc/halfAvg,hDef=hFHCn/halfAvg;
+        const aAtt=aFHSc/halfAvg,aDef=aFHCn/halfAvg;
         const expH=hAtt*aDef*halfAvg,expA=aAtt*hDef*halfAvg,expTotal=expH+expA;
         let prob=pois(expTotal);
-        const hR=hs.recent,aR=as_.recent;
-        const hFR=hR.filter(r=>r.total>2).length/Math.max(hR.length,1);
-        const aFR=aR.filter(r=>r.total>2).length/Math.max(aR.length,1);
+        const hFR=hs.recentFH.filter(r=>r.total>2).length/Math.max(hs.recentFH.length,1);
+        const aFR=as_.recentFH.filter(r=>r.total>2).length/Math.max(as_.recentFH.length,1);
         prob=Math.min(prob+((hFR+aFR)/2)*15,95);
-        const key=[h,a].sort().join("|");
-        const h2h=(h2hMap[key]||[]).slice(0,5).map(g=>({home:g.home_name,away:g.away_name,htH:parseInt(g.ht_goals_team_a||0),htA:parseInt(g.ht_goals_team_b||0),ftH:g.homeGoalCount,ftA:g.awayGoalCount}));
-        if(h2h.length){const r=h2h.filter(g=>g.htH+g.htA>2).length/h2h.length;prob=prob*0.75+r*100*0.25}
-        preds.push({league:LEAGUE_NAMES[sid],dt:m.date_unix*1000,home:h,away:a,expH:+expH.toFixed(2),expA:+expA.toFixed(2),expTotal:+expTotal.toFixed(2),prob:Math.round(prob),hSc:+(hs.hs/Math.max(hs.hp,1)).toFixed(2),hCn:+(hs.hc/Math.max(hs.hp,1)).toFixed(2),aSc:+(as_.as/Math.max(as_.ap,1)).toFixed(2),aCn:+(as_.ac/Math.max(as_.ap,1)).toFixed(2),hR,aR,h2h,hFR:Math.round(hFR*100),aFR:Math.round(aFR*100)});
+        if(h2h.length){const r=h2hOver15/h2h.length;prob=prob*0.75+r*100*0.25}
+
+        // Rule pass indicators for display
+        const rules=[
+          {ok:true,label:`FH Scored: ${hFHSc.toFixed(2)} / ${aFHSc.toFixed(2)}`},
+          {ok:true,label:`FH Conceded: ${hFHCn.toFixed(2)} / ${aFHCn.toFixed(2)}`},
+          {ok:true,label:`H2H FH≥2: ${h2hOver15}/${h2h.length} meetings`},
+          {ok:true,label:`FT Chaos: ${h} ${hFTChaos}/4, ${a.split(" ")[0]} ${aFTChaos}/4`},
+        ];
+
+        preds.push({
+          league:LEAGUE_NAMES[sid],dt:m.date_unix*1000,home:h,away:a,
+          expH:+expH.toFixed(2),expA:+expA.toFixed(2),expTotal:+expTotal.toFixed(2),
+          prob:Math.round(prob),
+          hFHSc:+hFHSc.toFixed(2),hFHCn:+hFHCn.toFixed(2),
+          aFHSc:+aFHSc.toFixed(2),aFHCn:+aFHCn.toFixed(2),
+          hR:hs.recentFH,aR:as_.recentFH,
+          hFT:hs.recentFT,aFT:as_.recentFT,
+          h2h,rules,
+          hFR:Math.round(hFR*100),aFR:Math.round(aFR*100),
+          h2hOver15,hFTChaos,aFTChaos
+        });
       }
     }
     preds.sort((a,b)=>b.prob-a.prob);
-    console.log(`Returning ${preds.length} predictions`);
+    console.log(`${preds.length} matches passed all 4 rules`);
     res.send(buildHTML(preds,sat,sun));
   }catch(e){console.error(e);res.status(500).send("<pre>Error: "+e.message+"</pre>")}
 });
 
 function buildHTML(preds,sat,sun){
-  const badge=p=>p>=35?["HIGH","🔥","#00e87a"]:p>=20?["MEDIUM","⚡","#f5c518"]:["LOW","❄️","#3a5a78"];
-  const chip=r=>`<span style="padding:2px 7px;font-size:9px;border:1px solid ${r.total>2?"#00e87a44":"rgba(255,255,255,.08)"};background:${r.total>2?"rgba(0,232,122,.15)":"rgba(255,255,255,.04)"};color:${r.total>2?"#00e87a":"#3a5a78"}">${r.scored}-${r.conceded} vs ${r.opp.split(" ")[0]}</span>`;
+  const badge=p=>p>=35?["HIGH","🔥","#16a34a"]:p>=20?["MEDIUM","⚡","#d97706"]:["LOW","❄️","#6b7280"];
+  const chip=(r,fh)=>`<span style="display:inline-block;padding:2px 8px;font-size:11px;border-radius:3px;border:1px solid ${fh?(r.total>2?"#16a34a44":"#e5e7eb"):(r.total>=3?"#16a34a44":"#e5e7eb")};background:${fh?(r.total>2?"#f0fdf4":"#f9fafb"):(r.total>=3?"#f0fdf4":"#f9fafb")};color:${fh?(r.total>2?"#16a34a":"#9ca3af"):(r.total>=3?"#16a34a":"#9ca3af")}">${fh?`${r.scored}-${r.conceded} vs ${r.opp.split(" ")[0]}`:`${r.total} goals`}</span>`;
+
   const cards=preds.map(m=>{
     const[label,ico,col]=badge(m.prob);
     const dt=new Date(m.dt).toLocaleString("en-GB",{weekday:"short",day:"2-digit",month:"short",hour:"2-digit",minute:"2-digit"});
-    const h2hOver=m.h2h.filter(g=>g.htH+g.htA>2).length;
-    const h2hRows=m.h2h.map(g=>{const ht=g.htH+g.htA;return`<div style="display:flex;gap:10px;padding:3px 0;border-bottom:1px solid rgba(255,255,255,.04);font-size:9px"><span style="min-width:16px;color:${ht>2?"#00e87a":"#1e3e58"}">${ht>2?"✓":"✗"}</span><span style="flex:1;color:#8ab0c8">${g.home} vs ${g.away}</span><span style="color:#ddeeff">HT ${g.htH}-${g.htA}</span><span style="color:#3a5a78;margin-left:8px">FT ${g.ftH}-${g.ftA}</span></div>`}).join("");
-    return`<div style="margin-bottom:8px">
-      <div style="background:rgba(255,255,255,.02);border-left:3px solid ${col};border:1px solid ${col}18;padding:14px 16px">
-        <div style="font-size:8px;color:#1e3e58;letter-spacing:2px;margin-bottom:4px">${m.league.toUpperCase()}</div>
+    const h2hRows=m.h2h.map(g=>{const ht=g.htH+g.htA;return`<tr style="border-bottom:1px solid #f3f4f6"><td style="padding:4px 8px;color:#6b7280">${g.home} vs ${g.away}</td><td style="padding:4px 8px;text-align:center;font-weight:600;color:${ht>=2?"#16a34a":"#374151"}">HT ${g.htH}-${g.htA}</td><td style="padding:4px 8px;text-align:center;color:#6b7280">FT ${g.ftH}-${g.ftA}</td></tr>`}).join("");
+
+    return`<div style="margin-bottom:12px;background:#fff;border:1px solid #e5e7eb;border-radius:8px;overflow:hidden;box-shadow:0 1px 3px rgba(0,0,0,.06)">
+      <div style="padding:14px 16px;border-left:4px solid ${col}">
+        <div style="font-size:10px;color:#9ca3af;letter-spacing:1px;margin-bottom:4px;text-transform:uppercase">${m.league}</div>
         <div style="display:grid;grid-template-columns:1fr auto;gap:12px;align-items:center">
           <div>
-            <div style="font-size:10px;color:#1e3e58;margin-bottom:5px">${dt}</div>
-            <div style="font-size:14px;font-weight:bold;color:#ddeeff;margin-bottom:8px">${m.home} <span style="color:#1a3a52;font-weight:normal;font-size:10px;margin:0 6px">vs</span> ${m.away}</div>
-            <div style="display:flex;gap:14px;font-size:9px;color:#1e3e58;flex-wrap:wrap">
-              <span>EXP FH <span style="color:#4a7a9a">${m.expTotal}</span></span>
-              <span>${m.home.split(" ")[0]} <span style="color:#4a7a9a">${m.expH}</span></span>
-              <span>${m.away.split(" ")[0]} <span style="color:#4a7a9a">${m.expA}</span></span>
+            <div style="font-size:11px;color:#9ca3af;margin-bottom:4px">${dt}</div>
+            <div style="font-size:16px;font-weight:700;color:#111827;margin-bottom:8px">${m.home} <span style="color:#d1d5db;font-weight:400;font-size:12px">vs</span> ${m.away}</div>
+            <div style="display:flex;gap:16px;font-size:11px;color:#6b7280;flex-wrap:wrap">
+              <span>Exp FH total: <strong style="color:#374151">${m.expTotal}</strong></span>
+              <span>${m.home.split(" ")[0]}: <strong style="color:#374151">${m.expH}</strong></span>
+              <span>${m.away.split(" ")[0]}: <strong style="color:#374151">${m.expA}</strong></span>
             </div>
           </div>
-          <div style="text-align:right;min-width:70px">
-            <div style="font-size:28px;font-weight:bold;color:${col};line-height:1">${m.prob}%</div>
-            <div style="font-size:9px;color:${col};margin-top:3px">${ico} ${label}</div>
-            <div style="font-size:8px;color:#1a3a52;margin-top:2px">FH OVER 2.5</div>
+          <div style="text-align:center;min-width:80px;background:#f9fafb;border-radius:8px;padding:10px">
+            <div style="font-size:30px;font-weight:800;color:${col};line-height:1">${m.prob}%</div>
+            <div style="font-size:11px;color:${col};margin-top:2px">${ico} ${label}</div>
+            <div style="font-size:9px;color:#9ca3af;margin-top:2px">FH OVER 2.5</div>
           </div>
         </div>
+
+        <!-- Rule badges -->
+        <div style="display:flex;gap:6px;flex-wrap:wrap;margin-top:10px">
+          <span style="font-size:10px;padding:2px 8px;border-radius:12px;background:#f0fdf4;color:#16a34a;border:1px solid #bbf7d0">✓ FH Scored ${m.hFHSc}/${m.aFHSc}</span>
+          <span style="font-size:10px;padding:2px 8px;border-radius:12px;background:#f0fdf4;color:#16a34a;border:1px solid #bbf7d0">✓ FH Conceded ${m.hFHCn}/${m.aFHCn}</span>
+          <span style="font-size:10px;padding:2px 8px;border-radius:12px;background:#f0fdf4;color:#16a34a;border:1px solid #bbf7d0">✓ H2H FH≥2: ${m.h2hOver15}/${m.h2h.length}</span>
+          <span style="font-size:10px;padding:2px 8px;border-radius:12px;background:#f0fdf4;color:#16a34a;border:1px solid #bbf7d0">✓ FT Chaos ${m.hFTChaos}/4 · ${m.aFTChaos}/4</span>
+        </div>
+
         <details style="margin-top:10px">
-          <summary style="cursor:pointer;font-size:9px;color:#3a5a78;letter-spacing:2px;padding:5px 0;list-style:none">▼ SHOW DETAILS</summary>
-          <div style="padding-top:10px;font-size:10px;line-height:1.9">
-            <div style="color:#00e87a;font-size:9px;letter-spacing:2px;margin-bottom:6px">SEASON FH STATS</div>
-            <div style="display:grid;grid-template-columns:1fr 1fr 1fr;gap:4px;font-size:9px;margin-bottom:10px">
-              <span style="color:#3a5a78">TEAM</span><span style="color:#3a5a78;text-align:center">SCORED/G</span><span style="color:#3a5a78;text-align:center">CONCEDED/G</span>
-              <span style="color:#8ab0c8">${m.home} (H)</span><span style="color:#ddeeff;text-align:center">${m.hSc}</span><span style="color:#ddeeff;text-align:center">${m.hCn}</span>
-              <span style="color:#8ab0c8">${m.away} (A)</span><span style="color:#ddeeff;text-align:center">${m.aSc}</span><span style="color:#ddeeff;text-align:center">${m.aCn}</span>
-            </div>
-            <div style="color:#00e87a;font-size:9px;letter-spacing:2px;margin-bottom:6px">RECENT FORM (FH)</div>
-            <div style="margin-bottom:4px;color:#5a7a9a">${m.home} — FH &gt;2.5 in ${m.hFR}% of last ${m.hR.length} games</div>
-            <div style="display:flex;gap:4px;flex-wrap:wrap;margin-bottom:8px">${m.hR.map(chip).join("")}</div>
-            <div style="margin-bottom:4px;color:#5a7a9a">${m.away} — FH &gt;2.5 in ${m.aFR}% of last ${m.aR.length} games</div>
-            <div style="display:flex;gap:4px;flex-wrap:wrap;margin-bottom:10px">${m.aR.map(chip).join("")}</div>
-            ${m.h2h.length?`<div style="color:#00e87a;font-size:9px;letter-spacing:2px;margin-bottom:6px">H2H — FH &gt;2.5 in ${h2hOver}/${m.h2h.length} meetings</div>${h2hRows}`:""}
+          <summary style="cursor:pointer;font-size:11px;color:#6b7280;padding:4px 0;list-style:none">▼ Show details</summary>
+          <div style="padding-top:10px">
+
+            <div style="font-size:11px;font-weight:600;color:#374151;margin-bottom:6px">Season FH Stats</div>
+            <table style="width:100%;font-size:11px;border-collapse:collapse;margin-bottom:12px">
+              <tr style="background:#f9fafb"><th style="padding:4px 8px;text-align:left;color:#6b7280;font-weight:500">Team</th><th style="padding:4px 8px;text-align:center;color:#6b7280;font-weight:500">FH Scored/g</th><th style="padding:4px 8px;text-align:center;color:#6b7280;font-weight:500">FH Conceded/g</th></tr>
+              <tr style="border-bottom:1px solid #f3f4f6"><td style="padding:4px 8px;color:#374151">${m.home} (H)</td><td style="padding:4px 8px;text-align:center;font-weight:600;color:#16a34a">${m.hFHSc}</td><td style="padding:4px 8px;text-align:center;font-weight:600;color:#16a34a">${m.hFHCn}</td></tr>
+              <tr><td style="padding:4px 8px;color:#374151">${m.away} (A)</td><td style="padding:4px 8px;text-align:center;font-weight:600;color:#16a34a">${m.aFHSc}</td><td style="padding:4px 8px;text-align:center;font-weight:600;color:#16a34a">${m.aFHCn}</td></tr>
+            </table>
+
+            <div style="font-size:11px;font-weight:600;color:#374151;margin-bottom:6px">Recent Form — FH Goals (last 6)</div>
+            <div style="margin-bottom:4px;font-size:11px;color:#6b7280">${m.home} — FH &gt;2.5 in ${m.hFR}% of games</div>
+            <div style="display:flex;gap:4px;flex-wrap:wrap;margin-bottom:8px">${m.hR.map(r=>chip(r,true)).join("")}</div>
+            <div style="margin-bottom:4px;font-size:11px;color:#6b7280">${m.away} — FH &gt;2.5 in ${m.aFR}% of games</div>
+            <div style="display:flex;gap:4px;flex-wrap:wrap;margin-bottom:12px">${m.aR.map(r=>chip(r,true)).join("")}</div>
+
+            <div style="font-size:11px;font-weight:600;color:#374151;margin-bottom:6px">FT Chaos — Last 4 Full Time Results</div>
+            <div style="margin-bottom:4px;font-size:11px;color:#6b7280">${m.home} (${m.hFTChaos}/4 with 3+ goals)</div>
+            <div style="display:flex;gap:4px;flex-wrap:wrap;margin-bottom:8px">${m.hFT.map(r=>chip(r,false)).join("")}</div>
+            <div style="margin-bottom:4px;font-size:11px;color:#6b7280">${m.away} (${m.aFTChaos}/4 with 3+ goals)</div>
+            <div style="display:flex;gap:4px;flex-wrap:wrap;margin-bottom:12px">${m.aFT.map(r=>chip(r,false)).join("")}</div>
+
+            ${m.h2h.length?`<div style="font-size:11px;font-weight:600;color:#374151;margin-bottom:6px">H2H History (${m.h2hOver15}/${m.h2h.length} with FH ≥2 goals)</div>
+            <table style="width:100%;font-size:11px;border-collapse:collapse">${h2hRows}</table>`:""}
           </div>
         </details>
       </div>
     </div>`;
   }).join("");
+
   return`<!DOCTYPE html><html><head><meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>FH Over 2.5 Predictor</title>
-  <style>*{box-sizing:border-box;margin:0;padding:0}body{background:#060c14;font-family:'Courier New',monospace;color:#b8ccd8;min-height:100vh}details>summary::-webkit-details-marker{display:none}</style>
+  <style>*{box-sizing:border-box;margin:0;padding:0}body{background:#f3f4f6;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;color:#111827;min-height:100vh}details>summary::-webkit-details-marker{display:none}</style>
   </head><body>
-  <div style="padding:16px 20px;border-bottom:1px solid #00e87a18;background:linear-gradient(180deg,#0b1726,#070e18);display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px">
-    <div><div style="font-size:9px;letter-spacing:4px;color:#00e87a;margin-bottom:4px">⚽ FH OVER 2.5 PREDICTOR</div><h1 style="font-size:18px;font-weight:700;color:#fff">${sat} / ${sun}</h1></div>
-    <a href="/" style="border:1px solid #00e87a33;color:#00e87a;padding:6px 16px;font-size:10px;letter-spacing:2px;text-decoration:none">↺ REFRESH</a>
-  </div>
-  <div style="padding:16px 20px;max-width:720px;margin:0 auto">
-    <div style="font-size:9px;color:#1e3e58;letter-spacing:2px;margin-bottom:16px">${preds.length} MATCHES · SORTED BY PROBABILITY</div>
-    ${preds.length===0?'<div style="text-align:center;padding:50px;color:#1e3e58">No fixtures found this weekend.</div>':cards}
-    <div style="margin-top:20px;padding:10px 14px;background:rgba(255,255,255,.012);border:1px solid rgba(255,255,255,.05);font-size:8px;color:#1a3a52;letter-spacing:1px;line-height:2">
-      MODEL · Poisson + form (last 6) + H2H · <span style="color:#00e87a">🔥 HIGH ≥35%</span> · <span style="color:#f5c518">⚡ MED ≥20%</span> · <span style="color:#3a5a78">❄️ LOW</span>
+  <div style="background:#fff;border-bottom:1px solid #e5e7eb;padding:16px 20px;display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px">
+    <div>
+      <div style="font-size:11px;color:#6b7280;letter-spacing:1px;text-transform:uppercase;margin-bottom:2px">⚽ FH Over 2.5 Predictor</div>
+      <h1 style="font-size:20px;font-weight:800;color:#111827">${sat} &amp; ${sun}</h1>
     </div>
-  </div></body></html>`;
+    <a href="/" style="background:#111827;color:#fff;padding:8px 18px;font-size:12px;text-decoration:none;border-radius:6px;font-weight:600">↺ Refresh</a>
+  </div>
+  <div style="padding:16px 20px;max-width:740px;margin:0 auto">
+    <div style="font-size:11px;color:#6b7280;margin-bottom:14px">${preds.length} matches passed all 4 rules · sorted by probability</div>
+    ${preds.length===0?`<div style="background:#fff;border:1px solid #e5e7eb;border-radius:8px;padding:40px;text-align:center;color:#6b7280">No matches passed all 4 rules this weekend.</div>`:cards}
+    <div style="margin-top:16px;padding:12px 16px;background:#fff;border:1px solid #e5e7eb;border-radius:8px;font-size:11px;color:#9ca3af;line-height:1.8">
+      <strong style="color:#374151">Rules applied:</strong> (1) Both teams FH scored &gt;1.0 · (2) Both teams FH conceded &gt;1.0 · (3) ≥1 H2H match with FH ≥2 goals · (4) Both teams ≥3/4 recent FT matches with 3+ goals · Model: Poisson + form + H2H blend
+    </div>
+  </div>
+  </body></html>`;
 }
 
 const PORT=process.env.PORT||3001;
