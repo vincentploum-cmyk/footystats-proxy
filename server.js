@@ -2,57 +2,64 @@ const express=require("express"),cors=require("cors"),fetch=require("node-fetch"
 app.use(cors());
 const KEY="437fa5361a693ad65c0c97d75f55042da3529532df53b57d34fe28f89789c0e7",BASE="https://api.football-data-api.com";
 const LEAGUES=[
-  {name:"USA MLS",country:"USA",sid:16504},
-  {name:"Scotland Premiership",country:"Scotland",sid:15000},
   {name:"Germany Bundesliga",country:"Germany",sid:14968},
-  {name:"Europe UEFA Champions League",country:"Europe",sid:14924},
   {name:"England Premier League",country:"England",sid:15050},
-  {name:"England Championship",country:"England",sid:14930},
   {name:"Spain La Liga",country:"Spain",sid:14956},
-  {name:"Norway Eliteserien",country:"Norway",sid:16558},
-  {name:"France Ligue 1",country:"France",sid:14932},
   {name:"Italy Serie A",country:"Italy",sid:15068},
+  {name:"France Ligue 1",country:"France",sid:14932},
+  {name:"Europe UEFA Champions League",country:"Europe",sid:14924},
+  {name:"Europe UEFA Europa League",country:"Europe",sid:15002},
+  {name:"Europe UEFA Europa Conference League",country:"Europe",sid:14904},
+  {name:"England Championship",country:"England",sid:14930},
   {name:"Germany 2. Bundesliga",country:"Germany",sid:14931},
+  {name:"Scotland Premiership",country:"Scotland",sid:15000},
   {name:"Austria Bundesliga",country:"Austria",sid:14923},
-  {name:"Australia A-League",country:"Australia",sid:16036},
+  {name:"Switzerland Super League",country:"Switzerland",sid:15047},
+  {name:"Denmark Superliga",country:"Denmark",sid:15055},
+  {name:"Norway Eliteserien",country:"Norway",sid:16558},
+  {name:"USA MLS",country:"USA",sid:16504},
   {name:"Brazil Serie A",country:"Brazil",sid:16544},
   {name:"Argentina Primera Division",country:"Argentina",sid:16571},
-  {name:"Switzerland Super League",country:"Switzerland",sid:15047},
-  {name:"Japan J1 League",country:"Japan",sid:16242},
   {name:"Mexico Liga MX",country:"Mexico",sid:15234},
   {name:"Colombia Categoria Primera A",country:"Colombia",sid:16614},
   {name:"Chile Primera Division",country:"Chile",sid:16615},
-  {name:"Denmark Superliga",country:"Denmark",sid:15055},
   {name:"Ecuador Primera Categoria Serie A",country:"Ecuador",sid:16714},
   {name:"Uruguay Primera Division",country:"Uruguay",sid:16708},
-  {name:"Europe UEFA Europa League",country:"Europe",sid:15002},
+  {name:"Japan J1 League",country:"Japan",sid:16242},
+  {name:"Australia A-League",country:"Australia",sid:16036},
   {name:"England FA Cup",country:"England",sid:15238},
+  {name:"Mexico Liga MX Femenil",country:"Mexico",sid:15020},
+  {name:"Australia A-League Women",country:"Australia",sid:16037},
+  {name:"Europe UEFA Womens Champions League",country:"Europe",sid:16046},
+  {name:"International UEFA Nations League",country:"International",sid:16808},
+  {name:"International CONCACAF Champions League",country:"International",sid:16823},
   {name:"International WC Qualification Asia",country:"International",sid:10117},
   {name:"International WC Qualification Africa",country:"International",sid:12061},
-  {name:"International UEFA Euro Championship",country:"International",sid:11084},
-  {name:"International UEFA Euro Qualifiers",country:"International",sid:9128},
-  {name:"International UEFA Nations League",country:"International",sid:16808},
   {name:"International WC Qualification South America",country:"International",sid:10121},
-  {name:"International FIFA World Cup 2018 Russia",country:"International",sid:1425},
-  {name:"Mexico Liga MX Femenil",country:"Mexico",sid:15020},
-  {name:"Asia Womens Olympic Qualifying",country:"Asia",sid:8994},
-  {name:"International CONCACAF Champions League",country:"International",sid:16823},
-  {name:"Europe UEFA Womens Champions League",country:"Europe",sid:16046},
   {name:"International WC Qualification CONCACAF",country:"International",sid:11426},
-  {name:"International Womens WC Qualification Oceania",country:"International",sid:6704},
-  {name:"Europe UEFA Europa Conference League",country:"Europe",sid:14904},
-  {name:"International CONCACAF Nations League",country:"International",sid:12980},
-  {name:"International World Cup",country:"International",sid:16494},
-  {name:"International CONCACAF League",country:"International",sid:7977},
   {name:"International WC Qualification Oceania",country:"International",sid:12801},
+  {name:"International UEFA Euro Qualifiers",country:"International",sid:9128},
+  {name:"International CONCACAF Nations League",country:"International",sid:12980},
   {name:"International CONCACAF Gold Cup Qualification",country:"International",sid:16562},
-  {name:"Australia A-League Women",country:"Australia",sid:16037},
-  {name:"International UEFA Womens Nations League",country:"International",sid:13861},
+  {name:"International World Cup",country:"International",sid:16494},
+  {name:"International UEFA Euro Championship",country:"International",sid:11084},
   {name:"International Womens WC Qualification Europe",country:"International",sid:16563},
+  {name:"International UEFA Womens Nations League",country:"International",sid:13861},
 ];
 
 const pois=lam=>{let p=0,t=Math.exp(-lam);for(let k=0;k<3;k++){p+=t;t*=lam/(k+1)}return(1-p)*100};
-const ftch=url=>fetch(url).then(r=>r.json());
+const ftch=url=>fetch(url,{timeout:15000}).then(r=>r.json());
+
+// Process in batches to avoid memory spikes
+async function batchAll(items,batchSize,fn){
+  const results=[];
+  for(let i=0;i<items.length;i+=batchSize){
+    const batch=items.slice(i,i+batchSize);
+    const res=await Promise.all(batch.map(fn));
+    results.push(...res);
+  }
+  return results;
+}
 
 app.get("/api/*",async(req,res)=>{
   try{const path=req.path.replace("/api",""),qs=new URLSearchParams({...req.query,key:KEY}).toString(),data=await ftch(`${BASE}${path}?${qs}`);res.json(data)}
@@ -115,8 +122,8 @@ async function getLeaguePreds(lg){
 
 app.get("/",async(req,res)=>{
   try{
-    console.log("Loading all 47 leagues...");
-    const results=await Promise.all(LEAGUES.map(getLeaguePreds));
+    console.log("Loading leagues in batches...");
+    const results=await batchAll(LEAGUES,5,getLeaguePreds);
     const all=results.flat().sort((a,b)=>b.prob-a.prob);
     res.send(buildHTML(all));
   }catch(e){res.status(500).send("<pre>Error: "+e.message+"</pre>")}
@@ -173,7 +180,7 @@ function buildHTML(preds){
   <style>*{box-sizing:border-box;margin:0;padding:0}body{background:#060c14;font-family:'Courier New',monospace;color:#b8ccd8;min-height:100vh}details>summary::-webkit-details-marker{display:none}</style>
   </head><body>
   <div style="padding:16px 20px;border-bottom:1px solid #00e87a18;background:linear-gradient(180deg,#0b1726,#070e18);display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px">
-    <div><div style="font-size:9px;letter-spacing:4px;color:#00e87a;margin-bottom:4px">⚽ FH OVER 2.5 PREDICTOR</div><h1 style="font-size:18px;font-weight:700;color:#fff">Weekend Fixtures — All 47 Leagues</h1></div>
+    <div><div style="font-size:9px;letter-spacing:4px;color:#00e87a;margin-bottom:4px">⚽ FH OVER 2.5 PREDICTOR</div><h1 style="font-size:18px;font-weight:700;color:#fff">Weekend Fixtures — All Leagues</h1></div>
     <a href="/" style="border:1px solid #00e87a33;color:#00e87a;padding:6px 16px;font-size:10px;letter-spacing:2px;text-decoration:none">↺ REFRESH</a>
   </div>
   <div style="padding:16px 20px;max-width:720px;margin:0 auto">
