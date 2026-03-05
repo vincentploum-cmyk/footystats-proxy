@@ -1,138 +1,130 @@
 const express=require("express"),cors=require("cors"),fetch=require("node-fetch"),app=express();
 app.use(cors());
 const KEY="437fa5361a693ad65c0c97d75f55042da3529532df53b57d34fe28f89789c0e7",BASE="https://api.football-data-api.com";
-const LEAGUES=[
-  {name:"Germany Bundesliga",country:"Germany",sid:14968},
-  {name:"England Premier League",country:"England",sid:15050},
-  {name:"Spain La Liga",country:"Spain",sid:14956},
-  {name:"Italy Serie A",country:"Italy",sid:15068},
-  {name:"France Ligue 1",country:"France",sid:14932},
-  {name:"Europe UEFA Champions League",country:"Europe",sid:14924},
-  {name:"Europe UEFA Europa League",country:"Europe",sid:15002},
-  {name:"Europe UEFA Europa Conference League",country:"Europe",sid:14904},
-  {name:"England Championship",country:"England",sid:14930},
-  {name:"Germany 2. Bundesliga",country:"Germany",sid:14931},
-  {name:"Scotland Premiership",country:"Scotland",sid:15000},
-  {name:"Austria Bundesliga",country:"Austria",sid:14923},
-  {name:"Switzerland Super League",country:"Switzerland",sid:15047},
-  {name:"Denmark Superliga",country:"Denmark",sid:15055},
-  {name:"Norway Eliteserien",country:"Norway",sid:16558},
-  {name:"USA MLS",country:"USA",sid:16504},
-  {name:"Brazil Serie A",country:"Brazil",sid:16544},
-  {name:"Argentina Primera Division",country:"Argentina",sid:16571},
-  {name:"Mexico Liga MX",country:"Mexico",sid:15234},
-  {name:"Colombia Categoria Primera A",country:"Colombia",sid:16614},
-  {name:"Chile Primera Division",country:"Chile",sid:16615},
-  {name:"Ecuador Primera Categoria Serie A",country:"Ecuador",sid:16714},
-  {name:"Uruguay Primera Division",country:"Uruguay",sid:16708},
-  {name:"Japan J1 League",country:"Japan",sid:16242},
-  {name:"Australia A-League",country:"Australia",sid:16036},
-  {name:"England FA Cup",country:"England",sid:15238},
-  {name:"Mexico Liga MX Femenil",country:"Mexico",sid:15020},
-  {name:"Australia A-League Women",country:"Australia",sid:16037},
-  {name:"Europe UEFA Womens Champions League",country:"Europe",sid:16046},
-  {name:"International UEFA Nations League",country:"International",sid:16808},
-  {name:"International CONCACAF Champions League",country:"International",sid:16823},
-  {name:"International WC Qualification Asia",country:"International",sid:10117},
-  {name:"International WC Qualification Africa",country:"International",sid:12061},
-  {name:"International WC Qualification South America",country:"International",sid:10121},
-  {name:"International WC Qualification CONCACAF",country:"International",sid:11426},
-  {name:"International WC Qualification Oceania",country:"International",sid:12801},
-  {name:"International UEFA Euro Qualifiers",country:"International",sid:9128},
-  {name:"International CONCACAF Nations League",country:"International",sid:12980},
-  {name:"International CONCACAF Gold Cup Qualification",country:"International",sid:16562},
-  {name:"International World Cup",country:"International",sid:16494},
-  {name:"International UEFA Euro Championship",country:"International",sid:11084},
-  {name:"International Womens WC Qualification Europe",country:"International",sid:16563},
-  {name:"International UEFA Womens Nations League",country:"International",sid:13861},
-];
+
+// All subscribed leagues - used to look up names
+const LEAGUE_NAMES={
+  16504:"USA MLS",15000:"Scotland Premiership",14968:"Germany Bundesliga",
+  14924:"UEFA Champions League",15050:"England Premier League",14930:"England Championship",
+  14956:"Spain La Liga",16558:"Norway Eliteserien",14932:"France Ligue 1",
+  15068:"Italy Serie A",14931:"Germany 2. Bundesliga",14923:"Austria Bundesliga",
+  16036:"Australia A-League",16544:"Brazil Serie A",16571:"Argentina Primera Division",
+  15047:"Switzerland Super League",16242:"Japan J1 League",15234:"Mexico Liga MX",
+  16614:"Colombia Primera A",16615:"Chile Primera Division",15055:"Denmark Superliga",
+  16714:"Ecuador Serie A",16708:"Uruguay Primera Division",15002:"UEFA Europa League",
+  15238:"England FA Cup",10117:"WC Qual Asia",12061:"WC Qual Africa",
+  11084:"UEFA Euro Championship",9128:"UEFA Euro Qualifiers",16808:"UEFA Nations League",
+  10121:"WC Qual South America",1425:"FIFA World Cup 2018",15020:"Mexico Liga MX Femenil",
+  8994:"Asia Womens Olympic",16823:"CONCACAF Champions League",16046:"UEFA Womens CL",
+  11426:"WC Qual CONCACAF",6704:"Womens WC Qual Oceania",14904:"UEFA Conference League",
+  12980:"CONCACAF Nations League",16494:"FIFA World Cup",7977:"CONCACAF League",
+  12801:"WC Qual Oceania",16562:"CONCACAF Gold Cup Qual",16037:"Australia A-League Women",
+  13861:"UEFA Womens Nations League",16563:"Womens WC Qual Europe"
+};
 
 const pois=lam=>{let p=0,t=Math.exp(-lam);for(let k=0;k<3;k++){p+=t;t*=lam/(k+1)}return(1-p)*100};
-const ftch=url=>fetch(url,{timeout:15000}).then(r=>r.json());
+const ftch=url=>fetch(url).then(r=>r.json());
 
-// Process in batches to avoid memory spikes
-async function batchAll(items,batchSize,fn){
-  const results=[];
-  for(let i=0;i<items.length;i+=batchSize){
-    const batch=items.slice(i,i+batchSize);
-    const res=await Promise.all(batch.map(fn));
-    results.push(...res);
-  }
-  return results;
-}
+const getWeekendDates=()=>{
+  const today=new Date();
+  const daysToSat=(6-today.getDay()+7)%7||7;
+  const sat=new Date(today);sat.setDate(today.getDate()+daysToSat);
+  const sun=new Date(sat);sun.setDate(sat.getDate()+1);
+  return[sat,sun].map(d=>d.toISOString().slice(0,10));
+};
 
 app.get("/api/*",async(req,res)=>{
   try{const path=req.path.replace("/api",""),qs=new URLSearchParams({...req.query,key:KEY}).toString(),data=await ftch(`${BASE}${path}?${qs}`);res.json(data)}
   catch(e){res.status(500).json({error:e.message})}
 });
 
-async function getLeaguePreds(lg){
-  try{
-    const[p1,p2]=await Promise.all([
-      ftch(`${BASE}/league-matches?season_id=${lg.sid}&max_per_page=300&page=1&key=${KEY}`),
-      ftch(`${BASE}/league-matches?season_id=${lg.sid}&max_per_page=300&page=2&key=${KEY}`)
-    ]);
-    const completed=[...(p1.data||[]),...(p2.data||[])].filter(m=>m.status==="complete");
-    if(completed.length<5)return[];
-    const team={};
-    const en=n=>{if(!team[n])team[n]={hp:0,hs:0,hc:0,ap:0,as:0,ac:0,recent:[]}};
-    let totalFH=0;
-    for(const m of completed){
-      const ha=parseInt(m.ht_goals_team_a||0),hb=parseInt(m.ht_goals_team_b||0);
-      en(m.home_name);en(m.away_name);
-      team[m.home_name].hp++;team[m.home_name].hs+=ha;team[m.home_name].hc+=hb;
-      team[m.away_name].ap++;team[m.away_name].as+=hb;team[m.away_name].ac+=ha;
-      totalFH+=ha+hb;
-      team[m.home_name].recent.push({opp:m.away_name,scored:ha,conceded:hb,total:ha+hb,date:m.date_unix});
-      team[m.away_name].recent.push({opp:m.home_name,scored:hb,conceded:ha,total:ha+hb,date:m.date_unix});
-    }
-    for(const t of Object.values(team)){t.recent.sort((a,b)=>b.date-a.date);t.recent=t.recent.slice(0,6)}
-    const halfAvg=(totalFH/completed.length)/2||0.5;
-    const h2hMap={};
-    for(const m of completed){const k=[m.home_name,m.away_name].sort().join("|");if(!h2hMap[k])h2hMap[k]=[];h2hMap[k].push(m)}
-    const today=new Date();
-    const daysToSat=(6-today.getDay()+7)%7||7;
-    const sat=new Date(today);sat.setDate(today.getDate()+daysToSat);
-    const sun=new Date(sat);sun.setDate(sat.getDate()+1);
-    const fmt=d=>d.toISOString().slice(0,10);
-    const[sd,snd]=await Promise.all([
-      ftch(`${BASE}/todays-matches?date=${fmt(sat)}&key=${KEY}`),
-      ftch(`${BASE}/todays-matches?date=${fmt(sun)}&key=${KEY}`)
-    ]);
-    const weekend=[...(sd.data||[]),...(snd.data||[])].filter(m=>m.competition_id===lg.sid);
-    return weekend.map(m=>{
-      const h=m.home_name,a=m.away_name;
-      const hs=team[h]||{hp:1,hs:0,hc:0,ap:1,as:0,ac:0,recent:[]};
-      const as_=team[a]||{hp:1,hs:0,hc:0,ap:1,as:0,ac:0,recent:[]};
-      const hAtt=(hs.hs/Math.max(hs.hp,1))/halfAvg,hDef=(hs.hc/Math.max(hs.hp,1))/halfAvg;
-      const aAtt=(as_.as/Math.max(as_.ap,1))/halfAvg,aDef=(as_.ac/Math.max(as_.ap,1))/halfAvg;
-      const expH=hAtt*aDef*halfAvg,expA=aAtt*hDef*halfAvg,expTotal=expH+expA;
-      let prob=pois(expTotal);
-      const hR=hs.recent,aR=as_.recent;
-      const hFR=hR.filter(r=>r.total>2).length/Math.max(hR.length,1);
-      const aFR=aR.filter(r=>r.total>2).length/Math.max(aR.length,1);
-      prob=Math.min(prob+((hFR+aFR)/2)*15,95);
-      const key=[h,a].sort().join("|");
-      const h2h=(h2hMap[key]||[]).slice(0,5).map(g=>({home:g.home_name,away:g.away_name,htH:parseInt(g.ht_goals_team_a||0),htA:parseInt(g.ht_goals_team_b||0),ftH:g.homeGoalCount,ftA:g.awayGoalCount}));
-      if(h2h.length){const r=h2h.filter(g=>g.htH+g.htA>2).length/h2h.length;prob=prob*0.75+r*100*0.25}
-      return{league:lg.name,dt:m.date_unix*1000,home:h,away:a,expH:+expH.toFixed(2),expA:+expA.toFixed(2),expTotal:+expTotal.toFixed(2),prob:Math.round(prob),hSc:+(hs.hs/Math.max(hs.hp,1)).toFixed(2),hCn:+(hs.hc/Math.max(hs.hp,1)).toFixed(2),aSc:+(as_.as/Math.max(as_.ap,1)).toFixed(2),aCn:+(as_.ac/Math.max(as_.ap,1)).toFixed(2),hR,aR,h2h,hFR:Math.round(hFR*100),aFR:Math.round(aFR*100)};
-    });
-  }catch(e){console.error(lg.name,e.message);return[]}
-}
-
 app.get("/",async(req,res)=>{
   try{
-    console.log("Loading leagues in batches...");
-    const results=await batchAll(LEAGUES,5,getLeaguePreds);
-    const all=results.flat().sort((a,b)=>b.prob-a.prob);
-    res.send(buildHTML(all));
-  }catch(e){res.status(500).send("<pre>Error: "+e.message+"</pre>")}
+    // Step 1: fetch weekend fixtures (just 2 requests)
+    const[sat,sun]=getWeekendDates();
+    console.log(`Fetching weekend: ${sat} and ${sun}`);
+    const[satData,sunData]=await Promise.all([
+      ftch(`${BASE}/todays-matches?date=${sat}&key=${KEY}`),
+      ftch(`${BASE}/todays-matches?date=${sun}&key=${KEY}`)
+    ]);
+    const allFixtures=[...(satData.data||[]),...(sunData.data||[])];
+    
+    // Step 2: find which leagues have games and are in our subscribed list
+    const leagueFixtures={};
+    for(const m of allFixtures){
+      const sid=m.competition_id;
+      if(LEAGUE_NAMES[sid]){
+        if(!leagueFixtures[sid])leagueFixtures[sid]=[];
+        leagueFixtures[sid].push(m);
+      }
+    }
+    const activeLeagues=Object.keys(leagueFixtures);
+    console.log(`Found ${allFixtures.length} fixtures across ${activeLeagues.length} subscribed leagues`);
+
+    // Step 3: fetch history only for active leagues (2 requests each)
+    const leagueHistory={};
+    await Promise.all(activeLeagues.map(async sid=>{
+      try{
+        const[p1,p2]=await Promise.all([
+          ftch(`${BASE}/league-matches?season_id=${sid}&max_per_page=300&page=1&key=${KEY}`),
+          ftch(`${BASE}/league-matches?season_id=${sid}&max_per_page=300&page=2&key=${KEY}`)
+        ]);
+        leagueHistory[sid]=[...(p1.data||[]),...(p2.data||[])].filter(m=>m.status==="complete");
+      }catch(e){console.error("History error",sid,e.message);leagueHistory[sid]=[]}
+    }));
+
+    // Step 4: compute predictions
+    const preds=[];
+    for(const sid of activeLeagues){
+      const completed=leagueHistory[sid]||[];
+      const fixtures=leagueFixtures[sid]||[];
+      if(completed.length<5)continue;
+
+      const team={};
+      const en=n=>{if(!team[n])team[n]={hp:0,hs:0,hc:0,ap:0,as:0,ac:0,recent:[]}};
+      let totalFH=0;
+      for(const m of completed){
+        const ha=parseInt(m.ht_goals_team_a||0),hb=parseInt(m.ht_goals_team_b||0);
+        en(m.home_name);en(m.away_name);
+        team[m.home_name].hp++;team[m.home_name].hs+=ha;team[m.home_name].hc+=hb;
+        team[m.away_name].ap++;team[m.away_name].as+=hb;team[m.away_name].ac+=ha;
+        totalFH+=ha+hb;
+        team[m.home_name].recent.push({opp:m.away_name,scored:ha,conceded:hb,total:ha+hb,date:m.date_unix});
+        team[m.away_name].recent.push({opp:m.home_name,scored:hb,conceded:ha,total:ha+hb,date:m.date_unix});
+      }
+      for(const t of Object.values(team)){t.recent.sort((a,b)=>b.date-a.date);t.recent=t.recent.slice(0,6)}
+      const halfAvg=(totalFH/completed.length)/2||0.5;
+      const h2hMap={};
+      for(const m of completed){const k=[m.home_name,m.away_name].sort().join("|");if(!h2hMap[k])h2hMap[k]=[];h2hMap[k].push(m)}
+
+      for(const m of fixtures){
+        const h=m.home_name,a=m.away_name;
+        const hs=team[h]||{hp:1,hs:0,hc:0,ap:1,as:0,ac:0,recent:[]};
+        const as_=team[a]||{hp:1,hs:0,hc:0,ap:1,as:0,ac:0,recent:[]};
+        const hAtt=(hs.hs/Math.max(hs.hp,1))/halfAvg,hDef=(hs.hc/Math.max(hs.hp,1))/halfAvg;
+        const aAtt=(as_.as/Math.max(as_.ap,1))/halfAvg,aDef=(as_.ac/Math.max(as_.ap,1))/halfAvg;
+        const expH=hAtt*aDef*halfAvg,expA=aAtt*hDef*halfAvg,expTotal=expH+expA;
+        let prob=pois(expTotal);
+        const hR=hs.recent,aR=as_.recent;
+        const hFR=hR.filter(r=>r.total>2).length/Math.max(hR.length,1);
+        const aFR=aR.filter(r=>r.total>2).length/Math.max(aR.length,1);
+        prob=Math.min(prob+((hFR+aFR)/2)*15,95);
+        const key=[h,a].sort().join("|");
+        const h2h=(h2hMap[key]||[]).slice(0,5).map(g=>({home:g.home_name,away:g.away_name,htH:parseInt(g.ht_goals_team_a||0),htA:parseInt(g.ht_goals_team_b||0),ftH:g.homeGoalCount,ftA:g.awayGoalCount}));
+        if(h2h.length){const r=h2h.filter(g=>g.htH+g.htA>2).length/h2h.length;prob=prob*0.75+r*100*0.25}
+        preds.push({league:LEAGUE_NAMES[sid],dt:m.date_unix*1000,home:h,away:a,expH:+expH.toFixed(2),expA:+expA.toFixed(2),expTotal:+expTotal.toFixed(2),prob:Math.round(prob),hSc:+(hs.hs/Math.max(hs.hp,1)).toFixed(2),hCn:+(hs.hc/Math.max(hs.hp,1)).toFixed(2),aSc:+(as_.as/Math.max(as_.ap,1)).toFixed(2),aCn:+(as_.ac/Math.max(as_.ap,1)).toFixed(2),hR,aR,h2h,hFR:Math.round(hFR*100),aFR:Math.round(aFR*100)});
+      }
+    }
+    preds.sort((a,b)=>b.prob-a.prob);
+    console.log(`Returning ${preds.length} predictions`);
+    res.send(buildHTML(preds,sat,sun));
+  }catch(e){console.error(e);res.status(500).send("<pre>Error: "+e.message+"</pre>")}
 });
 
-function buildHTML(preds){
+function buildHTML(preds,sat,sun){
   const badge=p=>p>=35?["HIGH","🔥","#00e87a"]:p>=20?["MEDIUM","⚡","#f5c518"]:["LOW","❄️","#3a5a78"];
   const chip=r=>`<span style="padding:2px 7px;font-size:9px;border:1px solid ${r.total>2?"#00e87a44":"rgba(255,255,255,.08)"};background:${r.total>2?"rgba(0,232,122,.15)":"rgba(255,255,255,.04)"};color:${r.total>2?"#00e87a":"#3a5a78"}">${r.scored}-${r.conceded} vs ${r.opp.split(" ")[0]}</span>`;
-  const cards=preds.map((m)=>{
+  const cards=preds.map(m=>{
     const[label,ico,col]=badge(m.prob);
     const dt=new Date(m.dt).toLocaleString("en-GB",{weekday:"short",day:"2-digit",month:"short",hour:"2-digit",minute:"2-digit"});
     const h2hOver=m.h2h.filter(g=>g.htH+g.htA>2).length;
@@ -180,17 +172,16 @@ function buildHTML(preds){
   <style>*{box-sizing:border-box;margin:0;padding:0}body{background:#060c14;font-family:'Courier New',monospace;color:#b8ccd8;min-height:100vh}details>summary::-webkit-details-marker{display:none}</style>
   </head><body>
   <div style="padding:16px 20px;border-bottom:1px solid #00e87a18;background:linear-gradient(180deg,#0b1726,#070e18);display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px">
-    <div><div style="font-size:9px;letter-spacing:4px;color:#00e87a;margin-bottom:4px">⚽ FH OVER 2.5 PREDICTOR</div><h1 style="font-size:18px;font-weight:700;color:#fff">Weekend Fixtures — All Leagues</h1></div>
+    <div><div style="font-size:9px;letter-spacing:4px;color:#00e87a;margin-bottom:4px">⚽ FH OVER 2.5 PREDICTOR</div><h1 style="font-size:18px;font-weight:700;color:#fff">${sat} / ${sun}</h1></div>
     <a href="/" style="border:1px solid #00e87a33;color:#00e87a;padding:6px 16px;font-size:10px;letter-spacing:2px;text-decoration:none">↺ REFRESH</a>
   </div>
   <div style="padding:16px 20px;max-width:720px;margin:0 auto">
-    <div style="font-size:9px;color:#1e3e58;letter-spacing:2px;margin-bottom:16px">${preds.length} MATCHES FOUND · SORTED BY PROBABILITY</div>
+    <div style="font-size:9px;color:#1e3e58;letter-spacing:2px;margin-bottom:16px">${preds.length} MATCHES · SORTED BY PROBABILITY</div>
     ${preds.length===0?'<div style="text-align:center;padding:50px;color:#1e3e58">No fixtures found this weekend.</div>':cards}
     <div style="margin-top:20px;padding:10px 14px;background:rgba(255,255,255,.012);border:1px solid rgba(255,255,255,.05);font-size:8px;color:#1a3a52;letter-spacing:1px;line-height:2">
-      MODEL · Poisson (attack × defense) + form (last 6) + H2H · <span style="color:#00e87a">🔥 HIGH ≥35%</span> · <span style="color:#f5c518">⚡ MED ≥20%</span> · <span style="color:#3a5a78">❄️ LOW</span>
+      MODEL · Poisson + form (last 6) + H2H · <span style="color:#00e87a">🔥 HIGH ≥35%</span> · <span style="color:#f5c518">⚡ MED ≥20%</span> · <span style="color:#3a5a78">❄️ LOW</span>
     </div>
-  </div>
-  </body></html>`;
+  </div></body></html>`;
 }
 
 const PORT=process.env.PORT||3001;
