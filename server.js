@@ -363,7 +363,7 @@ function buildHTML(preds,sat,sun){
     const fhGood=g.fhTotal>1;
     const ftGood=g.ftTotal>2;
     return`<span title="FT: ${g.ftTotal} goals | 0-10 scored: ${g.sc010} | 11-20 conceded: ${g.cn1120}"
-      style="display:inline-block;padding:2px 8px;font-size:10px;border-radius:3px;margin:2px;
+      style="display:inline-block;padding:2px 8px;font-size:12px;border-radius:3px;margin:2px;
       border:1px solid ${fhGood?"#bbf7d0":"#e5e7eb"};
       background:${fhGood?"#f0fdf4":"#f9fafb"};
       color:${fhGood?"#16a34a":"#6b7280"}">FH ${g.fhTotal} · FT ${g.ftTotal}</span>`;
@@ -374,20 +374,20 @@ function buildHTML(preds,sat,sun){
     const hColor=s.hGood?"#16a34a":"#dc2626";
     const aColor=s.aVal===""?"":s.aGood?"#16a34a":"#dc2626";
     return`<tr style="background:${bg}">
-      <td style="padding:5px 8px;font-size:11px;color:#374151">${s.label}</td>
-      <td style="padding:5px 8px;text-align:center;font-size:11px;font-weight:700;color:${hColor}">${s.hVal}</td>
-      <td style="padding:5px 8px;text-align:center;font-size:10px;color:#9ca3af">${s.threshold}</td>
-      <td style="padding:5px 8px;text-align:center;font-size:11px;font-weight:700;color:${aColor}">${s.aVal}</td>
-      <td style="padding:5px 8px;font-size:10px;color:#9ca3af;display:none" class="note">${s.note}</td>
+      <td style="padding:5px 8px;font-size:13px;color:#374151">${s.label}</td>
+      <td style="padding:5px 8px;text-align:center;font-size:13px;font-weight:700;color:${hColor}">${s.hVal}</td>
+      <td style="padding:5px 8px;text-align:center;font-size:12px;color:#9ca3af">${s.threshold}</td>
+      <td style="padding:5px 8px;text-align:center;font-size:13px;font-weight:700;color:${aColor}">${s.aVal}</td>
+      <td style="padding:5px 8px;font-size:12px;color:#9ca3af;display:none" class="note">${s.note}</td>
     </tr>`;
   };
 
   const h2hRow=g=>{
     const ht=g.htH+g.htA;
     return`<tr style="border-bottom:1px solid #f3f4f6">
-      <td style="padding:4px 8px;font-size:11px;color:#6b7280">${g.home} vs ${g.away}</td>
-      <td style="padding:4px 8px;font-size:11px;text-align:center;font-weight:700;color:${ht>=2?"#16a34a":"#374151"}">HT ${g.htH}-${g.htA}</td>
-      <td style="padding:4px 8px;font-size:11px;text-align:center;color:#6b7280">FT ${g.ftH}-${g.ftA}</td>
+      <td style="padding:4px 8px;font-size:13px;color:#6b7280">${g.home} vs ${g.away}</td>
+      <td style="padding:4px 8px;font-size:13px;text-align:center;font-weight:700;color:${ht>=2?"#16a34a":"#374151"}">HT ${g.htH}-${g.htA}</td>
+      <td style="padding:4px 8px;font-size:13px;text-align:center;color:#6b7280">FT ${g.ftH}-${g.ftA}</td>
     </tr>`;
   };
 
@@ -401,32 +401,32 @@ function buildHTML(preds,sat,sun){
       <div style="padding:14px 16px;border-left:4px solid ${col}">
 
         <!-- Header -->
-        <div style="font-size:10px;color:#9ca3af;letter-spacing:1px;text-transform:uppercase;margin-bottom:4px">${m.league}</div>
+        <div style="font-size:12px;color:#9ca3af;letter-spacing:1px;text-transform:uppercase;margin-bottom:4px">${m.league}</div>
         <div style="display:grid;grid-template-columns:1fr auto;gap:12px;align-items:center">
           <div>
-            <div style="font-size:11px;color:#9ca3af;margin-bottom:4px">${dt}</div>
+            <div style="font-size:13px;color:#9ca3af;margin-bottom:4px">${dt}</div>
             <div style="font-size:16px;font-weight:700;color:#111827;margin-bottom:6px">
               ${m.home} <span style="color:#d1d5db;font-weight:400;font-size:12px">vs</span> ${m.away}
             </div>
-            <div style="font-size:11px;color:#6b7280">
+            <div style="font-size:13px;color:#6b7280">
               Poisson exp FH: <strong style="color:#374151">${m.expTotal}</strong>
               (${m.home.split(" ")[0]} ${m.expH} + ${m.away.split(" ")[0]} ${m.expA})
               · League avg FH/team: ${m.halfAvg}
             </div>
-            <div style="margin-top:6px;font-size:10px;color:#6b7280">
+            <div style="margin-top:6px;font-size:12px;color:#6b7280">
               Signals positive: <strong style="color:${goodSignals>=7?"#16a34a":goodSignals>=5?"#d97706":"#dc2626"}">${goodSignals}/${totalSignals}</strong>
             </div>
           </div>
           <div style="text-align:center;min-width:82px;background:${bg};border:1px solid ${border};border-radius:8px;padding:10px 8px">
             <div style="font-size:30px;font-weight:800;color:${col};line-height:1">${m.prob}%</div>
-            <div style="font-size:11px;color:${col};margin-top:2px">${ico} ${label}</div>
-            <div style="font-size:9px;color:#9ca3af;margin-top:2px">FH OVER 2.5</div>
+            <div style="font-size:13px;color:${col};margin-top:2px">${ico} ${label}</div>
+            <div style="font-size:11px;color:#9ca3af;margin-top:2px">FH OVER 2.5</div>
           </div>
         </div>
 
         <!-- Expand -->
         <details style="margin-top:10px">
-          <summary style="cursor:pointer;font-size:11px;color:#6b7280;padding:5px 0;list-style:none;user-select:none">
+          <summary style="cursor:pointer;font-size:13px;color:#6b7280;padding:5px 0;list-style:none;user-select:none">
             ▼ Show all 10 signals
           </summary>
           <div style="padding-top:10px">
@@ -435,10 +435,10 @@ function buildHTML(preds,sat,sun){
             <table style="width:100%;border-collapse:collapse;margin-bottom:14px;border:1px solid #e5e7eb;border-radius:6px;overflow:hidden">
               <thead>
                 <tr style="background:#f3f4f6">
-                  <th style="padding:5px 8px;text-align:left;font-size:10px;color:#6b7280;font-weight:600">Signal</th>
-                  <th style="padding:5px 8px;text-align:center;font-size:10px;color:#6b7280;font-weight:600">${m.home.split(" ")[0]}</th>
-                  <th style="padding:5px 8px;text-align:center;font-size:10px;color:#6b7280;font-weight:600">Threshold</th>
-                  <th style="padding:5px 8px;text-align:center;font-size:10px;color:#6b7280;font-weight:600">${m.away.split(" ")[0]}</th>
+                  <th style="padding:5px 8px;text-align:left;font-size:12px;color:#6b7280;font-weight:600">Signal</th>
+                  <th style="padding:5px 8px;text-align:center;font-size:12px;color:#6b7280;font-weight:600">${m.home.split(" ")[0]}</th>
+                  <th style="padding:5px 8px;text-align:center;font-size:12px;color:#6b7280;font-weight:600">Threshold</th>
+                  <th style="padding:5px 8px;text-align:center;font-size:12px;color:#6b7280;font-weight:600">${m.away.split(" ")[0]}</th>
                 </tr>
               </thead>
               <tbody>${m.signals.map(sigRow).join("")}</tbody>
@@ -447,18 +447,18 @@ function buildHTML(preds,sat,sun){
             <!-- Recent form -->
             <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:12px">
               <div>
-                <div style="font-size:11px;font-weight:600;color:#374151;margin-bottom:4px">${m.home} recent</div>
+                <div style="font-size:13px;font-weight:600;color:#374151;margin-bottom:4px">${m.home} recent</div>
                 <div>${m.hChips.map(chip).join("")}</div>
               </div>
               <div>
-                <div style="font-size:11px;font-weight:600;color:#374151;margin-bottom:4px">${m.away} recent</div>
+                <div style="font-size:13px;font-weight:600;color:#374151;margin-bottom:4px">${m.away} recent</div>
                 <div>${m.aChips.map(chip).join("")}</div>
               </div>
             </div>
 
             <!-- H2H -->
             ${m.h2h.length?`
-            <div style="font-size:11px;font-weight:600;color:#374151;margin-bottom:6px">
+            <div style="font-size:13px;font-weight:600;color:#374151;margin-bottom:6px">
               H2H — ${m.h2h.filter(g=>g.htH+g.htA>=2).length}/${m.h2h.length} meetings had FH ≥2 goals
             </div>
             <table style="width:100%;border-collapse:collapse">
@@ -483,14 +483,14 @@ function buildHTML(preds,sat,sun){
   </head><body>
   <div style="background:#fff;border-bottom:1px solid #e5e7eb;padding:16px 20px;display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:10px;position:sticky;top:0;z-index:10">
     <div>
-      <div style="font-size:10px;color:#6b7280;letter-spacing:1px;text-transform:uppercase;margin-bottom:2px">⚽ FH Over 2.5 Predictor · Data-Driven Model</div>
+      <div style="font-size:12px;color:#6b7280;letter-spacing:1px;text-transform:uppercase;margin-bottom:2px">⚽ FH Over 2.5 Predictor · Data-Driven Model</div>
       <h1 style="font-size:20px;font-weight:800;color:#111827">${sat} &amp; ${sun}</h1>
     </div>
     <a href="/" style="background:#111827;color:#fff;padding:8px 18px;font-size:12px;text-decoration:none;border-radius:6px;font-weight:600">↺ Refresh</a>
   </div>
   <div style="padding:16px 20px;max-width:760px;margin:0 auto">
-    <div style="font-size:11px;color:#6b7280;margin-bottom:6px">${preds.length} matches · sorted by probability</div>
-    <div style="font-size:10px;color:#9ca3af;margin-bottom:16px;line-height:1.7">
+    <div style="font-size:13px;color:#6b7280;margin-bottom:6px">${preds.length} matches · sorted by probability</div>
+    <div style="font-size:12px;color:#9ca3af;margin-bottom:16px;line-height:1.7">
       Model trained on 659 matches across EPL, La Liga, Ligue 1, MLS.
       Top signals: <strong style="color:#374151">FH BTTS rate</strong> (4.2x lift) ·
       <strong style="color:#374151">Conceded 11-20 min</strong> (4.2x) ·
