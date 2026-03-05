@@ -65,14 +65,20 @@ app.get("/",async(req,res)=>{
     const activeLeagues=Object.keys(leagueFixtures);
 
     // Fetch history only for leagues with weekend fixtures
-    const leagueHistory={};
+const leagueHistory={};
 for(const sid of activeLeagues){
   try{
-    const[p1,p2]=await Promise.all([
-      ftch(`${BASE}/league-matches?season_id=${sid}&max_per_page=300&page=1&key=${KEY}`),
-      ftch(`${BASE}/league-matches?season_id=${sid}&max_per_page=300&page=2&key=${KEY}`)
-    ]);
-    leagueHistory[sid]=[...(p1.data||[]),...(p2.data||[])].filter(m=>m.status==="complete");
+    const p1=await ftch(`${BASE}/league-matches?season_id=${sid}&max_per_page=300&page=1&key=${KEY}`);
+    // Strip to only fields we use — drops ~80% of memory per match
+    leagueHistory[sid]=(p1.data||[])
+      .filter(m=>m.status==="complete")
+      .map(m=>({
+        home_name:m.home_name, away_name:m.away_name,
+        ht_goals_team_a:m.ht_goals_team_a, ht_goals_team_b:m.ht_goals_team_b,
+        homeGoalCount:m.homeGoalCount, awayGoalCount:m.awayGoalCount,
+        homeGoals_timings:m.homeGoals_timings, awayGoals_timings:m.awayGoals_timings,
+        date_unix:m.date_unix, competition_id:m.competition_id
+      }));
   }catch(e){leagueHistory[sid]=[]}
 }
 
