@@ -66,15 +66,15 @@ app.get("/",async(req,res)=>{
 
     // Fetch history only for leagues with weekend fixtures
     const leagueHistory={};
-    await Promise.all(activeLeagues.map(async sid=>{
-      try{
-        const[p1,p2]=await Promise.all([
-          ftch(`${BASE}/league-matches?season_id=${sid}&max_per_page=300&page=1&key=${KEY}`),
-          ftch(`${BASE}/league-matches?season_id=${sid}&max_per_page=300&page=2&key=${KEY}`)
-        ]);
-        leagueHistory[sid]=[...(p1.data||[]),...(p2.data||[])].filter(m=>m.status==="complete");
-      }catch(e){leagueHistory[sid]=[]}
-    }));
+for(const sid of activeLeagues){
+  try{
+    const[p1,p2]=await Promise.all([
+      ftch(`${BASE}/league-matches?season_id=${sid}&max_per_page=300&page=1&key=${KEY}`),
+      ftch(`${BASE}/league-matches?season_id=${sid}&max_per_page=300&page=2&key=${KEY}`)
+    ]);
+    leagueHistory[sid]=[...(p1.data||[]),...(p2.data||[])].filter(m=>m.status==="complete");
+  }catch(e){leagueHistory[sid]=[]}
+}
 
     const preds=[];
 
