@@ -95,6 +95,7 @@ app.get("/",async(req,res)=>{
       const team={};
       const en=n=>{if(!team[n])team[n]={h:[],a:[]}};
       let totalFH=0,totalGames=0;
+      const h2hMap={};
 
       for(const m of completed){
         const ha=parseInt(m.ht_goals_team_a||0),hb=parseInt(m.ht_goals_team_b||0);
@@ -107,14 +108,21 @@ app.get("/",async(req,res)=>{
         const fh_ats=ats.filter(t=>t<=45);
         const rec=(fh_sc,fh_cn,sc,cn)=>({
           fh_sc,fh_cn,
-          sc_0_10:win(sc,0,10),sc_11_20:win(sc,11,20),
-          cn_0_10:win(cn,0,10),cn_11_20:win(cn,11,20),
+          sc_0_10:win(sc,0,10),cn_11_20:win(cn,11,20),
           fh_total:ha+hb,ft_total:fa+fb,
           fh_btts:ha>0&&hb>0,ft_o25:fa+fb>2,
           fh_o15:ha+hb>1,date:m.date_unix||0
         });
         team[m.home_name].h.push(rec(ha,hb,fh_hts,fh_ats));
         team[m.away_name].a.push(rec(hb,ha,fh_ats,fh_hts));
+        // Build H2H
+        const k=[m.home_name,m.away_name].sort().join("|");
+        if(!h2hMap[k])h2hMap[k]=[];
+        h2hMap[k].push({
+          home:m.home_name,away:m.away_name,
+          htH:ha,htA:hb,
+          ftH:fa,ftA:fb
+        });
       }
 
       completed=null;
@@ -124,7 +132,7 @@ app.get("/",async(req,res)=>{
         t.a.sort((a,b)=>b.date-a.date);
       }
 
-      const leagueHalfAvg=totalGames>0?(totalFH/totalGames)/2:0.5;
+      const safeHalf=totalGames>0?Math.max((totalFH/totalGames)/2,0.5):0.5;
 
       for(const fixture of fixtures){
         const h=fixture.home_name,a=fixture.away_name;
@@ -140,44 +148,53 @@ app.get("/",async(req,res)=>{
         const hFHCn=safe(avgF(hGames,g=>g.fh_cn));
         const aFHSc=safe(avgF(aGames,g=>g.fh_sc));
         const aFHCn=safe(avgF(aGames,g=>g.fh_cn));
-        const safeHalf=leagueHalfAvg>0?leagueHalfAvg:0.5;
+
         const expH=Math.max((hFHSc/safeHalf)*(aFHCn/safeHalf)*safeHalf,0.05);
         const expA=Math.max((aFHSc/safeHalf)*(hFHCn/safeHalf)*safeHalf,0.05);
         let prob=safe(pois(expH+expA));
 
+        // Recalibrated weights — ~40% reduction across board
         const hBtts=safe(pctF(hGames,g=>g.fh_btts));
         const aBtts=safe(pctF(aGames,g=>g.fh_btts));
-        prob+=(hBtts-0.15)*50+(aBtts-0.15)*50;
+        prob+=(hBtts-0.15)*30+(aBtts-0.15)*30;
 
         const hCn1120=safe(avgF(hGames,g=>g.cn_11_20));
         const aCn1120=safe(avgF(aGames,g=>g.cn_11_20));
-        prob+=(hCn1120-0.105)*60+(aCn1120-0.105)*60;
+        prob+=(hCn1120-0.105)*35+(aCn1120-0.105)*35;
 
         const hSc010=safe(avgF(hGames,g=>g.sc_0_10));
         const aSc010=safe(avgF(aGames,g=>g.sc_0_10));
-        prob+=(hSc010-0.098)*80+(aSc010-0.098)*80;
+        prob+=(hSc010-0.098)*45+(aSc010-0.098)*45;
 
-        prob+=((hFHCn-safeHalf)/safeHalf)*8+((aFHCn-safeHalf)/safeHalf)*8;
-        prob+=((hFHSc-safeHalf)/safeHalf)*6+((aFHSc-safeHalf)/safeHalf)*6;
+        prob+=((hFHCn-safeHalf)/safeHalf)*5+((aFHCn-safeHalf)/safeHalf)*5;
+        prob+=((hFHSc-safeHalf)/safeHalf)*4+((aFHSc-safeHalf)/safeHalf)*4;
 
         const hFTo25=safe(pctF(hGames,g=>g.ft_o25));
         const aFTo25=safe(pctF(aGames,g=>g.ft_o25));
-        prob+=(hFTo25-0.517)*20+(aFTo25-0.517)*20;
+        prob+=(hFTo25-0.517)*12+(aFTo25-0.517)*12;
 
         const hFHo15=safe(pctF(hGames,g=>g.fh_o15));
         const aFHo15=safe(pctF(aGames,g=>g.fh_o15));
-        prob+=((hFHo15+aFHo15)/2-0.30)*50;
+        prob+=((hFHo15+aFHo15)/2-0.30)*30;
 
-        const hRecentFHo15=safe(pctF(hAll.slice(0,5),g=>g.fh_o15));
-        const aRecentFHo15=safe(pctF(aAll.slice(0,5),g=>g.fh_o15));
-        prob+=((hRecentFHo15+aRecentFHo15)/2-0.30)*20;
+        const hR=safe(pctF(hAll.slice(0,5),g=>g.fh_o15));
+        const aR=safe(pctF(aAll.slice(0,5),g=>g.fh_o15));
+        prob+=((hR+aR)/2-0.30)*12;
 
-        prob=Math.max(2,Math.min(92,Math.round(safe(prob))));
+        // H2H signal
+        const h2hKey=[h,a].sort().join("|");
+        const h2h=(h2hMap[h2hKey]||[]).slice(0,6);
+        const h2hRate=h2h.length?h2h.filter(g=>g.htH+g.htA>=2).length/h2h.length:0;
+        prob+=h2hRate*6;
 
+        // Cap at 65% — model was overconfident above this
+        prob=Math.max(2,Math.min(65,Math.round(safe(prob))));
+
+        // Badges — only when BOTH teams qualify
         const keySignals=[];
         if(hBtts>=0.20&&aBtts>=0.20)
           keySignals.push({label:"BTTS FH",impact:"critical",val:`${(hBtts*100).toFixed(0)}%/${(aBtts*100).toFixed(0)}%`});
-        if(hCn1120>=0.15&&aCn1120>=0.15)
+        if(hCn1120>=0.10&&aCn1120>=0.10)
           keySignals.push({label:"Cn 11-20",impact:"critical",val:`${hCn1120.toFixed(2)}/${aCn1120.toFixed(2)}`});
         if(hSc010>=0.10&&aSc010>=0.10)
           keySignals.push({label:"Sc 0-10",impact:"strong",val:`${hSc010.toFixed(2)}/${aSc010.toFixed(2)}`});
@@ -185,16 +202,19 @@ app.get("/",async(req,res)=>{
           keySignals.push({label:"FH Conceded",impact:"strong",val:`${hFHCn.toFixed(2)}/${aFHCn.toFixed(2)}`});
         if(hFTo25>=0.60&&aFTo25>=0.60)
           keySignals.push({label:"FT Chaos",impact:"strong",val:`${(hFTo25*100).toFixed(0)}%/${(aFTo25*100).toFixed(0)}%`});
+        if(h2hRate>=0.50&&h2h.length>=2)
+          keySignals.push({label:"H2H FH",impact:"moderate",val:`${h2h.filter(g=>g.htH+g.htA>=2).length}/${h2h.length}`});
 
         const signals=[
-          {label:"FH BTTS rate",hVal:(hBtts*100).toFixed(0)+"%",aVal:(aBtts*100).toFixed(0)+"%",threshold:"20%",hGood:hBtts>=0.20,aGood:aBtts>=0.20,impact:"critical",note:"4.2x lift"},
-          {label:"Conceded 11-20/g",hVal:hCn1120.toFixed(3),aVal:aCn1120.toFixed(3),threshold:"0.150",hGood:hCn1120>=0.15,aGood:aCn1120>=0.15,impact:"critical",note:"4.2x lift"},
-          {label:"Scored 0-10/g",hVal:hSc010.toFixed(3),aVal:aSc010.toFixed(3),threshold:"0.100",hGood:hSc010>=0.10,aGood:aSc010>=0.10,impact:"strong",note:"2.5x lift"},
+          {label:"FH BTTS rate",hVal:(hBtts*100).toFixed(0)+"%",aVal:(aBtts*100).toFixed(0)+"%",threshold:"20%",hGood:hBtts>=0.20,aGood:aBtts>=0.20,impact:"critical",note:"2.0x lift"},
+          {label:"Conceded 11-20/g",hVal:hCn1120.toFixed(3),aVal:aCn1120.toFixed(3),threshold:"0.100",hGood:hCn1120>=0.10,aGood:aCn1120>=0.10,impact:"critical",note:"combo 2.7x"},
+          {label:"Scored 0-10/g",hVal:hSc010.toFixed(3),aVal:aSc010.toFixed(3),threshold:"0.100",hGood:hSc010>=0.10,aGood:aSc010>=0.10,impact:"strong",note:"1.6x lift"},
           {label:"FH conceded/g",hVal:hFHCn.toFixed(2),aVal:aFHCn.toFixed(2),threshold:safeHalf.toFixed(2),hGood:hFHCn>=safeHalf,aGood:aFHCn>=safeHalf,impact:"strong",note:"2.2x lift"},
-          {label:"FH scored/g",hVal:hFHSc.toFixed(2),aVal:aFHSc.toFixed(2),threshold:safeHalf.toFixed(2),hGood:hFHSc>=safeHalf,aGood:aFHSc>=safeHalf,impact:"moderate",note:"3.1x at high end"},
-          {label:"FT >2.5 rate",hVal:(hFTo25*100).toFixed(0)+"%",aVal:(aFTo25*100).toFixed(0)+"%",threshold:"52%",hGood:hFTo25>=0.52,aGood:aFTo25>=0.52,impact:"moderate",note:"4.7x at >70%"},
-          {label:"FH >1.5 rate",hVal:(hFHo15*100).toFixed(0)+"%",aVal:(aFHo15*100).toFixed(0)+"%",threshold:"30%",hGood:hFHo15>=0.30,aGood:aFHo15>=0.30,impact:"moderate",note:"3.0x lift"},
-          {label:"Recent FH >1.5",hVal:(hRecentFHo15*100).toFixed(0)+"%",aVal:(aRecentFHo15*100).toFixed(0)+"%",threshold:"30%",hGood:hRecentFHo15>=0.30,aGood:aRecentFHo15>=0.30,impact:"moderate",note:"Last 5 games"},
+          {label:"FH scored/g",hVal:hFHSc.toFixed(2),aVal:aFHSc.toFixed(2),threshold:safeHalf.toFixed(2),hGood:hFHSc>=safeHalf,aGood:aFHSc>=safeHalf,impact:"moderate",note:"supporting"},
+          {label:"FT >2.5 rate",hVal:(hFTo25*100).toFixed(0)+"%",aVal:(aFTo25*100).toFixed(0)+"%",threshold:"52%",hGood:hFTo25>=0.52,aGood:aFTo25>=0.52,impact:"moderate",note:"1.6x lift"},
+          {label:"FH >1.5 rate",hVal:(hFHo15*100).toFixed(0)+"%",aVal:(aFHo15*100).toFixed(0)+"%",threshold:"30%",hGood:hFHo15>=0.30,aGood:aFHo15>=0.30,impact:"moderate",note:"supporting"},
+          {label:"Recent FH >1.5",hVal:(hR*100).toFixed(0)+"%",aVal:(aR*100).toFixed(0)+"%",threshold:"30%",hGood:hR>=0.30,aGood:aR>=0.30,impact:"moderate",note:"last 5 games"},
+          {label:"H2H FH ≥2 goals",hVal:`${h2h.filter(g=>g.htH+g.htA>=2).length}/${h2h.length}`,aVal:"",threshold:"50%",hGood:h2hRate>=0.50,aGood:true,impact:"moderate",note:"matchup pattern"},
         ];
 
         preds.push({
@@ -202,7 +222,7 @@ app.get("/",async(req,res)=>{
           dt:(fixture.date_unix||0)*1000,matchDate:fixture._date,
           home:h,away:a,
           expH:+expH.toFixed(2),expA:+expA.toFixed(2),expTotal:+(expH+expA).toFixed(2),
-          prob,signals,keySignals,
+          prob,signals,keySignals,h2h:h2h.slice(0,6),
           hChips:[...ht.h,...ht.a].sort((x,y)=>y.date-x.date).slice(0,6).map(g=>({fhTotal:g.fh_total,ftTotal:g.ft_total})),
           aChips:[...at.h,...at.a].sort((x,y)=>y.date-x.date).slice(0,6).map(g=>({fhTotal:g.fh_total,ftTotal:g.ft_total})),
           halfAvg:+safeHalf.toFixed(2)
@@ -254,8 +274,8 @@ function buildHTML(preds,dates){
 
   <div style="padding:16px 20px;max-width:760px;margin:0 auto">
     <div style="font-size:14px;color:#9ca3af;margin-bottom:16px;line-height:1.8">
-      <span style="background:#14532d;color:#fff;padding:2px 8px;border-radius:4px;font-size:12px;font-weight:600">critical</span> 4.2x lift &nbsp;
-      <span style="background:#bbf7d0;color:#166534;padding:2px 8px;border-radius:4px;font-size:12px;font-weight:600">strong</span> 2.2-2.5x &nbsp;
+      <span style="background:#14532d;color:#fff;padding:2px 8px;border-radius:4px;font-size:12px;font-weight:600">critical</span> &nbsp;
+      <span style="background:#bbf7d0;color:#166534;padding:2px 8px;border-radius:4px;font-size:12px;font-weight:600">strong</span> &nbsp;
       <span style="background:#fef9c3;color:#854d0e;padding:2px 8px;border-radius:4px;font-size:12px;font-weight:600">moderate</span>
     </div>
     <div id="mainView"></div>
@@ -274,8 +294,7 @@ function buildHTML(preds,dates){
     const el=document.getElementById("dayTabs");
     el.innerHTML=DATES.map((d,i)=>{
       const count=ALL_PREDS.filter(p=>p.matchDate===d).length;
-      const label=DAY_LABELS[i]||d;
-      return \`<button class="tab \${d===activeDate?"active":""}" onclick="selectDay('\${d}')">\${label} <span style="font-size:13px;opacity:.7">(\${count})</span></button>\`;
+      return \`<button class="tab \${d===activeDate?"active":""}" onclick="selectDay('\${d}')">\${DAY_LABELS[i]||d} <span style="font-size:13px;opacity:.7">(\${count})</span></button>\`;
     }).join("");
   }
 
@@ -288,13 +307,8 @@ function buildHTML(preds,dates){
   function renderLeagueList(){
     const dayPreds=ALL_PREDS.filter(p=>p.matchDate===activeDate);
     const leagues={};
-    for(const p of dayPreds){
-      if(!leagues[p.league])leagues[p.league]=[];
-      leagues[p.league].push(p);
-    }
-    const leagueList=Object.entries(leagues).sort((a,b)=>
-      Math.max(...b[1].map(p=>p.prob))-Math.max(...a[1].map(p=>p.prob))
-    );
+    for(const p of dayPreds){if(!leagues[p.league])leagues[p.league]=[];leagues[p.league].push(p);}
+    const leagueList=Object.entries(leagues).sort((a,b)=>Math.max(...b[1].map(p=>p.prob))-Math.max(...a[1].map(p=>p.prob)));
     if(leagueList.length===0){
       document.getElementById("mainView").innerHTML=\`<div style="background:#fff;border:1px solid #e5e7eb;border-radius:8px;padding:40px;text-align:center;color:#6b7280;font-size:16px">No matches found for this day.</div>\`;
       return;
@@ -318,8 +332,8 @@ function buildHTML(preds,dates){
       }).join("")}\`;
   }
 
-  function selectLeague(league){activeLeague=league;renderMatchList()}
-  function backToLeagues(){activeLeague=null;renderLeagueList()}
+  function selectLeague(league){activeLeague=league;renderMatchList();}
+  function backToLeagues(){activeLeague=null;renderLeagueList();}
 
   function renderMatchList(){
     const matches=ALL_PREDS.filter(p=>p.matchDate===activeDate&&p.league===activeLeague).sort((a,b)=>b.prob-a.prob);
@@ -339,8 +353,8 @@ function buildHTML(preds,dates){
     const dt=new Date(m.dt).toLocaleString("en-GB",{weekday:"short",day:"2-digit",month:"short",hour:"2-digit",minute:"2-digit"});
     const shortName=n=>n.split(" ").slice(0,2).join(" ");
     const keyBadges=m.keySignals.map(s=>{
-      const bg=s.impact==="critical"?"#14532d":"#bbf7d0";
-      const col=s.impact==="critical"?"#fff":"#166534";
+      const bg=s.impact==="critical"?"#14532d":s.impact==="strong"?"#bbf7d0":"#fef9c3";
+      const col=s.impact==="critical"?"#fff":s.impact==="strong"?"#166534":"#854d0e";
       return \`<span style="display:inline-flex;align-items:center;gap:4px;padding:4px 10px;font-size:13px;border-radius:12px;background:\${bg};color:\${col};margin:2px;font-weight:600">\${s.label} \${s.val}</span>\`;
     }).join("");
     const sigRows=m.signals.map((s,i)=>{
@@ -358,6 +372,15 @@ function buildHTML(preds,dates){
       </tr>\`;
     }).join("");
     const chip=g=>\`<span style="display:inline-block;padding:3px 8px;font-size:13px;border-radius:3px;margin:2px;border:1px solid \${g.fhTotal>1?"#bbf7d0":"#e5e7eb"};background:\${g.fhTotal>1?"#f0fdf4":"#f9fafb"};color:\${g.fhTotal>1?"#16a34a":"#6b7280"}">FH \${g.fhTotal}·FT \${g.ftTotal}</span>\`;
+    const h2hRows=(m.h2h||[]).map(g=>{
+      const ht=g.htH+g.htA;
+      return \`<tr style="border-bottom:1px solid #f3f4f6">
+        <td style="padding:5px 8px;font-size:13px;color:#6b7280">\${g.home} vs \${g.away}</td>
+        <td style="padding:5px 8px;font-size:13px;text-align:center;font-weight:700;color:\${ht>=2?"#16a34a":"#374151"}">HT \${g.htH}-\${g.htA}</td>
+        <td style="padding:5px 8px;font-size:13px;text-align:center;color:#6b7280">FT \${g.ftH}-\${g.ftA}</td>
+      </tr>\`;
+    }).join("");
+
     return \`<div class="match-card" style="border-left:4px solid \${probCol}">
       <div style="padding:16px">
         <div style="font-size:12px;color:#9ca3af;letter-spacing:1px;text-transform:uppercase;margin-bottom:4px">\${m.league}</div>
@@ -386,7 +409,7 @@ function buildHTML(preds,dates){
               </tr></thead>
               <tbody>\${sigRows}</tbody>
             </table>
-            <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+            <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:12px">
               <div>
                 <div style="font-size:13px;font-weight:600;color:#374151;margin-bottom:4px">\${shortName(m.home)}</div>
                 <div>\${m.hChips.map(chip).join("")}</div>
@@ -396,6 +419,10 @@ function buildHTML(preds,dates){
                 <div>\${m.aChips.map(chip).join("")}</div>
               </div>
             </div>
+            \${h2hRows?\`<div style="font-size:13px;font-weight:600;color:#374151;margin-bottom:6px">
+              H2H — \${(m.h2h||[]).filter(g=>g.htH+g.htA>=2).length}/\${(m.h2h||[]).length} meetings FH ≥2 goals
+            </div>
+            <table style="width:100%;border-collapse:collapse">\${h2hRows}</table>\`:""}
           </div>
         </details>
       </div>
