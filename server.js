@@ -31,7 +31,12 @@ const safe=v=>isNaN(v)||!isFinite(v)?0:v;
 
 const getDates=()=>{
   const today=new Date();
-  const fmt=d=>d.toISOString().slice(0,10);
+  const fmt=d=>{
+    const y=d.getFullYear();
+    const m=String(d.getMonth()+1).padStart(2,'0');
+    const day=String(d.getDate()).padStart(2,'0');
+    return `${y}-${m}-${day}`;
+  };
   const dates=[];
   for(let i=0;i<4;i++){
     const d=new Date(today);
