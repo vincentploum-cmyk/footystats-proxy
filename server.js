@@ -442,4 +442,41 @@ function buildHTML(preds,dates){
 }
 
 const PORT=process.env.PORT||3001;
+app.get("/fetch-all-data", async (req, res) => {
+  const LEAGUE_IDS = [
+    16504,15000,14968,14924,15050,14930,14956,16558,14932,15068,
+    14931,14923,16036,16544,16571,15047,16242,15234,16614,16615,
+    15055,16714,16708,15002,15238,14904,12980,16823,16046,16037,
+    16808,16563,16562,13861,9128,10117,10121,12061,11426,
+    7977,12801,16494,15020,8994,6704
+  ];
+  const sleep=ms=>new Promise(r=>setTimeout(r,ms));
+  const all=[];
+  for(const sid of LEAGUE_IDS){
+    try{
+      const url=`${BASE}/league-matches?season_id=${sid}&max_per_page=300&page=1&key=${KEY}`;
+      const data=await ftch(url);
+      const matches=(data.data||[])
+        .filter(m=>m.status==="complete")
+        .filter(m=>new Date((m.date_unix||0)*1000)>=new Date("2025-09-01"))
+        .map(m=>({
+          home_name:m.home_name,away_name:m.away_name,
+          ht_goals_team_a:m.ht_goals_team_a,ht_goals_team_b:m.ht_goals_team_b,
+          homeGoalCount:m.homeGoalCount,awayGoalCount:m.awayGoalCount,
+          homeGoals_timings:m.homeGoals_timings,awayGoals_timings:m.awayGoals_timings,
+          date_unix:m.date_unix,competition_id:sid
+        }));
+      all.push(...matches);
+      console.log(`${sid}: ${matches.length} matches`);
+    }catch(e){console.log(`${sid}: error`);}
+    await sleep(300);
+  }
+  res.setHeader("Content-Disposition","attachment; filename=all_leagues.json");
+  res.json({data:all});
+});
+```
+
+Save → commit → wait for Render to deploy → then visit:
+```
+https://footystats-proxy.onrender.com/fetch-all-data
 app.listen(PORT,()=>console.log("Server running on port "+PORT));
