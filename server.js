@@ -454,7 +454,7 @@ app.get("/fetch-all-data", async (req, res) => {
   const all=[];
   for(const sid of LEAGUE_IDS){
     try{
-      const url=`${BASE}/league-matches?season_id=${sid}&max_per_page=300&page=1&key=${KEY}`;
+      const url=BASE+"/league-matches?season_id="+sid+"&max_per_page=300&page=1&key="+KEY;
       const data=await ftch(url);
       const matches=(data.data||[])
         .filter(m=>m.status==="complete")
@@ -467,7 +467,7 @@ app.get("/fetch-all-data", async (req, res) => {
           date_unix:m.date_unix,competition_id:sid
         }));
       all.push(...matches);
-      console.log(`${sid}: ${matches.length} matches`);
+      console.log(sid+": "+matches.length+" matches");
     }catch(e){console.log(`${sid}: error`);}
     await sleep(300);
   }
