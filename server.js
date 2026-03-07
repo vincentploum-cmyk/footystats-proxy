@@ -21,12 +21,14 @@ const LEAGUE_NAMES={
   13861:"UEFA Womens Nations League",16563:"Womens WC Qual Europe"
 };
 
-const pois=lam=>{let p=0,t=Math.exp(-lam);for(let k=0;k<3;k++){p+=t;t*=lam/(k+1)}return(1-p)*100};
+// Data-driven probability table from 3,460 match backtest
+// 0/4=5.5%, 1/4=11.4%, 2/4=19.3%, 3/4=32.8%, 4/4=42.6%
+const PROB_TABLE=[5,10,20,35,45];
+
 const ftch=url=>fetch(url).then(r=>r.json());
 const avgF=(arr,fn)=>arr.length?arr.reduce((s,x)=>s+fn(x),0)/arr.length:0;
 const pctF=(arr,fn)=>arr.length?arr.filter(fn).length/arr.length:0;
 const pm=t=>{const m=String(t).match(/^(\d+)/);return m?parseInt(m[1]):null};
-const win=(ts,a,b)=>ts.filter(t=>t>=a&&t<=b).length;
 const safe=v=>isNaN(v)||!isFinite(v)?0:v;
 
 const getDates=()=>{
@@ -43,7 +45,7 @@ const getDates=()=>{
     d.setDate(today.getDate()+i);
     dates.push(fmt(d));
   }
-  return [...new Set(dates)];
+  return[...new Set(dates)];
 };
 
 app.get("/api/*",async(req,res)=>{
@@ -93,6 +95,7 @@ app.get("/fetch-all-data",async(req,res)=>{
 app.get("/",async(req,res)=>{
   try{
     const dates=getDates();
+    console.log("Fetching dates:",dates);
     const dayResults=await Promise.all(dates.map(d=>ftch(BASE+"/todays-matches?date="+d+"&key="+KEY)));
     const allFixtures=[];
     for(let i=0;i<dates.length;i++){
@@ -109,6 +112,8 @@ app.get("/",async(req,res)=>{
       }
     }
     const activeLeagues=Object.keys(leagueFixtures);
+    console.log(allFixtures.length+" fixtures across "+activeLeagues.length+" leagues");
+
     const preds=[];
 
     for(const sid of activeLeagues.slice(0,20)){
@@ -143,15 +148,17 @@ app.get("/",async(req,res)=>{
         const ats=(m.awayGoals_timings||[]).map(pm).filter(t=>t!==null);
         const fh_hts=hts.filter(t=>t<=45);
         const fh_ats=ats.filter(t=>t<=45);
-        const rec=(fh_sc,fh_cn,sc,cn)=>({
+        const fhTot=ha+hb;
+        const shTot=(fa-ha)+(fb-hb);
+        const rec=(fh_sc,fh_cn)=>({
           fh_sc,fh_cn,
-          sc_0_10:win(sc,0,10),cn_11_20:win(cn,11,20),
+          fh_btts:ha>0&&hb>0,
+          fh_most:fhTot>shTot,
           fh_total:ha+hb,ft_total:fa+fb,
-          fh_btts:ha>0&&hb>0,ft_o25:fa+fb>2,
-          fh_o15:ha+hb>1,date:m.date_unix||0
+          date:m.date_unix||0
         });
-        team[m.home_name].h.push(rec(ha,hb,fh_hts,fh_ats));
-        team[m.away_name].a.push(rec(hb,ha,fh_ats,fh_hts));
+        team[m.home_name].h.push(rec(ha,hb));
+        team[m.away_name].a.push(rec(hb,ha));
         const k=[m.home_name,m.away_name].sort().join("|");
         if(!h2hMap[k])h2hMap[k]=[];
         h2hMap[k].push({home:m.home_name,away:m.away_name,htH:ha,htA:hb,ftH:fa,ftA:fb});
@@ -164,7 +171,7 @@ app.get("/",async(req,res)=>{
         t.a.sort((a,b)=>b.date-a.date);
       }
 
-      const safeHalf=totalGames>0?Math.max((totalFH/totalGames)/2,0.5):0.5;
+      const leagueHalfAvg=totalGames>0?Math.max((totalFH/totalGames)/2,0.5):0.5;
 
       for(const fixture of fixtures){
         const h=fixture.home_name,a=fixture.away_name;
@@ -172,93 +179,100 @@ app.get("/",async(req,res)=>{
         const at=team[a]||{h:[],a:[]};
         const hGames=ht.h.length>=3?ht.h.slice(0,12):([...ht.h,...ht.a].sort((x,y)=>y.date-x.date).slice(0,12));
         const aGames=at.a.length>=3?at.a.slice(0,12):([...at.h,...at.a].sort((x,y)=>y.date-x.date).slice(0,12));
-        const hAll=[...ht.h,...ht.a].sort((x,y)=>y.date-x.date).slice(0,8);
-        const aAll=[...at.h,...at.a].sort((x,y)=>y.date-x.date).slice(0,8);
         if(hGames.length<2||aGames.length<2)continue;
 
+        // === 4 DATA-DRIVEN SIGNALS ===
+
+        // S1: Exp FH goals = (hSc x aCn) + (aSc x hCn) — threshold 1.083
         const hFHSc=safe(avgF(hGames,g=>g.fh_sc));
         const hFHCn=safe(avgF(hGames,g=>g.fh_cn));
         const aFHSc=safe(avgF(aGames,g=>g.fh_sc));
         const aFHCn=safe(avgF(aGames,g=>g.fh_cn));
+        const expFH=safe((hFHSc*aFHCn)+(aFHSc*hFHCn));
+        const s1=expFH>=1.083;
 
-        const expH=Math.max((hFHSc/safeHalf)*(aFHCn/safeHalf)*safeHalf,0.05);
-        const expA=Math.max((aFHSc/safeHalf)*(hFHCn/safeHalf)*safeHalf,0.05);
-        let prob=safe(pois(expH+expA));
-
+        // S2: BTTS FH avg — threshold 0.261
         const hBtts=safe(pctF(hGames,g=>g.fh_btts));
         const aBtts=safe(pctF(aGames,g=>g.fh_btts));
-        prob+=(hBtts-0.15)*30+(aBtts-0.15)*30;
+        const bttsAvg=(hBtts+aBtts)/2;
+        const s2=bttsAvg>=0.261;
 
-        const hCn1120=safe(avgF(hGames,g=>g.cn_11_20));
-        const aCn1120=safe(avgF(aGames,g=>g.cn_11_20));
-        prob+=(hCn1120-0.105)*35+(aCn1120-0.105)*35;
+        // S3: FH conceded sum — threshold 1.542
+        const fhCnSum=hFHCn+aFHCn;
+        const s3=fhCnSum>=1.542;
 
-        const hSc010=safe(avgF(hGames,g=>g.sc_0_10));
-        const aSc010=safe(avgF(aGames,g=>g.sc_0_10));
-        prob+=(hSc010-0.098)*45+(aSc010-0.098)*45;
+        // S4: FH most goals half avg — threshold 0.394
+        const hFHMost=safe(pctF(hGames,g=>g.fh_most));
+        const aFHMost=safe(pctF(aGames,g=>g.fh_most));
+        const fhMostAvg=(hFHMost+aFHMost)/2;
+        const s4=fhMostAvg>=0.394;
 
-        prob+=((hFHCn-safeHalf)/safeHalf)*5+((aFHCn-safeHalf)/safeHalf)*5;
-        prob+=((hFHSc-safeHalf)/safeHalf)*4+((aFHSc-safeHalf)/safeHalf)*4;
+        const nMet=+s1+ +s2+ +s3+ +s4;
+        const prob=PROB_TABLE[nMet];
 
-        const hFTo25=safe(pctF(hGames,g=>g.ft_o25));
-        const aFTo25=safe(pctF(aGames,g=>g.ft_o25));
-        prob+=(hFTo25-0.517)*12+(aFTo25-0.517)*12;
-
-        const hFHo15=safe(pctF(hGames,g=>g.fh_o15));
-        const aFHo15=safe(pctF(aGames,g=>g.fh_o15));
-        prob+=((hFHo15+aFHo15)/2-0.30)*30;
-
-        const hR=safe(pctF(hAll.slice(0,5),g=>g.fh_o15));
-        const aR=safe(pctF(aAll.slice(0,5),g=>g.fh_o15));
-        prob+=((hR+aR)/2-0.30)*12;
-
+        // H2H
         const h2hKey=[h,a].sort().join("|");
         const h2h=(h2hMap[h2hKey]||[]).slice(0,6);
-        const h2hRate=h2h.length?h2h.filter(g=>g.htH+g.htA>=2).length/h2h.length:0;
-        prob+=h2hRate*6;
 
-        prob=Math.max(2,Math.min(65,Math.round(safe(prob))));
-
-        const keySignals=[];
-        if(hBtts>=0.20&&aBtts>=0.20)
-          keySignals.push({label:"BTTS FH",impact:"critical",val:(hBtts*100).toFixed(0)+"%/"+(aBtts*100).toFixed(0)+"%"});
-        if(hCn1120>=0.10&&aCn1120>=0.10)
-          keySignals.push({label:"Cn 11-20",impact:"critical",val:hCn1120.toFixed(2)+"/"+aCn1120.toFixed(2)});
-        if(hSc010>=0.10&&aSc010>=0.10)
-          keySignals.push({label:"Sc 0-10",impact:"strong",val:hSc010.toFixed(2)+"/"+aSc010.toFixed(2)});
-        if(hFHCn>=safeHalf&&aFHCn>=safeHalf)
-          keySignals.push({label:"FH Conceded",impact:"strong",val:hFHCn.toFixed(2)+"/"+aFHCn.toFixed(2)});
-        if(hFTo25>=0.60&&aFTo25>=0.60)
-          keySignals.push({label:"FT Chaos",impact:"strong",val:(hFTo25*100).toFixed(0)+"%/"+(aFTo25*100).toFixed(0)+"%"});
-        if(h2hRate>=0.50&&h2h.length>=2)
-          keySignals.push({label:"H2H FH",impact:"moderate",val:h2h.filter(g=>g.htH+g.htA>=2).length+"/"+h2h.length});
-
+        // Signal display rows — green/red per team
         const signals=[
-          {label:"FH BTTS rate",hVal:(hBtts*100).toFixed(0)+"%",aVal:(aBtts*100).toFixed(0)+"%",threshold:"20%",hGood:hBtts>=0.20,aGood:aBtts>=0.20,impact:"critical",note:"2.0x lift"},
-          {label:"Conceded 11-20/g",hVal:hCn1120.toFixed(3),aVal:aCn1120.toFixed(3),threshold:"0.100",hGood:hCn1120>=0.10,aGood:aCn1120>=0.10,impact:"critical",note:"combo 2.7x"},
-          {label:"Scored 0-10/g",hVal:hSc010.toFixed(3),aVal:aSc010.toFixed(3),threshold:"0.100",hGood:hSc010>=0.10,aGood:aSc010>=0.10,impact:"strong",note:"1.6x lift"},
-          {label:"FH conceded/g",hVal:hFHCn.toFixed(2),aVal:aFHCn.toFixed(2),threshold:safeHalf.toFixed(2),hGood:hFHCn>=safeHalf,aGood:aFHCn>=safeHalf,impact:"strong",note:"2.2x lift"},
-          {label:"FH scored/g",hVal:hFHSc.toFixed(2),aVal:aFHSc.toFixed(2),threshold:safeHalf.toFixed(2),hGood:hFHSc>=safeHalf,aGood:aFHSc>=safeHalf,impact:"moderate",note:"supporting"},
-          {label:"FT >2.5 rate",hVal:(hFTo25*100).toFixed(0)+"%",aVal:(aFTo25*100).toFixed(0)+"%",threshold:"52%",hGood:hFTo25>=0.52,aGood:aFTo25>=0.52,impact:"moderate",note:"1.6x lift"},
-          {label:"FH >1.5 rate",hVal:(hFHo15*100).toFixed(0)+"%",aVal:(aFHo15*100).toFixed(0)+"%",threshold:"30%",hGood:hFHo15>=0.30,aGood:aFHo15>=0.30,impact:"moderate",note:"supporting"},
-          {label:"Recent FH >1.5",hVal:(hR*100).toFixed(0)+"%",aVal:(aR*100).toFixed(0)+"%",threshold:"30%",hGood:hR>=0.30,aGood:aR>=0.30,impact:"moderate",note:"last 5 games"},
-          {label:"H2H FH >=2 goals",hVal:h2h.filter(g=>g.htH+g.htA>=2).length+"/"+h2h.length,aVal:"",threshold:"50%",hGood:h2hRate>=0.50,aGood:true,impact:"moderate",note:"matchup pattern"},
+          {
+            label:"Exp FH goals",
+            desc:"(H scored x A conceded) + (A scored x H conceded)",
+            hVal:hFHSc.toFixed(2)+" sc / "+hFHCn.toFixed(2)+" cn",
+            aVal:aFHSc.toFixed(2)+" sc / "+aFHCn.toFixed(2)+" cn",
+            combinedVal:expFH.toFixed(3),
+            threshold:">=1.083",
+            met:s1,
+            lift:"2.29x lift"
+          },
+          {
+            label:"BTTS First Half",
+            desc:"Both teams score in 1H — avg of both teams",
+            hVal:(hBtts*100).toFixed(0)+"%",
+            aVal:(aBtts*100).toFixed(0)+"%",
+            combinedVal:(bttsAvg*100).toFixed(0)+"%",
+            threshold:"avg >=26%",
+            met:s2,
+            lift:"2.00x lift"
+          },
+          {
+            label:"FH Conceded Sum",
+            desc:"Total FH goals conceded per game — both teams combined",
+            hVal:hFHCn.toFixed(2)+"/g",
+            aVal:aFHCn.toFixed(2)+"/g",
+            combinedVal:fhCnSum.toFixed(3),
+            threshold:"sum >=1.542",
+            met:s3,
+            lift:"1.96x lift"
+          },
+          {
+            label:"FH = Best Half",
+            desc:"% of games where 1st half has more goals than 2nd half",
+            hVal:(hFHMost*100).toFixed(0)+"%",
+            aVal:(aFHMost*100).toFixed(0)+"%",
+            combinedVal:(fhMostAvg*100).toFixed(0)+"%",
+            threshold:"avg >=39%",
+            met:s4,
+            lift:"1.77x lift"
+          }
         ];
 
         preds.push({
           league:LEAGUE_NAMES[sid],leagueSid:parseInt(sid),
           dt:(fixture.date_unix||0)*1000,matchDate:fixture._date,
           home:h,away:a,
-          expH:+expH.toFixed(2),expA:+expA.toFixed(2),expTotal:+(expH+expA).toFixed(2),
-          prob,signals,keySignals,h2h:h2h.slice(0,6),
+          expFH:+expFH.toFixed(3),
+          leagueAvg:+leagueHalfAvg.toFixed(2),
+          prob,nMet,signals,h2h:h2h.slice(0,6),
           hChips:[...ht.h,...ht.a].sort((x,y)=>y.date-x.date).slice(0,6).map(g=>({fhTotal:g.fh_total,ftTotal:g.ft_total})),
           aChips:[...at.h,...at.a].sort((x,y)=>y.date-x.date).slice(0,6).map(g=>({fhTotal:g.fh_total,ftTotal:g.ft_total})),
-          halfAvg:+safeHalf.toFixed(2)
+          smallSample:hGames.length<6||aGames.length<6
         });
       }
     }
 
-    preds.sort((a,b)=>b.prob-a.prob);
+    preds.sort((a,b)=>b.prob-a.prob||b.nMet-a.nMet);
     res.send(buildHTML(preds,dates));
   }catch(e){console.error(e);res.status(500).send("<pre>Error: "+e.message+"</pre>")}
 });
@@ -266,185 +280,177 @@ app.get("/",async(req,res)=>{
 function buildHTML(preds,dates){
   const predsJSON=JSON.stringify(preds).replace(/</g,"\\u003c");
   const datesJSON=JSON.stringify(dates);
-  const html=`<!DOCTYPE html><html><head>
-<meta charset="UTF-8"><meta name="viewport" content="width=device-width,initial-scale=1">
-<title>First Half Score</title>
-<style>
-*{box-sizing:border-box;margin:0;padding:0}
-body{background:#f3f4f6;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;color:#111827;font-size:16px}
-details>summary::-webkit-details-marker{display:none}
-.tab{padding:8px 14px;border-radius:6px;cursor:pointer;font-size:14px;font-weight:600;border:1px solid #e5e7eb;background:#fff;color:#6b7280;transition:all .15s}
-.tab.active{background:#111827;color:#fff;border-color:#111827}
-.league-card{background:#fff;border:1px solid #e5e7eb;border-radius:8px;padding:16px 18px;margin-bottom:10px;cursor:pointer;display:flex;justify-content:space-between;align-items:center;box-shadow:0 1px 3px rgba(0,0,0,.05);transition:box-shadow .15s}
-.league-card:hover{box-shadow:0 3px 8px rgba(0,0,0,.1)}
-.back-btn{background:#f3f4f6;border:1px solid #e5e7eb;padding:7px 16px;border-radius:6px;cursor:pointer;font-size:15px;font-weight:600;color:#374151}
-.match-card{background:#fff;border:1px solid #e5e7eb;border-radius:8px;overflow:hidden;box-shadow:0 1px 3px rgba(0,0,0,.05);margin-bottom:14px}
-summary{cursor:pointer;user-select:none;list-style:none}
-.sig-table{width:100%;border-collapse:collapse;border:1px solid #e5e7eb;border-radius:6px;overflow:hidden;table-layout:fixed}
-.sig-table td,.sig-table th{overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-.col-signal{width:42%}.col-val{width:19%}.col-thresh{width:20%}
-</style>
-</head><body>
-<div id="header" style="background:#fff;border-bottom:1px solid #e5e7eb;padding:14px 20px;position:sticky;top:0;z-index:10">
-<div style="max-width:760px;margin:0 auto">
-<div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px">
-<div>
-<div style="font-size:12px;color:#6b7280;letter-spacing:1px;text-transform:uppercase">&#9917; First Half Score</div>
-<h1 style="font-size:23px;font-weight:800;color:#111827" id="headerTitle">Loading...</h1>
-</div>
-<button onclick="location.reload()" style="background:#111827;color:#fff;padding:8px 18px;font-size:15px;border:none;border-radius:6px;font-weight:600;cursor:pointer">&#8635; Refresh</button>
-</div>
-<div id="dayTabs" style="display:flex;gap:8px;flex-wrap:wrap"></div>
-</div>
-</div>
-<div style="padding:16px 20px;max-width:760px;margin:0 auto">
-<div style="font-size:14px;color:#9ca3af;margin-bottom:16px;line-height:1.8">
-<span style="background:#14532d;color:#fff;padding:2px 8px;border-radius:4px;font-size:12px;font-weight:600">critical</span> &nbsp;
-<span style="background:#bbf7d0;color:#166534;padding:2px 8px;border-radius:4px;font-size:12px;font-weight:600">strong</span> &nbsp;
-<span style="background:#fef9c3;color:#854d0e;padding:2px 8px;border-radius:4px;font-size:12px;font-weight:600">moderate</span>
-</div>
-<div id="mainView"></div>
-</div>
-<script>
-const ALL_PREDS=${predsJSON};
-const DATES=${datesJSON};
-const DAY_LABELS=["Today","Tomorrow","Saturday","Sunday","Monday"];
-let activeDate=DATES[0];
-let activeLeague=null;
-function fmt(d){return new Date(d).toLocaleDateString("en-GB",{weekday:"long",day:"2-digit",month:"short"})}
-function renderTabs(){
-  const el=document.getElementById("dayTabs");
-  el.innerHTML=DATES.map((d,i)=>{
-    const count=ALL_PREDS.filter(p=>p.matchDate===d).length;
-    return \`<button class="tab \${d===activeDate?"active":""}" onclick="selectDay('\${d}')">\${DAY_LABELS[i]||d} <span style="font-size:13px;opacity:.7">(\${count})</span></button>\`;
-  }).join("");
-}
-function selectDay(d){activeDate=d;activeLeague=null;renderTabs();renderLeagueList();document.getElementById("headerTitle").textContent=fmt(new Date(d+"T12:00:00"));}
-function renderLeagueList(){
-  const dayPreds=ALL_PREDS.filter(p=>p.matchDate===activeDate);
-  const leagues={};
-  for(const p of dayPreds){if(!leagues[p.league])leagues[p.league]=[];leagues[p.league].push(p);}
-  const leagueList=Object.entries(leagues).sort((a,b)=>Math.max(...b[1].map(p=>p.prob))-Math.max(...a[1].map(p=>p.prob)));
-  if(leagueList.length===0){
-    document.getElementById("mainView").innerHTML=\`<div style="background:#fff;border:1px solid #e5e7eb;border-radius:8px;padding:40px;text-align:center;color:#6b7280;font-size:16px">No matches found for this day.</div>\`;
-    return;
-  }
-  document.getElementById("mainView").innerHTML=
-    \`<div style="font-size:14px;color:#6b7280;margin-bottom:14px">\${dayPreds.length} matches across \${leagueList.length} leagues &middot; sorted by top probability</div>\`+
-    leagueList.map(([league,matches])=>{
-      const maxProb=Math.max(...matches.map(p=>p.prob));
-      const probCol=maxProb>=35?"#16a34a":maxProb>=20?"#d97706":"#6b7280";
-      const critCount=matches.filter(p=>p.keySignals.some(s=>s.impact==="critical")).length;
-      const leagueEsc=league.replace(/\\/g,"\\\\").replace(/'/g,"\\'");
-      return \`<div class="league-card" onclick="selectLeague('\${leagueEsc}')">
-        <div style="flex:1;min-width:0;margin-right:12px">
-          <div style="font-size:19px;font-weight:700;color:#111827;margin-bottom:4px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">\${league}</div>
-          <div style="font-size:15px;color:#6b7280">\${matches.length} match\${matches.length>1?"es":""}\${critCount>0?\` &middot; <span style="color:#15803d;font-weight:600">\${critCount} with critical signals</span>\`:""}</div>
-        </div>
-        <div style="text-align:right;flex-shrink:0">
-          <div style="font-size:28px;font-weight:800;color:\${probCol}">\${maxProb}%</div>
-          <div style="font-size:13px;color:#9ca3af">top match</div>
-        </div>
-      </div>\`;
-    }).join("");
-}
-function selectLeague(league){activeLeague=league;renderMatchList();}
-function backToLeagues(){activeLeague=null;renderLeagueList();}
-function renderMatchList(){
-  const matches=ALL_PREDS.filter(p=>p.matchDate===activeDate&&p.league===activeLeague).sort((a,b)=>b.prob-a.prob);
-  document.getElementById("mainView").innerHTML=
-    \`<div style="display:flex;align-items:center;gap:12px;margin-bottom:16px">
-      <button class="back-btn" onclick="backToLeagues()">&#8592; Back</button>
-      <div style="font-size:20px;font-weight:700;color:#111827">\${activeLeague}</div>
-    </div>\`+
-    matches.map(renderMatchCard).join("");
-}
-function shortName(n){return n.split(" ").slice(0,2).join(" ");}
-function renderMatchCard(m){
-  const probCol=m.prob>=35?"#16a34a":m.prob>=20?"#d97706":"#6b7280";
-  const probBg=m.prob>=35?"#f0fdf4":m.prob>=20?"#fffbeb":"#f9fafb";
-  const probBorder=m.prob>=35?"#bbf7d0":m.prob>=20?"#fde68a":"#e5e7eb";
-  const probLabel=m.prob>=35?"&#128293; HIGH":m.prob>=20?"&#9889; MED":"&#10052;&#65039; LOW";
-  const dt=new Date(m.dt).toLocaleString("en-GB",{weekday:"short",day:"2-digit",month:"short",hour:"2-digit",minute:"2-digit"});
-  const keyBadges=m.keySignals.map(s=>{
-    const bg=s.impact==="critical"?"#14532d":s.impact==="strong"?"#bbf7d0":"#fef9c3";
-    const col=s.impact==="critical"?"#fff":s.impact==="strong"?"#166534":"#854d0e";
-    return \`<span style="display:inline-flex;align-items:center;gap:4px;padding:4px 10px;font-size:13px;border-radius:12px;background:\${bg};color:\${col};margin:2px;font-weight:600">\${s.label} \${s.val}</span>\`;
-  }).join("");
-  const sigRows=m.signals.map((s,i)=>{
-    const impBg=s.impact==="critical"?"#14532d":s.impact==="strong"?"#bbf7d0":"#fef9c3";
-    const impCol=s.impact==="critical"?"#fff":s.impact==="strong"?"#166534":"#854d0e";
-    const hCol=s.hGood?"#15803d":"#dc2626";
-    const aCol=s.aVal===""?"#9ca3af":s.aGood?"#15803d":"#dc2626";
-    return \`<tr style="background:\${i%2===0?"#fff":"#f9fafb"}">
-      <td class="col-signal" style="padding:6px 8px;font-size:13px;color:#374151">
-        <span style="display:inline-block;padding:1px 5px;border-radius:3px;font-size:11px;background:\${impBg};color:\${impCol};margin-right:4px;font-weight:600">\${s.impact[0].toUpperCase()}</span>\${s.label}
-      </td>
-      <td class="col-val" style="padding:6px 6px;text-align:center;font-size:14px;font-weight:700;color:\${hCol}">\${s.hVal}</td>
-      <td class="col-thresh" style="padding:6px 6px;text-align:center;font-size:12px;color:#9ca3af">\${s.threshold}</td>
-      <td class="col-val" style="padding:6px 6px;text-align:center;font-size:14px;font-weight:700;color:\${aCol}">\${s.aVal}</td>
-    </tr>\`;
-  }).join("");
-  const chip=g=>\`<span style="display:inline-block;padding:3px 8px;font-size:13px;border-radius:3px;margin:2px;border:1px solid \${g.fhTotal>1?"#bbf7d0":"#e5e7eb"};background:\${g.fhTotal>1?"#f0fdf4":"#f9fafb"};color:\${g.fhTotal>1?"#16a34a":"#6b7280"}">FH \${g.fhTotal}&middot;FT \${g.ftTotal}</span>\`;
-  const h2hRows=(m.h2h||[]).map(g=>{
-    const ht=g.htH+g.htA;
-    return \`<tr style="border-bottom:1px solid #f3f4f6">
-      <td style="padding:5px 8px;font-size:13px;color:#6b7280">\${g.home} vs \${g.away}</td>
-      <td style="padding:5px 8px;font-size:13px;text-align:center;font-weight:700;color:\${ht>=2?"#16a34a":"#374151"}">HT \${g.htH}-\${g.htA}</td>
-      <td style="padding:5px 8px;font-size:13px;text-align:center;color:#6b7280">FT \${g.ftH}-\${g.ftA}</td>
-    </tr>\`;
-  }).join("");
-  const h2hHits=(m.h2h||[]).filter(g=>g.htH+g.htA>=2).length;
-  const h2hTotal=(m.h2h||[]).length;
-  return \`<div class="match-card" style="border-left:4px solid \${probCol}">
-    <div style="padding:16px">
-      <div style="font-size:12px;color:#9ca3af;letter-spacing:1px;text-transform:uppercase;margin-bottom:4px">\${m.league}</div>
-      <div style="display:grid;grid-template-columns:1fr auto;gap:10px;align-items:center">
-        <div style="min-width:0">
-          <div style="font-size:13px;color:#9ca3af;margin-bottom:4px">\${dt}</div>
-          <div style="font-size:18px;font-weight:700;color:#111827;margin-bottom:6px;line-height:1.3">\${m.home} <span style="color:#d1d5db;font-weight:400;font-size:14px">vs</span> \${m.away}</div>
-          <div style="font-size:13px;color:#6b7280">Exp FH: <strong style="color:#374151">\${m.expTotal}</strong> &middot; League avg: \${m.halfAvg}</div>
-        </div>
-        <div style="text-align:center;min-width:80px;background:\${probBg};border:1px solid \${probBorder};border-radius:8px;padding:10px 6px;flex-shrink:0">
-          <div style="font-size:33px;font-weight:800;color:\${probCol};line-height:1">\${m.prob}%</div>
-          <div style="font-size:13px;color:\${probCol};margin-top:2px">\${probLabel}</div>
-          <div style="font-size:11px;color:#9ca3af;margin-top:2px">FH OVER 2.5</div>
-        </div>
-      </div>
-      \${keyBadges?'<div style="margin-top:10px;display:flex;flex-wrap:wrap;gap:2px">'+keyBadges+'</div>':""}
-      <details style="margin-top:12px">
-        <summary style="font-size:14px;color:#6b7280;padding:5px 0">&#9660; Show all signals</summary>
-        <div style="padding-top:10px;overflow-x:hidden">
-          <table class="sig-table" style="margin-bottom:14px">
-            <thead><tr style="background:#f3f4f6">
-              <th class="col-signal" style="padding:6px 8px;text-align:left;font-size:12px;color:#6b7280;font-weight:600">Signal</th>
-              <th class="col-val" style="padding:6px 6px;text-align:center;font-size:12px;color:#6b7280;font-weight:600">\${shortName(m.home)}</th>
-              <th class="col-thresh" style="padding:6px 6px;text-align:center;font-size:12px;color:#6b7280;font-weight:600">Thr.</th>
-              <th class="col-val" style="padding:6px 6px;text-align:center;font-size:12px;color:#6b7280;font-weight:600">\${shortName(m.away)}</th>
-            </tr></thead>
-            <tbody>\${sigRows}</tbody>
-          </table>
-          <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:12px">
-            <div>
-              <div style="font-size:13px;font-weight:600;color:#374151;margin-bottom:4px">\${shortName(m.home)}</div>
-              <div>\${m.hChips.map(chip).join("")}</div>
-            </div>
-            <div>
-              <div style="font-size:13px;font-weight:600;color:#374151;margin-bottom:4px">\${shortName(m.away)}</div>
-              <div>\${m.aChips.map(chip).join("")}</div>
-            </div>
-          </div>
-          \${h2hRows?'<div style="font-size:13px;font-weight:600;color:#374151;margin-bottom:6px">H2H &mdash; '+h2hHits+'/'+h2hTotal+' meetings FH &ge;2 goals</div><table style="width:100%;border-collapse:collapse">'+h2hRows+'</table>':""}
-        </div>
-      </details>
-    </div>
-  </div>\`;
-}
-document.getElementById("headerTitle").textContent=fmt(new Date(DATES[0]+"T12:00:00"));
-renderTabs();
-renderLeagueList();
-<\/script>
-</body></html>`;
+  const html="<!DOCTYPE html><html><head>"+
+"<meta charset=\"UTF-8\"><meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">"+
+"<title>First Half Score</title>"+
+"<style>"+
+"*{box-sizing:border-box;margin:0;padding:0}"+
+"body{background:#f3f4f6;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;color:#111827;font-size:15px}"+
+"details>summary::-webkit-details-marker{display:none}"+
+".tab{padding:8px 14px;border-radius:6px;cursor:pointer;font-size:14px;font-weight:600;border:1px solid #e5e7eb;background:#fff;color:#6b7280;transition:all .15s}"+
+".tab.active{background:#111827;color:#fff;border-color:#111827}"+
+".league-card{background:#fff;border:1px solid #e5e7eb;border-radius:8px;padding:16px 18px;margin-bottom:10px;cursor:pointer;display:flex;justify-content:space-between;align-items:center;box-shadow:0 1px 3px rgba(0,0,0,.05);transition:box-shadow .15s}"+
+".league-card:hover{box-shadow:0 3px 8px rgba(0,0,0,.1)}"+
+".back-btn{background:#f3f4f6;border:1px solid #e5e7eb;padding:7px 16px;border-radius:6px;cursor:pointer;font-size:15px;font-weight:600;color:#374151}"+
+".match-card{background:#fff;border:1px solid #e5e7eb;border-radius:8px;overflow:hidden;box-shadow:0 1px 3px rgba(0,0,0,.05);margin-bottom:14px}"+
+"summary{cursor:pointer;user-select:none;list-style:none}"+
+".sig-table{width:100%;border-collapse:collapse;table-layout:fixed;font-size:13px}"+
+".sig-table th{background:#f9fafb;padding:7px 8px;text-align:left;font-size:11px;color:#6b7280;font-weight:600;text-transform:uppercase;letter-spacing:.5px;border-bottom:1px solid #e5e7eb}"+
+".sig-table td{padding:10px 8px;border-bottom:1px solid #f3f4f6;vertical-align:top}"+
+".sig-row-met{background:#f0fdf4}"+
+".sig-row-unmet{background:#fff}"+
+".pill{display:inline-block;padding:2px 8px;border-radius:10px;font-size:11px;font-weight:700}"+
+".pill-met{background:#dcfce7;color:#15803d}"+
+".pill-unmet{background:#fee2e2;color:#dc2626}"+
+".chip{display:inline-block;padding:3px 8px;font-size:12px;border-radius:3px;margin:2px}"+
+"</style>"+
+"</head><body>"+
+"<div id=\"header\" style=\"background:#fff;border-bottom:1px solid #e5e7eb;padding:14px 20px;position:sticky;top:0;z-index:10\">"+
+"  <div style=\"max-width:780px;margin:0 auto\">"+
+"    <div style=\"display:flex;align-items:center;justify-content:space-between;margin-bottom:12px\">"+
+"      <div>"+
+"        <div style=\"font-size:11px;color:#6b7280;letter-spacing:1px;text-transform:uppercase\">&#9917; First Half Score</div>"+
+"        <h1 style=\"font-size:22px;font-weight:800;color:#111827\" id=\"headerTitle\">Loading...</h1>"+
+"      </div>"+
+"      <button onclick=\"location.reload()\" style=\"background:#111827;color:#fff;padding:8px 16px;font-size:14px;border:none;border-radius:6px;font-weight:600;cursor:pointer\">&#8635; Refresh</button>"+
+"    </div>"+
+"    <div id=\"dayTabs\" style=\"display:flex;gap:8px;flex-wrap:wrap\"></div>"+
+"  </div>"+
+"</div>"+
+"<div style=\"padding:16px 20px;max-width:780px;margin:0 auto\">"+
+"  <div style=\"background:#fffbeb;border:1px solid #fde68a;border-radius:8px;padding:12px 16px;margin-bottom:16px;font-size:13px;color:#92400e;line-height:1.6\">"+
+"    <strong>How it works:</strong> 4 data-driven signals, each backed by 3,460 matches. "+
+"    0 signals = 5% chance &nbsp;|&nbsp; 2 signals = 20% &nbsp;|&nbsp; 3 signals = 35% &nbsp;|&nbsp; 4 signals = 45% "+
+"    &nbsp;&#8212; Even at 4/4, 57% of matches do NOT hit FH&gt;2.5 (but 66% of those end FH=2, one goal short)."+
+"  </div>"+
+"  <div id=\"mainView\"></div>"+
+"</div>"+
+"<script>"+
+"const ALL_PREDS="+predsJSON+";"+
+"const DATES="+datesJSON+";"+
+"const DAY_LABELS=[\"Today\",\"Tomorrow\",\"Saturday\",\"Sunday\",\"Monday\"];"+
+"let activeDate=DATES[0];"+
+"let activeLeague=null;"+
+"function fmt(d){return new Date(d).toLocaleDateString(\"en-GB\",{weekday:\"long\",day:\"2-digit\",month:\"short\"})}"+
+"function renderTabs(){"+
+"  const el=document.getElementById(\"dayTabs\");"+
+"  el.innerHTML=DATES.map((d,i)=>{"+
+"    const count=ALL_PREDS.filter(p=>p.matchDate===d).length;"+
+"    return '<button class=\"tab '+(d===activeDate?\"active\":\"\")+\"' onclick=\\\"selectDay('\" + d + \"')\\\">\"+DAY_LABELS[i]+\" <span style=\\\"font-size:12px;opacity:.7\\\">(\"+ count +\")</span></button>\";"+
+"  }).join(\"\");"+
+"}"+
+"function selectDay(d){activeDate=d;activeLeague=null;renderTabs();renderLeagueList();document.getElementById(\"headerTitle\").textContent=fmt(new Date(d+\"T12:00:00\"));}"+
+"function renderLeagueList(){"+
+"  const dayPreds=ALL_PREDS.filter(p=>p.matchDate===activeDate);"+
+"  const leagues={};"+
+"  for(const p of dayPreds){if(!leagues[p.league])leagues[p.league]=[];leagues[p.league].push(p);}"+
+"  const leagueList=Object.entries(leagues).sort((a,b)=>Math.max(...b[1].map(p=>p.prob))-Math.max(...a[1].map(p=>p.prob)));"+
+"  if(!leagueList.length){document.getElementById(\"mainView\").innerHTML='<div style=\"background:#fff;border:1px solid #e5e7eb;border-radius:8px;padding:40px;text-align:center;color:#6b7280\">No matches found for this day.</div>';return;}"+
+"  document.getElementById(\"mainView\").innerHTML="+
+"    '<div style=\"font-size:13px;color:#6b7280;margin-bottom:12px\">'+(dayPreds.length)+' matches across '+(leagueList.length)+' leagues &middot; sorted by probability</div>'+"+
+"    leagueList.map(function(entry){"+
+"      const league=entry[0],matches=entry[1];"+
+"      const maxProb=Math.max(...matches.map(p=>p.prob));"+
+"      const maxN=Math.max(...matches.map(p=>p.nMet));"+
+"      const probCol=maxProb>=35?\"#16a34a\":maxProb>=20?\"#d97706\":\"#6b7280\";"+
+"      const hotCount=matches.filter(p=>p.nMet>=3).length;"+
+"      const leagueEsc=league.replace(/\\\\/g,\"\\\\\\\\\").replace(/'/g,\"\\\\'\");"+
+"      return '<div class=\"league-card\" onclick=\"selectLeague(\\''+leagueEsc+'\\')\">'"+
+"        +'<div style=\"flex:1;min-width:0;margin-right:12px\">'"+
+"        +'<div style=\"font-size:18px;font-weight:700;color:#111827;margin-bottom:3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis\">'+league+'</div>'"+
+"        +'<div style=\"font-size:13px;color:#6b7280\">'+matches.length+' match'+(matches.length>1?'es':'')+(hotCount>0?' &middot; <span style=\"color:#15803d;font-weight:600\">'+hotCount+' with 3+ signals</span>':'')+' </div>'"+
+"        +'</div>'"+
+"        +'<div style=\"text-align:right;flex-shrink:0\">'"+
+"        +'<div style=\"font-size:26px;font-weight:800;color:'+probCol+'\">'+maxProb+'%</div>'"+
+"        +'<div style=\"font-size:11px;color:#9ca3af;margin-top:1px\">'+maxN+'/4 signals</div>'"+
+"        +'</div></div>';"+
+"    }).join(\"\");"+
+"}"+
+"function selectLeague(league){activeLeague=league;renderMatchList();}"+
+"function backToLeagues(){activeLeague=null;renderLeagueList();}"+
+"function renderMatchList(){"+
+"  const matches=ALL_PREDS.filter(p=>p.matchDate===activeDate&&p.league===activeLeague).sort((a,b)=>b.prob-a.prob);"+
+"  document.getElementById(\"mainView\").innerHTML="+
+"    '<div style=\"display:flex;align-items:center;gap:12px;margin-bottom:16px\">'"+
+"    +'<button class=\"back-btn\" onclick=\"backToLeagues()\">&#8592; Back</button>'"+
+"    +'<div style=\"font-size:19px;font-weight:700;color:#111827\">'+activeLeague+'</div>'"+
+"    +'</div>'"+
+"    +matches.map(renderMatchCard).join(\"\");"+
+"}"+
+"function shortName(n){return n.split(\" \").slice(0,2).join(\" \");}"+
+"function renderMatchCard(m){"+
+"  const probCol=m.prob>=35?\"#16a34a\":m.prob>=20?\"#d97706\":\"#6b7280\";"+
+"  const probBg=m.prob>=35?\"#f0fdf4\":m.prob>=20?\"#fffbeb\":\"#f9fafb\";"+
+"  const probBorder=m.prob>=35?\"#bbf7d0\":m.prob>=20?\"#fde68a\":\"#e5e7eb\";"+
+"  const probLabel=m.prob>=35?\"&#128293; HIGH\":m.prob>=20?\"&#9889; MED\":\"&#10052; LOW\";"+
+"  const dt=new Date(m.dt).toLocaleString(\"en-GB\",{weekday:\"short\",day:\"2-digit\",month:\"short\",hour:\"2-digit\",minute:\"2-digit\"});"+
+"  const dots=m.signals.map(s=>'<span title=\"'+s.label+'\" style=\"display:inline-block;width:12px;height:12px;border-radius:50%;background:'+(s.met?\"#16a34a\":\"#e5e7eb\")+';margin-right:3px\"></span>').join(\"\");"+
+"  const sigRows=m.signals.map(function(s){"+
+"    const valCol=s.met?\"#15803d\":\"#dc2626\";"+
+"    return '<tr class=\"sig-row-'+(s.met?\"met\":\"unmet\")+'\">'"+
+"      +'<td style=\"padding:10px 8px;border-bottom:1px solid #f3f4f6\">'"+
+"      +'<div style=\"font-weight:600;color:#111827;margin-bottom:2px\">'+s.label+'</div>'"+
+"      +'<div style=\"font-size:11px;color:#9ca3af\">'+s.desc+'</div></td>'"+
+"      +'<td style=\"padding:10px 8px;border-bottom:1px solid #f3f4f6;text-align:center\"><div style=\"font-weight:700;color:#374151;font-size:13px\">'+s.hVal+'</div></td>'"+
+"      +'<td style=\"padding:10px 8px;border-bottom:1px solid #f3f4f6;text-align:center\"><div style=\"font-weight:700;color:#374151;font-size:13px\">'+s.aVal+'</div></td>'"+
+"      +'<td style=\"padding:10px 8px;border-bottom:1px solid #f3f4f6;text-align:center\">'"+
+"      +'<div style=\"font-weight:800;font-size:14px;color:'+valCol+'\">'+s.combinedVal+'</div>'"+
+"      +'<div style=\"font-size:10px;color:#9ca3af\">'+s.threshold+'</div></td>'"+
+"      +'<td style=\"padding:10px 8px;border-bottom:1px solid #f3f4f6;text-align:center\">'"+
+"      +'<span class=\"pill pill-'+(s.met?\"met\":\"unmet\")+'\">'+(s.met?\"&#10003; MET\":\"&#10007; MISS\")+' </span>'"+
+"      +'<div style=\"font-size:10px;color:#9ca3af;margin-top:3px\">'+s.lift+'</div></td>'"+
+"      +'</tr>';"+
+"  }).join(\"\");"+
+"  const h2hRows=(m.h2h||[]).map(function(g){"+
+"    const ht=g.htH+g.htA;"+
+"    return '<tr style=\"border-bottom:1px solid #f3f4f6\">'"+
+"      +'<td style=\"padding:5px 8px;font-size:12px;color:#6b7280\">'+g.home+' vs '+g.away+'</td>'"+
+"      +'<td style=\"padding:5px 8px;font-size:13px;text-align:center;font-weight:700;color:'+(ht>=2?\"#16a34a\":\"#374151\")+'\">HT '+g.htH+'-'+g.htA+'</td>'"+
+"      +'<td style=\"padding:5px 8px;font-size:12px;text-align:center;color:#6b7280\">FT '+g.ftH+'-'+g.ftA+'</td>'"+
+"      +'</tr>';"+
+"  }).join(\"\");"+
+"  const h2hHits=(m.h2h||[]).filter(g=>g.htH+g.htA>=2).length;"+
+"  const chip=function(g){return '<span class=\"chip\" style=\"border:1px solid '+(g.fhTotal>1?\"#bbf7d0\":\"#e5e7eb\")+';background:'+(g.fhTotal>1?\"#f0fdf4\":\"#f9fafb\")+';color:'+(g.fhTotal>1?\"#16a34a\":\"#6b7280\")+'\">FH '+g.fhTotal+'&middot;FT '+g.ftTotal+'</span>';};"+
+"  const smallWarn=m.smallSample?'<span style=\"background:#fef3c7;color:#92400e;font-size:11px;padding:2px 7px;border-radius:4px;margin-left:8px;font-weight:600\">&#9888; small sample</span>':\"\";"+
+"  return '<div class=\"match-card\" style=\"border-left:4px solid '+probCol+'\">'"+
+"    +'<div style=\"padding:16px\">'"+
+"    +'<div style=\"font-size:11px;color:#9ca3af;letter-spacing:1px;text-transform:uppercase;margin-bottom:4px\">'+m.league+'</div>'"+
+"    +'<div style=\"display:grid;grid-template-columns:1fr auto;gap:10px;align-items:start;margin-bottom:12px\">'"+
+"    +'<div style=\"min-width:0\">'"+
+"    +'<div style=\"font-size:12px;color:#9ca3af;margin-bottom:3px\">'+dt+smallWarn+'</div>'"+
+"    +'<div style=\"font-size:17px;font-weight:700;color:#111827;margin-bottom:5px;line-height:1.3\">'+m.home+' <span style=\"color:#d1d5db;font-weight:400;font-size:13px\">vs</span> '+m.away+'</div>'"+
+"    +'<div style=\"display:flex;align-items:center;gap:8px\">'+dots+'<span style=\"font-size:12px;color:#6b7280\">'+m.nMet+'/4 signals met</span></div>'"+
+"    +'<div style=\"font-size:12px;color:#6b7280;margin-top:4px\">Exp FH: <strong style=\"color:#374151\">'+m.expFH+'</strong> &middot; League avg: '+m.leagueAvg+'</div>'"+
+"    +'</div>'"+
+"    +'<div style=\"text-align:center;min-width:76px;background:'+probBg+';border:1px solid '+probBorder+';border-radius:8px;padding:10px 6px;flex-shrink:0\">'"+
+"    +'<div style=\"font-size:30px;font-weight:800;color:'+probCol+';line-height:1\">'+m.prob+'%</div>'"+
+"    +'<div style=\"font-size:12px;color:'+probCol+';margin-top:2px\">'+probLabel+'</div>'"+
+"    +'<div style=\"font-size:10px;color:#9ca3af;margin-top:2px\">FH OVER 2.5</div>'"+
+"    +'</div></div>'"+
+"    +'<details>'"+
+"    +'<summary style=\"font-size:13px;color:#6b7280;padding:5px 0;border-top:1px solid #f3f4f6\">&#9660; Show signal detail</summary>'"+
+"    +'<div style=\"padding-top:10px\">'"+
+"    +'<table class=\"sig-table\" style=\"margin-bottom:14px\">'"+
+"    +'<thead><tr>'"+
+"    +'<th style=\"width:30%\">Signal</th>'"+
+"    +'<th style=\"width:16%;text-align:center\">'+shortName(m.home)+'</th>'"+
+"    +'<th style=\"width:16%;text-align:center\">'+shortName(m.away)+'</th>'"+
+"    +'<th style=\"width:18%;text-align:center\">Combined</th>'"+
+"    +'<th style=\"width:20%;text-align:center\">Result</th>'"+
+"    +'</tr></thead>'"+
+"    +'<tbody>'+sigRows+'</tbody></table>'"+
+"    +'<div style=\"display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:12px\">'"+
+"    +'<div><div style=\"font-size:12px;font-weight:600;color:#374151;margin-bottom:4px\">'+shortName(m.home)+'</div>'+m.hChips.map(chip).join(\"\")+'</div>'"+
+"    +'<div><div style=\"font-size:12px;font-weight:600;color:#374151;margin-bottom:4px\">'+shortName(m.away)+'</div>'+m.aChips.map(chip).join(\"\")+'</div>'"+
+"    +'</div>'"+
+"    +(h2hRows?'<div style=\"font-size:12px;font-weight:600;color:#374151;margin-bottom:5px\">H2H &mdash; '+h2hHits+'/'+m.h2h.length+' meetings with FH &ge;2 goals</div><table style=\"width:100%;border-collapse:collapse\">'+h2hRows+'</table>':\"\")"+
+"    +'</div></details></div></div>';"+
+"}"+
+"document.getElementById(\"headerTitle\").textContent=fmt(new Date(DATES[0]+\"T12:00:00\"));"+
+"renderTabs();"+
+"renderLeagueList();"+
+"<\/script>"+
+"</body></html>";
   return html;
 }
 
