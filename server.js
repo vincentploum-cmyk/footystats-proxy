@@ -29,18 +29,19 @@ const pctF=(arr,fn)=>arr.length?arr.filter(fn).length/arr.length:0;
 const pm=t=>{const m=String(t).match(/^(\d+)/);return m?parseInt(m[1]):null};
 const safe=v=>isNaN(v)||!isFinite(v)?0:v;
 
-const getDates=()=>{
-  const today=new Date();
+const getDates=(tzOffset=0)=>{
+  const now=new Date();
+  const local=new Date(now.getTime()+tzOffset*60*1000);
   const fmt=d=>{
-    const y=d.getFullYear();
-    const m=String(d.getMonth()+1).padStart(2,"0");
-    const day=String(d.getDate()).padStart(2,"0");
+    const y=d.getUTCFullYear();
+    const m=String(d.getUTCMonth()+1).padStart(2,"0");
+    const day=String(d.getUTCDate()).padStart(2,"0");
     return y+"-"+m+"-"+day;
   };
   const dates=[];
   for(let i=0;i<4;i++){
-    const d=new Date(today);
-    d.setDate(today.getDate()+i);
+    const d=new Date(local);
+    d.setUTCDate(local.getUTCDate()+i);
     dates.push(fmt(d));
   }
   return[...new Set(dates)];
@@ -90,7 +91,8 @@ app.get("/fetch-all-data",async(req,res)=>{
 
 app.get("/",async(req,res)=>{
   try{
-    const dates=getDates();
+    const tzOffset=parseInt(req.query.tz||"0");
+    const dates=getDates(tzOffset);
     const dayResults=await Promise.all(dates.map(d=>ftch(BASE+"/todays-matches?date="+d+"&key="+KEY)));
     const allFixtures=[];
     for(let i=0;i<dates.length;i++){
@@ -234,7 +236,7 @@ function buildHTML(preds,dates){
   H+="<!DOCTYPE html><html><head>";
   H+="<meta charset=\"UTF-8\">";
   H+="<meta name=\"viewport\" content=\"width=device-width,initial-scale=1\">";
-  H+="<title>First Half Score</title>";
+  H+="<title>First Half Score</title>";H+="<script>(function(){var p=new URLSearchParams(window.location.search);if(!p.has('tz')){p.set('tz',-new Date().getTimezoneOffset());window.location.search=p.toString();}})();</script>";
   H+="<style>";
   H+="*{box-sizing:border-box;margin:0;padding:0}";
   H+="body{background:#f3f4f6;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',sans-serif;color:#111827;font-size:15px}";
