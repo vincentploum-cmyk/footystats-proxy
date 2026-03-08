@@ -121,7 +121,7 @@ app.get("/",async(req,res)=>{
       }catch(e){}
 
       const fixtures=leagueFixtures[sid]||[];
-      if(completed.length<5){continue;}
+      if(completed.length<2){continue;}
 
       const team={};
       const en=n=>{if(!team[n])team[n]={h:[],a:[]};};
