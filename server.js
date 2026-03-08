@@ -109,6 +109,16 @@ app.get("/",async(req,res)=>{
     const activeLeagues=Object.keys(leagueFixtures);
     const preds=[];
 
+    // Fallback to previous season for stats when current season has no data yet
+    const PREV_SEASON={
+      16504:13973, // MLS 2026 -> MLS 2025
+      16544:11321, // Brazil 2026 -> Brazil 2025
+      16571:15746, // Argentina 2026 -> Argentina 2025
+      16614:14086, // Colombia 2026 -> Colombia 2025
+      16615:14116, // Chile 2026 -> Chile 2025
+      16036:13703, // Australia 2026 -> Australia 2025
+    };
+
     for(const sid of activeLeagues.slice(0,20)){
       let completed=[];
       try{
@@ -123,6 +133,16 @@ app.get("/",async(req,res)=>{
         if(completed.length<2&&maxPage>1){
           const p2=await ftch(BASE+"/league-matches?season_id="+sid+"&max_per_page=150&page="+maxPage+"&key="+KEY);
           completed=completed.concat((p2.data||[]).filter(m=>m.status==="complete").map(mapM));
+        }
+        // If still not enough, fall back to previous season
+        if(completed.length<2&&PREV_SEASON[sid]){
+          const prev=await ftch(BASE+"/league-matches?season_id="+PREV_SEASON[sid]+"&max_per_page=300&page=1&key="+KEY);
+          const prevMax=prev.pager?prev.pager.max_page:1;
+          completed=(prev.data||[]).filter(m=>m.status==="complete").map(mapM);
+          if(prevMax>1){
+            const prev2=await ftch(BASE+"/league-matches?season_id="+PREV_SEASON[sid]+"&max_per_page=300&page="+prevMax+"&key="+KEY);
+            completed=completed.concat((prev2.data||[]).filter(m=>m.status==="complete").map(mapM));
+          }
         }
       }catch(e){}
 
@@ -222,7 +242,12 @@ app.get("/",async(req,res)=>{
           prob,nMet,signals,h2h:h2h.slice(0,6),
           hChips:[].concat(ht.h,ht.a).sort((x,y)=>y.date-x.date).slice(0,6).map(g=>({fhTotal:g.fh_total,ftTotal:g.ft_total})),
           aChips:[].concat(at.h,at.a).sort((x,y)=>y.date-x.date).slice(0,6).map(g=>({fhTotal:g.fh_total,ftTotal:g.ft_total})),
-          smallSample:hGames.length<6||aGames.length<6
+          smallSample:hGames.length<6||aGames.length<6,
+          status:fixture.status||"incomplete",
+          fhH:parseInt(fixture.ht_goals_team_a||0),
+          fhA:parseInt(fixture.ht_goals_team_b||0),
+          ftH:parseInt(fixture.homeGoalCount||0),
+          ftA:parseInt(fixture.awayGoalCount||0)
         });
       }
     }
