@@ -256,6 +256,7 @@ function buildHTML(preds,dates){
   H+=".pill-unmet{background:#fee2e2;color:#dc2626}";
   H+=".chip{display:inline-block;padding:3px 8px;font-size:12px;border-radius:3px;margin:2px}";
   H+="</style></head><body>";
+
   H+="<div id=\"header\" style=\"background:#fff;border-bottom:1px solid #e5e7eb;padding:14px 20px;position:sticky;top:0;z-index:10\">";
   H+="<div style=\"max-width:780px;margin:0 auto\">";
   H+="<div style=\"display:flex;align-items:center;justify-content:space-between;margin-bottom:12px\">";
@@ -267,6 +268,7 @@ function buildHTML(preds,dates){
   H+="</div>";
   H+="<div id=\"dayTabs\" style=\"display:flex;gap:8px;flex-wrap:wrap\"></div>";
   H+="</div></div>";
+
   H+="<div style=\"padding:16px 20px;max-width:780px;margin:0 auto\">";
   H+="<div style=\"background:#fffbeb;border:1px solid #fde68a;border-radius:8px;padding:12px 16px;margin-bottom:16px;font-size:13px;color:#92400e;line-height:1.6\">";
   H+="<strong>How it works:</strong> 4 data-driven signals, each backed by 3,460 matches. ";
@@ -275,13 +277,16 @@ function buildHTML(preds,dates){
   H+="</div>";
   H+="<div id=\"mainView\"></div>";
   H+="</div>";
+
   H+="<script>";
   H+="var ALL_PREDS="+predsJSON+";";
   H+="var DATES="+datesJSON+";";
   H+="var DAY_LABELS=[\"Today\",\"Tomorrow\",\"Day 3\",\"Day 4\",\"Day 5\"];";
   H+="var activeDate=DATES[0];";
   H+="var activeLeague=null;";
+
   H+="function fmt(d){return new Date(d).toLocaleDateString(\"en-GB\",{weekday:\"long\",day:\"2-digit\",month:\"short\"});}";
+
   H+="function renderTabs(){";
   H+="  var el=document.getElementById(\"dayTabs\");";
   H+="  var html=\"\";";
@@ -290,10 +295,11 @@ function buildHTML(preds,dates){
   H+="    var count=ALL_PREDS.filter(function(p){return p.matchDate===d;}).length;";
   H+="    var cls=d===activeDate?\"tab active\":\"tab\";";
   H+="    var lbl=DAY_LABELS[i]||d;";
-  H+="    html+=\"<button class=\\\"\"+cls+\"\\\" onclick=\\\"selectDay(\"+i+\")\\\">\" +lbl+\" <span style=\\\"font-size:12px;opacity:.7\\\">(\"+ count +\")</span></button>\";";
+  H+="    html+=\"<button class=\\\"\"+cls+\"\\\" onclick=\\\"selectDay(\"+i+\")\\\">\"+lbl+\" <span style=\\\"font-size:12px;opacity:.7\\\">(\"+count+\")</span></button>\";";
   H+="  }";
   H+="  el.innerHTML=html;";
   H+="}";
+
   H+="function selectDay(i){";
   H+="  activeDate=DATES[i];";
   H+="  activeLeague=null;";
@@ -301,6 +307,7 @@ function buildHTML(preds,dates){
   H+="  renderLeagueList();";
   H+="  document.getElementById(\"headerTitle\").textContent=fmt(new Date(DATES[i]+\"T12:00:00\"));";
   H+="}";
+
   H+="function renderLeagueList(){";
   H+="  var dayPreds=ALL_PREDS.filter(function(p){return p.matchDate===activeDate;});";
   H+="  var leagueMap={};";
@@ -324,9 +331,9 @@ function buildHTML(preds,dates){
   H+="    var maxN=Math.max.apply(null,matches.map(function(p){return p.nMet;}));";
   H+="    var probCol=maxProb>=35?\"#16a34a\":maxProb>=20?\"#d97706\":\"#6b7280\";";
   H+="    var hotCount=matches.filter(function(p){return p.nMet>=3;}).length;";
-  H+="    var hotStr=hotCount>0?\" &middot; <span style=\\\"color:#15803d;font-weight:600\\\">\"+hotCount+\" with 3+ signals</span>\":\"\";";
+  H+="    var hotStr=hotCount>0?\" &middot; <span style=\\\"color:#15803d;font-weight:600\\\">\"+ hotCount+\" with 3+ signals</span>\":\"\";";
   H+="    var safeLeague=league.replace(/\\\\/g,\"\\\\\\\\\").replace(/'/g,\"\\\\'\");";
-  H+="    html+=\"<div class=\\\"league-card\\\" onclick=\\\"selectLeague('\"+safeLeague+\"')\\\">\";";
+  H+="    html+=\"<div class=\\\"league-card\\\" onclick=\\\"selectLeague('\"+ safeLeague +\"')\\\">\";";
   H+="    html+=\"<div style=\\\"flex:1;min-width:0;margin-right:12px\\\">\";";
   H+="    html+=\"<div style=\\\"font-size:18px;font-weight:700;color:#111827;margin-bottom:3px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis\\\">\"+league+\"</div>\";";
   H+="    html+=\"<div style=\\\"font-size:13px;color:#6b7280\\\">\"+matches.length+\" match\"+(matches.length>1?\"es\":\"\")+hotStr+\"</div>\";";
@@ -338,8 +345,10 @@ function buildHTML(preds,dates){
   H+="  }";
   H+="  document.getElementById(\"mainView\").innerHTML=html;";
   H+="}";
+
   H+="function selectLeague(league){activeLeague=league;renderMatchList();}";
   H+="function backToLeagues(){activeLeague=null;renderLeagueList();}";
+
   H+="function renderMatchList(){";
   H+="  var matches=ALL_PREDS.filter(function(p){return p.matchDate===activeDate&&p.league===activeLeague;}).sort(function(a,b){return b.prob-a.prob;});";
   H+="  var html=\"<div style=\\\"display:flex;align-items:center;gap:12px;margin-bottom:16px\\\">\";";
@@ -348,7 +357,9 @@ function buildHTML(preds,dates){
   H+="  for(var i=0;i<matches.length;i++)html+=renderMatchCard(matches[i]);";
   H+="  document.getElementById(\"mainView\").innerHTML=html;";
   H+="}";
+
   H+="function shortName(n){return n.split(\" \").slice(0,2).join(\" \");}";
+
   H+="function renderMatchCard(m){";
   H+="  var probCol=m.prob>=35?\"#16a34a\":m.prob>=20?\"#d97706\":\"#6b7280\";";
   H+="  var probBg=m.prob>=35?\"#f0fdf4\":m.prob>=20?\"#fffbeb\":\"#f9fafb\";";
@@ -393,6 +404,7 @@ function buildHTML(preds,dates){
   H+="    h2hRows+=\"<td style=\\\"padding:5px 8px;font-size:13px;text-align:center;font-weight:700;color:\"+htCol+\"\\\">HT \"+g.htH+\"-\"+g.htA+\"</td>\";";
   H+="    h2hRows+=\"<td style=\\\"padding:5px 8px;font-size:12px;text-align:center;color:#6b7280\\\">FT \"+g.ftH+\"-\"+g.ftA+\"</td></tr>\";";
   H+="  }";
+  H+="  var chips=\"\";";
   H+="  function mkChip(g){";
   H+="    var bc=g.fhTotal>1?\"#bbf7d0\":\"#e5e7eb\";";
   H+="    var bg=g.fhTotal>1?\"#f0fdf4\":\"#f9fafb\";";
@@ -440,7 +452,8 @@ function buildHTML(preds,dates){
   H+="  html+=\"</div></details></div></div>\";";
   H+="  return html;";
   H+="}";
-  H+="document.getElementById(\"headerTitle\").textContent=fmt(new Date(DATES[0]+\"T12:00:00\"));";
+
+  H+="document.getElementById(\"headerTitle\").textContent=fmt(new Date());";
   H+="renderTabs();";
   H+="renderLeagueList();";
   H+="<\/script></body></html>";
