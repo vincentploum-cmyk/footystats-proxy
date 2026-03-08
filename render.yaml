@@ -1,0 +1,15 @@
+services:
+  - type: web
+    name: footystats-proxy
+    env: node
+    plan: free
+    buildCommand: npm install
+    startCommand: node server.js
+    healthCheckPath: /
+
+  - type: cron
+    name: keep-alive
+    env: node
+    schedule: "*/5 * * * *"
+    buildCommand: npm install
+    startCommand: node -e "require('https').get('https://footystats-proxy.onrender.com/')"
