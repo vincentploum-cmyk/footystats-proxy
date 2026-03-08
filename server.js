@@ -112,14 +112,18 @@ app.get("/",async(req,res)=>{
     for(const sid of activeLeagues.slice(0,20)){
       let completed=[];
       try{
-        const p1=await ftch(BASE+"/league-matches?season_id="+sid+"&max_per_page=150&page=1&key="+KEY);
-        completed=(p1.data||[]).filter(m=>m.status==="complete").map(m=>({
-          home_name:m.home_name,away_name:m.away_name,
+        const mapM=m=>({home_name:m.home_name,away_name:m.away_name,
           ht_goals_team_a:m.ht_goals_team_a,ht_goals_team_b:m.ht_goals_team_b,
           homeGoalCount:m.homeGoalCount,awayGoalCount:m.awayGoalCount,
           homeGoals_timings:m.homeGoals_timings,awayGoals_timings:m.awayGoals_timings,
-          date_unix:m.date_unix
-        }));
+          date_unix:m.date_unix});
+        const p1=await ftch(BASE+"/league-matches?season_id="+sid+"&max_per_page=150&page=1&key="+KEY);
+        const maxPage=p1.pager?p1.pager.max_page:1;
+        completed=(p1.data||[]).filter(m=>m.status==="complete").map(mapM);
+        if(completed.length<2&&maxPage>1){
+          const p2=await ftch(BASE+"/league-matches?season_id="+sid+"&max_per_page=150&page="+maxPage+"&key="+KEY);
+          completed=completed.concat((p2.data||[]).filter(m=>m.status==="complete").map(mapM));
+        }
       }catch(e){}
 
       const fixtures=leagueFixtures[sid]||[];
@@ -286,6 +290,10 @@ function buildHTML(preds,dates){
   H+="var DAY_LABELS=[\"Today\",\"Tomorrow\",\"Day 3\",\"Day 4\",\"Day 5\"];";
   H+="var activeDate=DATES[0];";
   H+="var activeLeague=null;";
+  H+="function localDateStr(ts){var d=new Date(ts);return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0');}";
+  H+="ALL_PREDS.forEach(function(p){p.matchDate=localDateStr(p.dt);});";
+  H+="var allDates=[...new Set(ALL_PREDS.map(function(p){return p.matchDate;}))].sort();";
+  H+="DATES=allDates;activeDate=DATES[0]||activeDate;";
 
   H+="function fmt(d){return new Date(d).toLocaleDateString(\"en-GB\",{weekday:\"long\",day:\"2-digit\",month:\"short\"});}";
 
