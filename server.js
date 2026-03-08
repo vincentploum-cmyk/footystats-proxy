@@ -119,7 +119,7 @@ app.get("/",async(req,res)=>{
       16036:13703, // Australia 2026 -> Australia 2025
     };
 
-    for(const sid of activeLeagues.slice(0,20)){
+    for(const sid of activeLeagues){
       let completed=[];
       try{
         const mapM=m=>({home_name:m.home_name,away_name:m.away_name,
@@ -467,7 +467,8 @@ function buildHTML(preds,dates){
   H+="  html+='<div style=\"font-size:11px;color:#9ca3af;font-weight:600\">FH</div>';";
   H+="  html+='<div style=\"font-size:24px;font-weight:800;color:'+rfc+';line-height:1.1\">'+m.fhH+'-'+m.fhA+'</div>';";
   H+="  html+='<div style=\"font-size:10px;color:#9ca3af;margin-top:5px;font-weight:600\">FT</div>';";
-  H+="  html+='<div style=\"font-size:16px;font-weight:700;color:#374151;line-height:1.1\">'+m.ftH+'-'+m.ftA+'</div></div>';";
+  H+="  html+='<div style=\"font-size:16px;font-weight:700;color:#374151;line-height:1.1\">'+m.ftH+'-'+m.ftA+'</div>';";
+  H+="  html+='<div style=\"font-size:11px;color:'+probCol+';margin-top:5px;font-weight:700\">'+m.prob+'% pre</div></div>';";
   H+="  }else{";
   H+="  html+='<div style=\"text-align:center;min-width:76px;background:'+probBg+';border:1px solid '+probBorder+';border-radius:8px;padding:10px 6px;flex-shrink:0\">';";
   H+="  html+='<div style=\"font-size:30px;font-weight:800;color:'+probCol+';line-height:1\">'+m.prob+'%</div>';";
