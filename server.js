@@ -134,15 +134,18 @@ app.get("/",async(req,res)=>{
           const p2=await ftch(BASE+"/league-matches?season_id="+sid+"&max_per_page=150&page="+maxPage+"&key="+KEY);
           completed=completed.concat((p2.data||[]).filter(m=>m.status==="complete").map(mapM));
         }
-        // If still not enough, fall back to previous season
+        // If still not enough, fall back to previous season (last 60 matches only)
         if(completed.length<2&&PREV_SEASON[sid]){
           const prev=await ftch(BASE+"/league-matches?season_id="+PREV_SEASON[sid]+"&max_per_page=300&page=1&key="+KEY);
           const prevMax=prev.pager?prev.pager.max_page:1;
-          completed=(prev.data||[]).filter(m=>m.status==="complete").map(mapM);
-          if(prevMax>1){
-            const prev2=await ftch(BASE+"/league-matches?season_id="+PREV_SEASON[sid]+"&max_per_page=300&page="+prevMax+"&key="+KEY);
-            completed=completed.concat((prev2.data||[]).filter(m=>m.status==="complete").map(mapM));
-          }
+          const fetchPrevPage=async(pg)=>{
+            const r=await ftch(BASE+"/league-matches?season_id="+PREV_SEASON[sid]+"&max_per_page=300&page="+pg+"&key="+KEY);
+            return (r.data||[]).filter(m=>m.status==="complete").map(mapM);
+          };
+          // Fetch last page of prev season (most recent matches)
+          const lastPg=await fetchPrevPage(prevMax);
+          const secLastPg=prevMax>1?await fetchPrevPage(Math.max(1,prevMax-1)):[];
+          completed=secLastPg.concat(lastPg).slice(-60);
         }
       }catch(e){}
 
@@ -317,8 +320,6 @@ function buildHTML(preds,dates){
   H+="var activeLeague=null;";
   H+="function localDateStr(ts){var d=new Date(ts);return d.getFullYear()+'-'+String(d.getMonth()+1).padStart(2,'0')+'-'+String(d.getDate()).padStart(2,'0');}";
   H+="ALL_PREDS.forEach(function(p){p.matchDate=localDateStr(p.dt);});";
-  H+="var allDates=[...new Set(ALL_PREDS.map(function(p){return p.matchDate;}))].sort();";
-  H+="DATES=allDates;activeDate=DATES[0]||activeDate;";
 
   H+="function fmt(d){return new Date(d).toLocaleDateString(\"en-GB\",{weekday:\"long\",day:\"2-digit\",month:\"short\"});}";
 
@@ -461,10 +462,18 @@ function buildHTML(preds,dates){
   H+="  html+=\"<div style=\\\"display:flex;align-items:center;gap:8px\\\">\"+dots+\"<span style=\\\"font-size:12px;color:#6b7280\\\">\"+m.nMet+\"/4 signals met</span></div>\";";
   H+="  html+=\"<div style=\\\"font-size:12px;color:#6b7280;margin-top:4px\\\">Exp FH: <strong style=\\\"color:#374151\\\">\"+m.expFH+\"</strong> &middot; League avg: \"+m.leagueAvg+\"</div>\";";
   H+="  html+=\"</div>\";";
-  H+="  html+=\"<div style=\\\"text-align:center;min-width:76px;background:\"+probBg+\";border:1px solid \"+probBorder+\";border-radius:8px;padding:10px 6px;flex-shrink:0\\\">\";";
-  H+="  html+=\"<div style=\\\"font-size:30px;font-weight:800;color:\"+probCol+\";line-height:1\\\">\"+m.prob+\"%</div>\";";
-  H+="  html+=\"<div style=\\\"font-size:12px;color:\"+probCol+\";margin-top:2px\\\">\"+probLabel+\"</div>\";";
-  H+="  html+=\"<div style=\\\"font-size:10px;color:#9ca3af;margin-top:2px\\\">FH OVER 2.5</div></div></div>\";";
+  H+="  if(m.status==='complete'){var fhHit=(m.fhH+m.fhA)>2;var rb=fhHit?'#f0fdf4':'#fef2f2';var rbr=fhHit?'#bbf7d0':'#fecaca';var rfc=fhHit?'#16a34a':'#dc2626';";
+  H+="  html+='<div style=\"text-align:center;min-width:76px;background:'+rb+';border:1px solid '+rbr+';border-radius:8px;padding:8px 6px;flex-shrink:0\">';";
+  H+="  html+='<div style=\"font-size:11px;color:#9ca3af;font-weight:600\">FH</div>';";
+  H+="  html+='<div style=\"font-size:24px;font-weight:800;color:'+rfc+';line-height:1.1\">'+m.fhH+'-'+m.fhA+'</div>';";
+  H+="  html+='<div style=\"font-size:10px;color:#9ca3af;margin-top:5px;font-weight:600\">FT</div>';";
+  H+="  html+='<div style=\"font-size:16px;font-weight:700;color:#374151;line-height:1.1\">'+m.ftH+'-'+m.ftA+'</div></div>';";
+  H+="  }else{";
+  H+="  html+='<div style=\"text-align:center;min-width:76px;background:'+probBg+';border:1px solid '+probBorder+';border-radius:8px;padding:10px 6px;flex-shrink:0\">';";
+  H+="  html+='<div style=\"font-size:30px;font-weight:800;color:'+probCol+';line-height:1\">'+m.prob+'%</div>';";
+  H+="  html+='<div style=\"font-size:12px;color:'+probCol+';margin-top:2px\">'+probLabel+'</div>';";
+  H+="  html+='<div style=\"font-size:10px;color:#9ca3af;margin-top:2px\">FH OVER 2.5</div></div>';";
+  H+="  }html+='</div>';";
   H+="  html+=\"<details>\";";
   H+="  html+=\"<summary style=\\\"font-size:13px;color:#6b7280;padding:5px 0;border-top:1px solid #f3f4f6\\\">&#9660; Show signal detail</summary>\";";
   H+="  html+=\"<div style=\\\"padding-top:10px\\\">\";";
