@@ -1,0 +1,8 @@
+Name: Request URL on Schedule on:
+schedule:
+- cron:'*/20****'
+jobs:
+request:
+runs-on: ubuntu-latest
+steps:
+- name: Request URL run: curl http://footystats-proxy.onrender.com
