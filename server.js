@@ -21,13 +21,29 @@ const LEAGUE_NAMES={
   13861:"UEFA Womens Nations League",16563:"Womens WC Qual Europe"
 };
 
-const PROB_TABLE=[5,10,20,35,45];
+// Probability based on strong/medium signal counts (backtested on 5,699 matches)
+// Strong: S1=expFH>=1.20, S2=odds_fh_o15<=1.80, S3=both teams BTTS FH>=25%
+// Medium: M1=odds<=2.00, M2=either CS_ht<=30%, M3=either o25ht>=20%, M4=either cn010>=0.25
+function calcProb(strongMet,mediumMet,odds_fh_o15){
+  if(strongMet===3)return{prob:48,label:"Prime Pick"};
+  if(strongMet===2&&odds_fh_o15<=2.00)return{prob:42,label:"Strong Pick"};
+  if(strongMet>=1&&mediumMet>=2)return{prob:35,label:"Worth Watching"};
+  if(mediumMet>=2)return{prob:25,label:"Moderate"};
+  return{prob:13,label:"Low Signal"};
+}
 
 const ftch=url=>fetch(url).then(r=>r.json());
 const avgF=(arr,fn)=>arr.length?arr.reduce((s,x)=>s+fn(x),0)/arr.length:0;
 const pctF=(arr,fn)=>arr.length?arr.filter(fn).length/arr.length:0;
 const pm=t=>{const m=String(t).match(/^(\d+)/);return m?parseInt(m[1]):null};
 const safe=v=>isNaN(v)||!isFinite(v)?0:v;
+
+// In-memory cache — TTL 55 min (stays under the 1800/hour rate limit)
+const CACHE={};
+const CACHE_TTL=55*60*1000;
+function cacheGet(key){const e=CACHE[key];if(e&&Date.now()-e.ts<CACHE_TTL)return e.val;return null;}
+function cacheSet(key,val){CACHE[key]={val,ts:Date.now()};return val;}
+async function ftchCached(url,key){const hit=cacheGet(key);if(hit)return hit;const val=await ftch(url);if(val&&!val.error)cacheSet(key,val);return val;}
 
 const getDates=(tzOffset=0)=>{
   const now=new Date();
@@ -93,7 +109,7 @@ app.get("/",async(req,res)=>{
   try{
     const tzOffset=parseInt(req.query.tz||"0");
     const dates=getDates(tzOffset);
-    const dayResults=await Promise.all(dates.map(d=>ftch(BASE+"/todays-matches?date="+d+"&key="+KEY)));
+    const dayResults=await Promise.all(dates.map(d=>ftchCached(BASE+"/todays-matches?date="+d+"&key="+KEY,"today:"+d)));
     const allFixtures=[];
     for(let i=0;i<dates.length;i++){
       for(const m of (dayResults[i].data||[])){allFixtures.push(Object.assign({},m,{_date:dates[i]}));}
@@ -109,132 +125,122 @@ app.get("/",async(req,res)=>{
     const activeLeagues=Object.keys(leagueFixtures);
     const preds=[];
 
-    // Fallback to previous season for stats when current season has no data yet
-    const PREV_SEASON={
-      16504:13973, // MLS 2026 -> MLS 2025
-      16544:11321, // Brazil 2026 -> Brazil 2025
-      16571:15746, // Argentina 2026 -> Argentina 2025
-      16614:14086, // Colombia 2026 -> Colombia 2025
-      16615:14116, // Chile 2026 -> Chile 2025
-      16036:13703, // Australia 2026 -> Australia 2025
-    };
 
     for(const sid of activeLeagues){
-      let completed=[];
+      const fixtures=leagueFixtures[sid]||[];
+      if(!fixtures.length) continue;
+
+      // Fetch per-team stats from /league-teams (includes FH stats)
+      let teamMap={};
+      try{
+        const teamsData=await ftchCached(BASE+"/league-teams?season_id="+sid+"&include=stats&key="+KEY,"teams:"+sid);
+        for(const t of (teamsData.data||[])){
+          // scored/conceded FH averages
+          const mp=t.stats?t.stats.matches_played||t.stats.MP||1:1;
+          // scoredAVGHT and concededAVGHT come directly from API
+          const scored_fh=safe(parseFloat(t.stats&&(t.stats.scoredAVGHT_overall!=null?t.stats.scoredAVGHT_overall:t.stats.scoredAVGHT)||0));
+          const conced_fh=safe(parseFloat(t.stats&&(t.stats.concededAVGHT_overall!=null?t.stats.concededAVGHT_overall:t.stats.concededAVGHT)||0));
+          // seasonOver25PercentageHT_overall: % of games with FH > 2.5 goals (team-level)
+          const o25ht_pct=safe(parseFloat(t.stats&&(t.stats.seasonOver25PercentageHT_overall!=null?t.stats.seasonOver25PercentageHT_overall:0)||0));
+          // BTTS HT %
+          const btts_ht_pct=safe(parseFloat(t.stats&&(t.stats.btts_ht_percentage_overall!=null?t.stats.btts_ht_percentage_overall:t.stats.bttsPercentageHT_overall)||0));
+          // FH clean sheet %
+          const cs_ht_pct=safe(parseFloat(t.stats&&(t.stats.clean_sheet_half_time_percentage_overall!=null?t.stats.clean_sheet_half_time_percentage_overall:t.stats.csPercentageHT_overall)||0));
+          // Early goals (0-10 min) per game
+          const g010=safe(parseFloat(t.stats&&(t.stats.goals_conceded_min_0_to_10!=null?t.stats.goals_conceded_min_0_to_10:0)||0));
+          const mpNum=safe(parseFloat(t.stats&&(t.stats.matches_played_overall!=null?t.stats.matches_played_overall:mp)||1));
+          const cn010_avg=mpNum>0?safe(g010/mpNum):0;
+          teamMap[t.name]={scored_fh,conced_fh,o25ht_pct,btts_ht_pct,cs_ht_pct,cn010_avg};
+        }
+      }catch(e){console.log("league-teams error sid="+sid+": "+e.message);}
+
+      // Also build h2h from completed matches (keep for display)
+      const h2hMap={};
+      let totalFH=0,totalGames=0;
       try{
         const mapM=m=>({home_name:m.home_name,away_name:m.away_name,
           ht_goals_team_a:m.ht_goals_team_a,ht_goals_team_b:m.ht_goals_team_b,
           homeGoalCount:m.homeGoalCount,awayGoalCount:m.awayGoalCount,
-          homeGoals_timings:m.homeGoals_timings,awayGoals_timings:m.awayGoals_timings,
           date_unix:m.date_unix});
-        const p1=await ftch(BASE+"/league-matches?season_id="+sid+"&max_per_page=150&page=1&key="+KEY);
-        const maxPage=p1.pager?p1.pager.max_page:1;
-        completed=(p1.data||[]).filter(m=>m.status==="complete").map(mapM);
-        if(completed.length<2&&maxPage>1){
-          const p2=await ftch(BASE+"/league-matches?season_id="+sid+"&max_per_page=150&page="+maxPage+"&key="+KEY);
-          completed=completed.concat((p2.data||[]).filter(m=>m.status==="complete").map(mapM));
-        }
-        // If still not enough, fall back to previous season (last 60 matches only)
-        if(completed.length<2&&PREV_SEASON[sid]){
-          const prev=await ftch(BASE+"/league-matches?season_id="+PREV_SEASON[sid]+"&max_per_page=300&page=1&key="+KEY);
-          const prevMax=prev.pager?prev.pager.max_page:1;
-          const fetchPrevPage=async(pg)=>{
-            const r=await ftch(BASE+"/league-matches?season_id="+PREV_SEASON[sid]+"&max_per_page=300&page="+pg+"&key="+KEY);
-            return (r.data||[]).filter(m=>m.status==="complete").map(mapM);
-          };
-          // Fetch last page of prev season (most recent matches)
-          const lastPg=await fetchPrevPage(prevMax);
-          const secLastPg=prevMax>1?await fetchPrevPage(Math.max(1,prevMax-1)):[];
-          completed=secLastPg.concat(lastPg).slice(-60);
+        const p1=await ftchCached(BASE+"/league-matches?season_id="+sid+"&max_per_page=150&page=1&key="+KEY,"matches:"+sid);
+        const completed=(p1.data||[]).filter(m=>m.status==="complete").map(mapM);
+        for(const m of completed){
+          const ha=parseInt(m.ht_goals_team_a||0),hb=parseInt(m.ht_goals_team_b||0);
+          const fa=parseInt(m.homeGoalCount||0),fb=parseInt(m.awayGoalCount||0);
+          totalFH+=ha+hb; totalGames++;
+          const k=[m.home_name,m.away_name].sort().join("|");
+          if(!h2hMap[k])h2hMap[k]=[];
+          h2hMap[k].push({home:m.home_name,away:m.away_name,htH:ha,htA:hb,ftH:fa,ftA:fb});
         }
       }catch(e){}
-
-      const fixtures=leagueFixtures[sid]||[];
-      if(completed.length<2){continue;}
-
-      const team={};
-      const en=n=>{if(!team[n])team[n]={h:[],a:[]};};
-      let totalFH=0,totalGames=0;
-      const h2hMap={};
-
-      for(const m of completed){
-        const ha=parseInt(m.ht_goals_team_a||0),hb=parseInt(m.ht_goals_team_b||0);
-        const fa=parseInt(m.homeGoalCount||0),fb=parseInt(m.awayGoalCount||0);
-        en(m.home_name);en(m.away_name);
-        totalFH+=ha+hb;totalGames++;
-        const hts=(m.homeGoals_timings||[]).map(pm).filter(t=>t!==null);
-        const ats=(m.awayGoals_timings||[]).map(pm).filter(t=>t!==null);
-        const fhTot=ha+hb;
-        const shTot=(fa-ha)+(fb-hb);
-        const rec=(fh_sc,fh_cn)=>({
-          fh_sc,fh_cn,
-          fh_btts:ha>0&&hb>0,
-          fh_most:fhTot>shTot,
-          fh_total:ha+hb,ft_total:fa+fb,
-          date:m.date_unix||0
-        });
-        team[m.home_name].h.push(rec(ha,hb));
-        team[m.away_name].a.push(rec(hb,ha));
-        const k=[m.home_name,m.away_name].sort().join("|");
-        if(!h2hMap[k])h2hMap[k]=[];
-        h2hMap[k].push({home:m.home_name,away:m.away_name,htH:ha,htA:hb,ftH:fa,ftA:fb});
-      }
-
-      for(const t of Object.values(team)){
-        t.h.sort((a,b)=>b.date-a.date);
-        t.a.sort((a,b)=>b.date-a.date);
-      }
 
       const leagueHalfAvg=totalGames>0?Math.max((totalFH/totalGames)/2,0.5):0.5;
 
       for(const fixture of fixtures){
         const h=fixture.home_name,a=fixture.away_name;
-        const ht=team[h]||{h:[],a:[]};
-        const at=team[a]||{h:[],a:[]};
-        const hGames=ht.h.length>=3?ht.h.slice(0,12):([].concat(ht.h,ht.a).sort((x,y)=>y.date-x.date).slice(0,12));
-        const aGames=at.a.length>=3?at.a.slice(0,12):([].concat(at.h,at.a).sort((x,y)=>y.date-x.date).slice(0,12));
-        if(hGames.length<2||aGames.length<2)continue;
+        const hT=teamMap[h]||null;
+        const aT=teamMap[a]||null;
+        if(!hT||!aT) continue;
 
-        const hFHSc=safe(avgF(hGames,g=>g.fh_sc));
-        const hFHCn=safe(avgF(hGames,g=>g.fh_cn));
-        const aFHSc=safe(avgF(aGames,g=>g.fh_sc));
-        const aFHCn=safe(avgF(aGames,g=>g.fh_cn));
-        const expFH=safe((hFHSc*aFHCn)+(aFHSc*hFHCn));
-        const s1=expFH>=1.083;
+        // --- STRONG SIGNALS ---
+        // S1: Expected FH Goals >= 1.20
+        const expFH=safe((hT.scored_fh*aT.conced_fh)+(aT.scored_fh*hT.conced_fh));
+        const S1=expFH>=1.20;
 
-        const hBtts=safe(pctF(hGames,g=>g.fh_btts));
-        const aBtts=safe(pctF(aGames,g=>g.fh_btts));
-        const bttsAvg=(hBtts+aBtts)/2;
-        const s2=bttsAvg>=0.261;
+        // S2: FH Over 1.5 odds <= 1.80 (from fixture data if available, else skip)
+        const odds_fh_o15=safe(parseFloat(fixture.odds_ft_over15||fixture.o15_ht||0));
+        const hasOdds=odds_fh_o15>1.0;
+        const S2=hasOdds&&odds_fh_o15<=1.80;
 
-        const fhCnSum=hFHCn+aFHCn;
-        const s3=fhCnSum>=1.542;
+        // S3: Both teams BTTS FH >= 25%
+        const S3=hT.btts_ht_pct>=25&&aT.btts_ht_pct>=25;
 
-        const hFHMost=safe(pctF(hGames,g=>g.fh_most));
-        const aFHMost=safe(pctF(aGames,g=>g.fh_most));
-        const fhMostAvg=(hFHMost+aFHMost)/2;
-        const s4=fhMostAvg>=0.394;
+        // --- MEDIUM SIGNALS ---
+        // M1: FH Over 1.5 odds <= 2.00
+        const M1=hasOdds&&odds_fh_o15<=2.00;
 
-        const nMet=+s1+ +s2+ +s3+ +s4;
-        const prob=PROB_TABLE[nMet];
+        // M2: Either team FH clean sheet <= 30%
+        const M2=hT.cs_ht_pct<=30||aT.cs_ht_pct<=30;
+
+        // M3: Either team FH Over 2.5 >= 20%
+        const M3=hT.o25ht_pct>=20||aT.o25ht_pct>=20;
+
+        // M4: Early goals (0-10 min) >= 0.25 per game (either team)
+        const M4=hT.cn010_avg>=0.25||aT.cn010_avg>=0.25;
+
+        const strongMet=[S1,S2,S3].filter(Boolean).length;
+        const mediumMet=[M1,M2,M3,M4].filter(Boolean).length;
+        const {prob,label:probLabel}=calcProb(strongMet,mediumMet,odds_fh_o15);
 
         const h2hKey=[h,a].sort().join("|");
         const h2h=(h2hMap[h2hKey]||[]).slice(0,6);
 
+        // Build signals array for display (strong first, then medium)
         const signals=[
-          {label:"Exp FH goals",desc:"(H scored x A conceded) + (A scored x H conceded)",
-           hVal:hFHSc.toFixed(2)+" sc / "+hFHCn.toFixed(2)+" cn",
-           aVal:aFHSc.toFixed(2)+" sc / "+aFHCn.toFixed(2)+" cn",
-           combinedVal:expFH.toFixed(3),threshold:">= 1.083",met:s1,lift:"2.29x lift"},
-          {label:"BTTS First Half",desc:"Both teams score in 1H - avg of both teams",
-           hVal:(hBtts*100).toFixed(0)+"%",aVal:(aBtts*100).toFixed(0)+"%",
-           combinedVal:(bttsAvg*100).toFixed(0)+"%",threshold:"avg >= 26%",met:s2,lift:"2.00x lift"},
-          {label:"FH Conceded Sum",desc:"Total FH goals conceded per game - both teams combined",
-           hVal:hFHCn.toFixed(2)+"/g",aVal:aFHCn.toFixed(2)+"/g",
-           combinedVal:fhCnSum.toFixed(3),threshold:"sum >= 1.542",met:s3,lift:"1.96x lift"},
-          {label:"FH = Best Half",desc:"% of games where 1st half has more goals than 2nd half",
-           hVal:(hFHMost*100).toFixed(0)+"%",aVal:(aFHMost*100).toFixed(0)+"%",
-           combinedVal:(fhMostAvg*100).toFixed(0)+"%",threshold:"avg >= 39%",met:s4,lift:"1.77x lift"}
+          // STRONG
+          {label:"S1: Exp FH Goals",desc:"(H scored × A conceded) + (A scored × H conceded)",
+           hVal:hT.scored_fh.toFixed(2)+" sc / "+hT.conced_fh.toFixed(2)+" cn",
+           aVal:aT.scored_fh.toFixed(2)+" sc / "+aT.conced_fh.toFixed(2)+" cn",
+           combinedVal:expFH.toFixed(3),threshold:">= 1.20",met:S1,tier:"STRONG"},
+          {label:"S2: FH Over 1.5 Odds",desc:"Market pricing strong FH activity",
+           hVal:"—",aVal:"—",
+           combinedVal:hasOdds?odds_fh_o15.toFixed(2):"n/a",threshold:"<= 1.80",met:S2,tier:"STRONG"},
+          {label:"S3: BTTS First Half",desc:"Both teams BTTS FH % (both must be >= 25%)",
+           hVal:hT.btts_ht_pct.toFixed(0)+"%",aVal:aT.btts_ht_pct.toFixed(0)+"%",
+           combinedVal:hT.btts_ht_pct.toFixed(0)+"% / "+aT.btts_ht_pct.toFixed(0)+"%",threshold:"both >= 25%",met:S3,tier:"STRONG"},
+          // MEDIUM
+          {label:"M1: FH Over 1.5 Odds",desc:"Market expects active first half",
+           hVal:"—",aVal:"—",
+           combinedVal:hasOdds?odds_fh_o15.toFixed(2):"n/a",threshold:"<= 2.00",met:M1,tier:"MEDIUM"},
+          {label:"M2: FH Clean Sheet",desc:"Either team FH clean sheet % <= 30% (leaky defence)",
+           hVal:hT.cs_ht_pct.toFixed(0)+"%",aVal:aT.cs_ht_pct.toFixed(0)+"%",
+           combinedVal:Math.min(hT.cs_ht_pct,aT.cs_ht_pct).toFixed(0)+"%",threshold:"either <= 30%",met:M2,tier:"MEDIUM"},
+          {label:"M3: FH Over 2.5 %",desc:"Either team has >= 20% of games with FH > 2.5",
+           hVal:hT.o25ht_pct.toFixed(0)+"%",aVal:aT.o25ht_pct.toFixed(0)+"%",
+           combinedVal:Math.max(hT.o25ht_pct,aT.o25ht_pct).toFixed(0)+"%",threshold:"either >= 20%",met:M3,tier:"MEDIUM"},
+          {label:"M4: Early Goals 0-10",desc:"Either team concedes >= 0.25 goals/game in first 10 min",
+           hVal:hT.cn010_avg.toFixed(2),aVal:aT.cn010_avg.toFixed(2),
+           combinedVal:Math.max(hT.cn010_avg,aT.cn010_avg).toFixed(2),threshold:"either >= 0.25",met:M4,tier:"MEDIUM"}
         ];
 
         preds.push({
@@ -242,10 +248,9 @@ app.get("/",async(req,res)=>{
           dt:(fixture.date_unix||0)*1000,matchDate:fixture._date,
           home:h,away:a,
           expFH:+expFH.toFixed(3),leagueAvg:+leagueHalfAvg.toFixed(2),
-          prob,nMet,signals,h2h:h2h.slice(0,6),
-          hChips:[].concat(ht.h,ht.a).sort((x,y)=>y.date-x.date).slice(0,6).map(g=>({fhTotal:g.fh_total,ftTotal:g.ft_total})),
-          aChips:[].concat(at.h,at.a).sort((x,y)=>y.date-x.date).slice(0,6).map(g=>({fhTotal:g.fh_total,ftTotal:g.ft_total})),
-          smallSample:hGames.length<6||aGames.length<6,
+          prob,probLabel,strongMet,mediumMet,
+          signals,h2h:h2h.slice(0,6),
+          smallSample:false,
           status:fixture.status||"incomplete",
           fhH:parseInt(fixture.ht_goals_team_a||0),
           fhA:parseInt(fixture.ht_goals_team_b||0),
@@ -255,7 +260,7 @@ app.get("/",async(req,res)=>{
       }
     }
 
-    preds.sort((a,b)=>b.prob-a.prob||b.nMet-a.nMet);
+    preds.sort((a,b)=>b.prob-a.prob||b.strongMet-a.strongMet||b.mediumMet-a.mediumMet);
     res.send(buildHTML(preds,dates));
   }catch(e){console.error(e);res.status(500).send("<pre>Error: "+e.message+"</pre>");}
 });
@@ -331,9 +336,8 @@ function buildHTML(preds,dates){
   // MAIN PANE
   H+="<div id=\"mainPane\">";
   H+="<div style=\"background:#fffbeb;border:1px solid #fde68a;border-radius:8px;padding:10px 14px;margin-bottom:14px;font-size:12px;color:#92400e;line-height:1.6\">";
-  H+="<strong>How it works:</strong> 4 data-driven signals, each backed by 3,460 matches. ";
-  H+="0 signals = 5% &nbsp;|&nbsp; 2 = 20% &nbsp;|&nbsp; 3 = 35% &nbsp;|&nbsp; 4 = 45%. ";
-  H+="Even at 4/4, 57% of matches do NOT hit FH&gt;2.5.";
+  H+="<strong>How it works:</strong> 3 strong signals + 4 medium signals from /league-teams API stats. ";
+  H+="3 strong = 48% &nbsp;|&nbsp; 2 strong + odds &le;2.00 = 42% &nbsp;|&nbsp; 1-2 strong + 2 medium = 35% &nbsp;|&nbsp; 2+ medium = 25% &nbsp;|&nbsp; base = 13%.";
   H+="</div>";
   H+="<div id=\"mainView\"></div>";
   H+="</div>";
@@ -380,15 +384,15 @@ function buildHTML(preds,dates){
   H+="    var league=leagueList[j][0];";
   H+="    var matches=leagueList[j][1];";
   H+="    var maxProb=Math.max.apply(null,matches.map(function(p){return p.prob;}));";
-  H+="    var maxN=Math.max.apply(null,matches.map(function(p){return p.nMet;}));";
-  H+="    var probCol=maxProb>=35?'#16a34a':maxProb>=20?'#d97706':'#9ca3af';";
+  H+="    var maxN=Math.max.apply(null,matches.map(function(p){return p.strongMet;}));";
+  H+="    var probCol=maxProb>=42?'#dc2626':maxProb>=35?'#ea580c':maxProb>=25?'#ca8a04':'#9ca3af';";
   H+="    var isActive=league===activeLeague;";
   H+="    var cls=isActive?'sidebar-league active':'sidebar-league';";
   H+="    var safeLeague=league.replace(/\\\\/g,'\\\\\\\\').replace(/'/g,\"\\\\'\");";
   H+="    html+='<div class=\"'+cls+'\" onclick=\"selectLeague(\\''+safeLeague+'\\')\">'+";
   H+="      '<div style=\"min-width:0\">'+";
   H+="        '<div class=\"slg-name\">'+league+'</div>'+";
-  H+="        '<div class=\"slg-sub\">'+matches.length+' match'+(matches.length>1?'es':'')+' &middot; '+maxN+'/4</div>'+";
+  H+="        '<div class=\"slg-sub\">'+matches.length+' match'+(matches.length>1?'es':'')+' &middot; '+maxN+'/3 strong</div>'+";
   H+="      '</div>'+";
   H+="      '<div class=\"slg-prob\" style=\"color:'+(isActive?'#fff':probCol)+'\">'+maxProb+'%</div>'+";
   H+="    '</div>';";
@@ -431,9 +435,9 @@ function buildHTML(preds,dates){
 
   // renderMatchCard — identical logic, no changes needed
   H+="function renderMatchCard(m){";
-  H+="  var probCol=m.prob>=35?'#16a34a':m.prob>=20?'#d97706':'#6b7280';";
-  H+="  var probBg=m.prob>=35?'#f0fdf4':m.prob>=20?'#fffbeb':'#f9fafb';";
-  H+="  var probBorder=m.prob>=35?'#bbf7d0':m.prob>=20?'#fde68a':'#e5e7eb';";
+  H+="  var probCol=m.prob>=42?'#dc2626':m.prob>=35?'#ea580c':m.prob>=25?'#ca8a04':'#9ca3af';";
+  H+="  var probBg=m.prob>=42?'#fef2f2':m.prob>=35?'#fff7ed':m.prob>=25?'#fffbeb':'#f9fafb';";
+  H+="  var probBorder=m.prob>=42?'#fca5a5':m.prob>=35?'#fed7aa':m.prob>=25?'#fde68a':'#e5e7eb';";
   H+="  var probLabel=m.prob>=35?'&#128293; HIGH':m.prob>=20?'&#9889; MED':'&#10052; LOW';";
   H+="  var dt=new Date(m.dt).toLocaleString('en-GB',{weekday:'short',day:'2-digit',month:'short',hour:'2-digit',minute:'2-digit'});";
   H+="  var dots='';";
@@ -452,7 +456,7 @@ function buildHTML(preds,dates){
   H+="    sigRows+='<td style=\"padding:10px 8px;border-bottom:1px solid #f3f4f6;text-align:center\"><div style=\"font-weight:700;color:#374151;font-size:13px\">'+s.hVal+'</div></td>';";
   H+="    sigRows+='<td style=\"padding:10px 8px;border-bottom:1px solid #f3f4f6;text-align:center\"><div style=\"font-weight:700;color:#374151;font-size:13px\">'+s.aVal+'</div></td>';";
   H+="    sigRows+='<td style=\"padding:10px 8px;border-bottom:1px solid #f3f4f6;text-align:center\"><div style=\"font-weight:800;font-size:14px;color:'+valCol+'\">'+s.combinedVal+'</div><div style=\"font-size:10px;color:#9ca3af\">'+s.threshold+'</div></td>';";
-  H+="    sigRows+='<td style=\"padding:10px 8px;border-bottom:1px solid #f3f4f6;text-align:center\"><span class=\"'+pillCls+'\">'+pillTxt+'</span><div style=\"font-size:10px;color:#9ca3af;margin-top:3px\">'+s.lift+'</div></td></tr>';";
+  H+="    sigRows+='<td style=\"padding:10px 8px;border-bottom:1px solid #f3f4f6;text-align:center\"><span class=\"'+pillCls+'\">'+pillTxt+'</span><div style=\"font-size:10px;color:#9ca3af;margin-top:3px\">'+s.tier+'</div></td></tr>';";
   H+="  }";
   H+="  var h2hRows='';var h2hHits=0;var h2hArr=m.h2h||[];";
   H+="  for(var i=0;i<h2hArr.length;i++){";
@@ -460,18 +464,13 @@ function buildHTML(preds,dates){
   H+="    var htCol=ht>=2?'#16a34a':'#374151';";
   H+="    h2hRows+='<tr style=\"border-bottom:1px solid #f3f4f6\"><td style=\"padding:5px 8px;font-size:12px;color:#6b7280\">'+g.home+' vs '+g.away+'</td><td style=\"padding:5px 8px;font-size:13px;text-align:center;font-weight:700;color:'+htCol+'\">HT '+g.htH+'-'+g.htA+'</td><td style=\"padding:5px 8px;font-size:12px;text-align:center;color:#6b7280\">FT '+g.ftH+'-'+g.ftA+'</td></tr>';";
   H+="  }";
-  H+="  function mkChip(g){var bc=g.fhTotal>1?'#bbf7d0':'#e5e7eb';var bg=g.fhTotal>1?'#f0fdf4':'#f9fafb';var fc=g.fhTotal>1?'#16a34a':'#6b7280';return '<span class=\"chip\" style=\"border:1px solid '+bc+';background:'+bg+';color:'+fc+'\">FH '+g.fhTotal+'&middot;FT '+g.ftTotal+'</span>';}";
-  H+="  var hChipStr='',aChipStr='';";
-  H+="  for(var i=0;i<(m.hChips||[]).length;i++)hChipStr+=mkChip(m.hChips[i]);";
-  H+="  for(var i=0;i<(m.aChips||[]).length;i++)aChipStr+=mkChip(m.aChips[i]);";
-  H+="  var smallWarn=m.smallSample?'<span style=\"background:#fef3c7;color:#92400e;font-size:11px;padding:2px 7px;border-radius:4px;margin-left:8px;font-weight:600\">&#9888; small sample</span>':'';";
   H+="  var html='<div class=\"match-card\" style=\"border-left:4px solid '+probCol+'\">';";
   H+="  html+='<div style=\"padding:16px\">';";
   H+="  html+='<div style=\"display:grid;grid-template-columns:1fr auto;gap:10px;align-items:start;margin-bottom:12px\">';";
   H+="  html+='<div style=\"min-width:0\">';";
-  H+="  html+='<div style=\"font-size:12px;color:#9ca3af;margin-bottom:3px\">'+dt+smallWarn+'</div>';";
+  H+="  html+='<div style=\"font-size:12px;color:#9ca3af;margin-bottom:3px\">'+dt+'</div>';";
   H+="  html+='<div style=\"font-size:17px;font-weight:700;color:#111827;margin-bottom:5px;line-height:1.3\">'+m.home+' <span style=\"color:#d1d5db;font-weight:400;font-size:13px\">vs</span> '+m.away+'</div>';";
-  H+="  html+='<div style=\"display:flex;align-items:center;gap:8px\">'+dots+'<span style=\"font-size:12px;color:#6b7280\">'+m.nMet+'/4 signals met</span></div>';";
+  H+="  html+='<div style=\"display:flex;align-items:center;gap:8px\">'+dots+'<span style=\"font-size:12px;color:#6b7280\">'+m.strongMet+'/3 strong &middot; '+m.mediumMet+'/4 medium</span></div>';";
   H+="  html+='<div style=\"font-size:12px;color:#6b7280;margin-top:4px\">Exp FH: <strong style=\"color:#374151\">'+m.expFH+'</strong> &middot; League avg: '+m.leagueAvg+'</div>';";
   H+="  html+='</div>';";
   H+="  if(m.status==='complete'){var fhHit=(m.fhH+m.fhA)>2;var rb=fhHit?'#f0fdf4':'#fef2f2';var rbr=fhHit?'#bbf7d0':'#fecaca';var rfc=fhHit?'#16a34a':'#dc2626';";
@@ -484,7 +483,7 @@ function buildHTML(preds,dates){
   H+="  }else{";
   H+="    html+='<div style=\"text-align:center;min-width:76px;background:'+probBg+';border:1px solid '+probBorder+';border-radius:8px;padding:10px 6px;flex-shrink:0\">';";
   H+="    html+='<div style=\"font-size:30px;font-weight:800;color:'+probCol+';line-height:1\">'+m.prob+'%</div>';";
-  H+="    html+='<div style=\"font-size:12px;color:'+probCol+';margin-top:2px\">'+probLabel+'</div>';";
+  H+="    html+='<div style=\"font-size:12px;color:'+probCol+';margin-top:2px\">'+m.probLabel+'</div>';";
   H+="    html+='<div style=\"font-size:10px;color:#9ca3af;margin-top:2px\">FH OVER 2.5</div></div>';";
   H+="  }";
   H+="  html+='</div>';";
@@ -497,10 +496,6 @@ function buildHTML(preds,dates){
   H+="  html+='<th style=\"width:18%;text-align:center\">Combined</th>';";
   H+="  html+='<th style=\"width:20%;text-align:center\">Result</th>';";
   H+="  html+='</tr></thead><tbody>'+sigRows+'</tbody></table>';";
-  H+="  html+='<div style=\"display:grid;grid-template-columns:1fr 1fr;gap:12px;margin-bottom:12px\">';";
-  H+="  html+='<div><div style=\"font-size:12px;font-weight:600;color:#374151;margin-bottom:4px\">'+shortName(m.home)+'</div>'+hChipStr+'</div>';";
-  H+="  html+='<div><div style=\"font-size:12px;font-weight:600;color:#374151;margin-bottom:4px\">'+shortName(m.away)+'</div>'+aChipStr+'</div>';";
-  H+="  html+='</div>';";
   H+="  if(h2hRows){html+='<div style=\"font-size:12px;font-weight:600;color:#374151;margin-bottom:5px\">H2H &mdash; '+h2hHits+'/'+h2hArr.length+' meetings with FH &ge;2 goals</div>';html+='<table style=\"width:100%;border-collapse:collapse\">'+h2hRows+'</table>';}";
   H+="  html+='</div></details></div></div>';";
   H+="  return html;";
