@@ -366,55 +366,10 @@ app.get("/",async(req,res)=>{
           hForm, aForm,
           hFHSc:+hFHSc.toFixed(2), hFHCn:+hFHCn.toFixed(2),
           aFHSc:+aFHSc.toFixed(2), aFHCn:+aFHCn.toFixed(2),
-          // H2H will be populated after all fixtures processed (same league matches)
-          h2h:[]
         });
       }
     }
 
-    // Populate H2H — only for TODAY's leagues, sequentially with throttle
-    const leagueMatches={};
-    const fetchLeagueMatches=async(sid)=>{
-      if(leagueMatches[sid]) return leagueMatches[sid];
-      try{
-        const r=await tftch(BASE+"/league-matches?season_id="+sid+"&max_per_page=300&page=1&key="+KEY);
-        leagueMatches[sid]=(r.data||[]).filter(m=>m.status==="complete");
-      }catch(e){ leagueMatches[sid]=[]; }
-      return leagueMatches[sid];
-    };
-
-    // Only fetch H2H for TODAY's matches (not all 6 days), cap at 10 leagues
-    const todayDate=dates[0];
-    const todayPreds=preds.filter(p=>p.matchDate===todayDate);
-    const uniqueSidsToday=[...new Set(todayPreds.map(p=>p.leagueSid))].slice(0,10);
-
-    // Sequential fetches with built-in throttle
-    for(const sid of uniqueSidsToday){
-      await fetchLeagueMatches(sid);
-      if(PREV_SEASON[sid]) await fetchLeagueMatches(PREV_SEASON[sid]);
-    }
-
-    for(const p of preds){
-      const sid=p.leagueSid;
-      // Only populate H2H if we fetched this league's matches
-      if(!uniqueSidsToday.includes(sid)){ p.h2h=[]; continue; }
-      const all=leagueMatches[sid]||[];
-      const matchH2H=arr=>arr.filter(m=>
-        (m.home_name===p.home&&m.away_name===p.away)||
-        (m.home_name===p.away&&m.away_name===p.home)
-      );
-      let h2hMatches=matchH2H(all);
-      if(h2hMatches.length<2&&PREV_SEASON[sid]){
-        const prevAll=leagueMatches[PREV_SEASON[sid]]||[];
-        const prevH2H=matchH2H(prevAll);
-        if(prevH2H.length>h2hMatches.length) h2hMatches=prevH2H;
-      }
-      p.h2h=h2hMatches.slice(-5).map(m=>({
-        home:m.home_name, away:m.away_name,
-        fhH:parseInt(m.ht_goals_team_a||0), fhA:parseInt(m.ht_goals_team_b||0),
-        ftH:parseInt(m.homeGoalCount||0),   ftA:parseInt(m.awayGoalCount||0)
-      }));
-    }
 
     preds.sort((a,b)=>b.prob-a.prob||b.nMet-a.nMet);
     res.send(buildHTML(preds,dates));
@@ -527,16 +482,6 @@ function buildHTML(preds,dates){
     .fb.L{background:#450a0a;color:#f87171}
     .fb.empty{background:#0d0f14;border:1px solid #1e2333;color:#334155}
 
-    /* H2H section */
-    .mc-h2h{background:#111318;border-top:1px solid #1e2333;padding:10px 16px}
-    .mc-h2h .h2h-title{font-family:'Barlow Condensed',sans-serif;font-size:11px;font-weight:700;letter-spacing:1px;text-transform:uppercase;color:#475569;margin-bottom:8px}
-    .h2h-row{display:flex;align-items:center;gap:8px;margin-bottom:5px;font-size:12px}
-    .h2h-teams{flex:1;color:#64748b;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-    .h2h-fh{font-family:'DM Mono',monospace;font-size:12px;font-weight:500;padding:2px 6px;border-radius:3px;flex-shrink:0}
-    .h2h-fh.hit{background:#064e2b;color:#4ade80}
-    .h2h-fh.miss{background:#0d0f14;color:#475569;border:1px solid #1e2333}
-    .h2h-ft{font-family:'DM Mono',monospace;font-size:11px;color:#334155;flex-shrink:0}
-    .no-h2h{font-size:11px;color:#334155;font-style:italic}
 
     /* Signal detail (collapsible) */
     .mc-detail summary{padding:8px 16px;font-size:11px;color:#475569;cursor:pointer;display:flex;align-items:center;gap:6px;border-top:1px solid #1e2333;list-style:none;font-family:'Barlow Condensed',sans-serif;letter-spacing:.5px;text-transform:uppercase;font-weight:700;transition:color .15s}
@@ -572,7 +517,6 @@ function buildHTML(preds,dates){
     .mc-stats{display:contents}
     .mc-team-col{background:#161920;padding:12px 16px;border-right:1px solid #1e2333}
     .mc-team-col:last-child{border-right:none}
-    .mc-h2h{background:#111318;padding:12px 16px;border-top:1px solid #1e2333;grid-column:1/-1}
     .mc-top-left{flex:1;min-width:0}
 
     /* Form */
@@ -586,16 +530,6 @@ function buildHTML(preds,dates){
     .sval{font-family:'DM Mono',monospace;font-size:12px;color:#94a3b8}
     .sval.hi{color:#22c55e}
 
-    /* H2H */
-    .h2h-title{font-family:'Barlow Condensed',sans-serif;font-size:11px;font-weight:700;letter-spacing:1px;text-transform:uppercase;color:#475569;margin-bottom:6px}
-    .h2h-summary{font-size:11px;color:#64748b;margin-bottom:6px;font-family:'DM Mono',monospace}
-    .h2h-row{display:flex;align-items:center;gap:8px;margin-bottom:4px}
-    .h2h-teams{flex:1;font-size:12px;color:#475569;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-    .h2h-fh{font-family:'DM Mono',monospace;font-size:12px;font-weight:500;padding:1px 6px;border-radius:3px;flex-shrink:0}
-    .h2h-fh.hit{background:#064e2b;color:#4ade80}
-    .h2h-fh.miss{background:#0d0f14;color:#475569;border:1px solid #1e2333}
-    .h2h-ft{font-family:'DM Mono',monospace;font-size:11px;color:#334155;flex-shrink:0}
-    .no-h2h{font-size:11px;color:#334155;font-style:italic}
 
     /* Result badge */
     .rb-fh{font-size:10px;color:#475569;font-weight:700;font-family:'Barlow Condensed',sans-serif;letter-spacing:1px}
@@ -628,7 +562,6 @@ function buildHTML(preds,dates){
       #sidebar{width:160px}
       .mc-body{grid-template-columns:1fr}
       .mc-team-col:first-child{border-right:none;border-bottom:1px solid #1e2333}
-      .mc-h2h{grid-column:1}
     }
   `;
 
@@ -785,22 +718,6 @@ function buildHTML(preds,dates){
         '</tr>';
       });
 
-      // H2H
-      var h2hHtml='';
-      if(m.h2h&&m.h2h.length){
-        var hits=m.h2h.filter(function(g){return(g.fhH+g.fhA)>2;}).length;
-        h2hHtml='<div class="h2h-summary">'+hits+'/'+m.h2h.length+' meetings with FH &gt;2.5</div>';
-        m.h2h.forEach(function(g){
-          var ht=g.fhH+g.fhA;var hit=ht>2;
-          h2hHtml+='<div class="h2h-row">'+
-            '<span class="h2h-teams">'+g.home+' v '+g.away+'</span>'+
-            '<span class="h2h-fh '+(hit?'hit':'miss')+'">FH '+g.fhH+'-'+g.fhA+'</span>'+
-            '<span class="h2h-ft">'+g.ftH+'-'+g.ftA+' FT</span>'+
-          '</div>';
-        });
-      } else {
-        h2hHtml='<div class="no-h2h">No H2H data available</div>';
-      }
 
       var warn=m.missingStats?'<span class="warn-badge">⚠ stats missing</span>':'';
 
@@ -826,10 +743,7 @@ function buildHTML(preds,dates){
               '<div class="stat-row"><span class="slabel">FH Conceded avg</span><span class="sval">'+m.aFHCn+'</span></div>'+
             '</div>'+
           '</div>'+
-          '<div class="mc-h2h">'+
-            '<div class="h2h-title">H2H</div>'+
-            h2hHtml+
-          '</div>'+
+
         '</div>'+
         '<details class="mc-detail">'+
           '<summary>▾ Signal breakdown</summary>'+
