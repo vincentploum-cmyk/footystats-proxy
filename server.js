@@ -78,12 +78,6 @@ app.get("/debug-league",async(req,res)=>{
     ]);
     const fixtures=(fixtureRes.data||[]).filter(m=>String(m.competition_id)===String(sid));
     const teams=(teamRes.data||[]).slice(0,2); // first 2 teams as sample
-    // Show all odds-related keys from a sample fixture
-    const sampleFixture=fixtures[0]||{};
-    const oddsKeys=Object.keys(sampleFixture).filter(k=>k.toLowerCase().includes('odd'));
-    const oddsValues={};
-    oddsKeys.forEach(k=>oddsValues[k]=sampleFixture[k]);
-
     const fixtureIds=fixtures.map(m=>({
       home:m.home_name,away:m.away_name,
       homeID:m.homeID,home_id:m.home_id,
@@ -103,10 +97,7 @@ app.get("/debug-league",async(req,res)=>{
       topLevelHTKeys,
       statsSubObjectHTKeys:statsKeys,
       sampleTeamAllKeys:Object.keys(sampleTeam).slice(0,30),
-      sampleTeamStatsKeys:sampleTeam.stats?Object.keys(sampleTeam.stats).slice(0,30):[],
-      sampleFixtureOddsKeys:oddsKeys,
-      sampleFixtureOddsValues:oddsValues,
-      sampleFixtureAllKeys:Object.keys(sampleFixture)
+      sampleTeamStatsKeys:sampleTeam.stats?Object.keys(sampleTeam.stats).slice(0,30):[]
     });
   }catch(e){res.status(500).json({error:e.message});}
 });
@@ -157,21 +148,13 @@ function calcT1(ht, at){
 }
 
 // O1: odds_1st_half_over15 <= 2.0 (from fixture odds, not team stats)
+// We pass the fixture's odds field directly
 function calcO1(fixture){
-  // Try every field name FootyStats might use for FH over 1.5 odds
-  const raw = safe(
-    fixture.odds_1st_half_over15 ||
-    fixture["odds_1st_half_over_1.5"] ||
-    fixture.odds_htOver15 ||
-    fixture.odds_ht_over15 ||
-    fixture.o15_1h ||
-    fixture["1h_over15"] ||
-    fixture.ht_over15_odds ||
-    0
-  );
-  // A value of exactly 0 means not available; filter out clearly wrong values too
-  const unavailable = raw === 0 || raw > 20;
-  return { val: unavailable ? 0 : raw, met: !unavailable && raw <= 2.0, unavailable };
+  // FootyStats supplies odds fields on the fixture object in todays-matches
+  // Common field names: odds_ft_over15, odds_1st_half_over15
+  const raw = safe(fixture.odds_1st_half_over15 || fixture["odds_1st_half_over_1.5"] || 0);
+  const unavailable = raw === 0;
+  return { val: raw, met: !unavailable && raw <= 2.0, unavailable };
 }
 
 // CN010: either team goals_conceded_min_0_to_10 / mp_role >= 0.25
