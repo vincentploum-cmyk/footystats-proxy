@@ -188,23 +188,32 @@ function calcAV(ht, at){
 
 // ── Main route ───────────────────────────────────────────────────────────────
 
+// Throttled fetch: adds 150ms delay between UNCACHED calls to stay under rate limit
+const sleep=ms=>new Promise(r=>setTimeout(r,ms));
+async function tftch(url){
+  const hit=cacheGet(url);
+  if(hit){ console.log("CACHE: "+url.replace(/key=[^&]+/,"key=***")); return hit; }
+  // Only delay on real API calls
+  await sleep(150);
+  const data=await _rawFetch(url);
+  cacheSet(url,data);
+  console.log("API:   "+url.replace(/key=[^&]+/,"key=***"));
+  return data;
+}
+
 app.get("/",async(req,res)=>{
   try{
     const tzOffset=parseInt(req.query.tz||"0");
     const dates=getDates(tzOffset);
 
-    // 1. Fetch fixtures for the date window
-    const dayResults=await Promise.all(
-      dates.map(d=>ftch(BASE+"/todays-matches?date="+d+"&key="+KEY))
-    );
+    // 1. Fetch fixtures sequentially with throttle (6 calls)
     const allFixtures=[];
-    for(let i=0;i<dates.length;i++){
-      for(const m of (dayResults[i].data||[])){
-        allFixtures.push(Object.assign({},m,{_date:dates[i]}));
-      }
+    for(const d of dates){
+      const r=await tftch(BASE+"/todays-matches?date="+d+"&key="+KEY);
+      for(const m of (r.data||[])) allFixtures.push(Object.assign({},m,{_date:d}));
     }
 
-    // 2. Group fixtures by season_id — accept ALL competitions
+    // 2. Group fixtures by season_id
     const leagueFixtures={};
     const leagueNameOverride={};
     for(const m of allFixtures){
@@ -213,27 +222,26 @@ app.get("/",async(req,res)=>{
       if(!leagueFixtures[sid]) leagueFixtures[sid]=[];
       leagueFixtures[sid].push(m);
       if(!leagueNameOverride[sid]){
-        leagueNameOverride[sid]=LEAGUE_NAMES[sid]||m.league||m.competition||m.competition_name||('League '+sid);
+        leagueNameOverride[sid]=LEAGUE_NAMES[sid]||m.league||m.competition||m.competition_name||("League "+sid);
       }
     }
 
-    // 3. Fetch all league-team stats in parallel, then process fixtures
+    // 3. Fetch league-team stats sequentially with throttle (~20-25 calls)
     const preds=[];
     const allSids=Object.keys(leagueFixtures);
-    const teamMapsArr=await Promise.all(allSids.map(async sid=>{
+    const teamMapBySid={};
+    for(const sid of allSids){
       try{
-        const r=await ftch(BASE+"/league-teams?season_id="+sid+"&include=stats&key="+KEY);
+        const r=await tftch(BASE+"/league-teams?season_id="+sid+"&include=stats&key="+KEY);
         const m={};
         for(const t of (r.data||[])){
           if(t.id!=null){ m[t.id]=t; m[String(t.id)]=t; }
           m["__name__"+(t.name||"").toLowerCase().trim()]=t;
           if(t.clean_name) m["__name__"+t.clean_name.toLowerCase().trim()]=t;
         }
-        return m;
-      }catch(e){ console.log("league-teams error sid="+sid,e.message); return {}; }
-    }));
-    const teamMapBySid={};
-    allSids.forEach((sid,i)=>teamMapBySid[sid]=teamMapsArr[i]);
+        teamMapBySid[sid]=m;
+      }catch(e){ console.log("league-teams error sid="+sid,e.message); teamMapBySid[sid]={}; }
+    }
 
     for(const sid of allSids){
       const teamMap=teamMapBySid[sid];
@@ -364,30 +372,27 @@ app.get("/",async(req,res)=>{
       }
     }
 
-    // Populate H2H — only for TODAY's leagues to limit API calls.
-    // Use cache aggressively; cap at 12 unique league fetches per request.
+    // Populate H2H — only for TODAY's leagues, sequentially with throttle
     const leagueMatches={};
     const fetchLeagueMatches=async(sid)=>{
       if(leagueMatches[sid]) return leagueMatches[sid];
       try{
-        const r=await ftch(BASE+"/league-matches?season_id="+sid+"&max_per_page=300&page=1&key="+KEY);
+        const r=await tftch(BASE+"/league-matches?season_id="+sid+"&max_per_page=300&page=1&key="+KEY);
         leagueMatches[sid]=(r.data||[]).filter(m=>m.status==="complete");
       }catch(e){ leagueMatches[sid]=[]; }
       return leagueMatches[sid];
     };
 
-    // Only fetch H2H for TODAY's matches (not all 6 days) to limit call count
+    // Only fetch H2H for TODAY's matches (not all 6 days), cap at 10 leagues
     const todayDate=dates[0];
     const todayPreds=preds.filter(p=>p.matchDate===todayDate);
-    const uniqueSidsToday=[...new Set(todayPreds.map(p=>p.leagueSid))].slice(0,12);
+    const uniqueSidsToday=[...new Set(todayPreds.map(p=>p.leagueSid))].slice(0,10);
 
-    // Pre-fetch all needed league-matches in parallel (all cached after first hit)
-    await Promise.all(uniqueSidsToday.map(sid=>fetchLeagueMatches(sid)));
-    // Also pre-fetch prev seasons for leagues that need it
-    await Promise.all(uniqueSidsToday
-      .filter(sid=>PREV_SEASON[sid])
-      .map(sid=>fetchLeagueMatches(PREV_SEASON[sid]))
-    );
+    // Sequential fetches with built-in throttle
+    for(const sid of uniqueSidsToday){
+      await fetchLeagueMatches(sid);
+      if(PREV_SEASON[sid]) await fetchLeagueMatches(PREV_SEASON[sid]);
+    }
 
     for(const p of preds){
       const sid=p.leagueSid;
@@ -884,7 +889,7 @@ ${js}
 const PORT=process.env.PORT||3001;
 app.listen(PORT,()=>{
   console.log("Server running on port "+PORT);
-  // Pre-warm cache on startup: fetch today's fixtures so first user request is fast
+  // Pre-warm: just cache today's fixtures (cheap, 1 call) on startup
   const today=new Date().toISOString().slice(0,10);
-  fetch("http://localhost:"+PORT+"/?tz=0").catch(()=>{});
+  tftch(BASE+"/todays-matches?date="+today+"&key="+KEY).catch(e=>console.log("Prewarm err:",e.message));
 });
