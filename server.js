@@ -66,6 +66,42 @@ const getDates=(tzOffset=0)=>{
   return[...new Set(dates)];
 };
 
+// Debug endpoint: shows raw team data for a league + today's fixture IDs
+// Usage: /debug-league?sid=14924
+app.get("/debug-league",async(req,res)=>{
+  const sid=req.query.sid||"14924";
+  const date=req.query.date||new Date().toISOString().slice(0,10);
+  try{
+    const [fixtureRes,teamRes]=await Promise.all([
+      fetch(BASE+"/todays-matches?date="+date+"&key="+KEY).then(r=>r.json()),
+      fetch(BASE+"/league-teams?season_id="+sid+"&include=stats&key="+KEY).then(r=>r.json())
+    ]);
+    const fixtures=(fixtureRes.data||[]).filter(m=>String(m.competition_id)===String(sid));
+    const teams=(teamRes.data||[]).slice(0,2); // first 2 teams as sample
+    const fixtureIds=fixtures.map(m=>({
+      home:m.home_name,away:m.away_name,
+      homeID:m.homeID,home_id:m.home_id,
+      awayID:m.awayID,away_id:m.away_id,
+      competition_id:m.competition_id
+    }));
+    const sampleTeam=teams[0]||{};
+    const topLevelHTKeys=Object.keys(sampleTeam).filter(k=>k.toLowerCase().includes('ht')||k.toLowerCase().includes('half'));
+    const statsKeys=sampleTeam.stats?Object.keys(sampleTeam.stats).filter(k=>k.toLowerCase().includes('ht')||k.toLowerCase().includes('half')):[];
+    res.json({
+      sid,date,
+      fixtureCount:fixtures.length,
+      fixtureIds,
+      teamCount:(teamRes.data||[]).length,
+      sampleTeamId:sampleTeam.id,
+      sampleTeamName:sampleTeam.name,
+      topLevelHTKeys,
+      statsSubObjectHTKeys:statsKeys,
+      sampleTeamAllKeys:Object.keys(sampleTeam).slice(0,30),
+      sampleTeamStatsKeys:sampleTeam.stats?Object.keys(sampleTeam.stats).slice(0,30):[]
+    });
+  }catch(e){res.status(500).json({error:e.message});}
+});
+
 // Cache status / manual flush endpoint
 app.get("/cache-status",(req,res)=>{
   const entries=[..._cache.entries()].map(([url,e])=>({
@@ -176,9 +212,12 @@ app.get("/",async(req,res)=>{
       try{
         const r=await ftch(BASE+"/league-teams?season_id="+sid+"&include=stats&key="+KEY);
         for(const t of (r.data||[])){
-          teamMap[t.id]=t;
-          // Also index by name for fallback matching
+          // Index by both int and string id to avoid type mismatch
+          if(t.id!=null){ teamMap[t.id]=t; teamMap[String(t.id)]=t; }
+          // Name fallback (lowercase, trimmed)
           teamMap["__name__"+(t.name||"").toLowerCase().trim()]=t;
+          // Also try clean_name if present
+          if(t.clean_name) teamMap["__name__"+t.clean_name.toLowerCase().trim()]=t;
         }
       }catch(e){
         console.log("league-teams error sid="+sid,e.message);
@@ -189,18 +228,36 @@ app.get("/",async(req,res)=>{
         continue;
       }
 
+      // Log one sample team to diagnose field names
+      const sampleTeam=Object.values(teamMap).find(v=>typeof v==='object'&&v&&v.name);
+      if(sampleTeam){
+        const keys=Object.keys(sampleTeam);
+        const htKeys=keys.filter(k=>k.toLowerCase().includes('ht')||k.toLowerCase().includes('half'));
+        console.log("SID="+sid+" sample team="+sampleTeam.name+" id="+sampleTeam.id+" (type="+typeof sampleTeam.id+")");
+        console.log("  HT-related keys: "+htKeys.slice(0,10).join(', '));
+        if(sampleTeam.stats) console.log("  Has .stats sub-object with keys: "+Object.keys(sampleTeam.stats).slice(0,8).join(', '));
+      }
+
       const fixtures=leagueFixtures[sid]||[];
       for(const fixture of fixtures){
         // Resolve home/away team stats
-        // todays-matches gives home_id / away_id fields
-        const homeId=fixture.homeID||fixture.home_id;
-        const awayId=fixture.awayID||fixture.away_id;
-        let ht=teamMap[homeId]||teamMap["__name__"+(fixture.home_name||"").toLowerCase().trim()];
-        let at=teamMap[awayId]||teamMap["__name__"+(fixture.away_name||"").toLowerCase().trim()];
+        // Normalise IDs to string to avoid int/string mismatch
+        const homeId=String(fixture.homeID||fixture.home_id||"");
+        const awayId=String(fixture.awayID||fixture.away_id||"");
+        let htRaw=teamMap[homeId]||teamMap[parseInt(homeId)]||teamMap["__name__"+(fixture.home_name||"").toLowerCase().trim()];
+        let atRaw=teamMap[awayId]||teamMap[parseInt(awayId)]||teamMap["__name__"+(fixture.away_name||"").toLowerCase().trim()];
+
+        // Unwrap .stats sub-object if the API nests fields there
+        const unwrap=t=>{
+          if(!t) return null;
+          if(t.stats && typeof t.stats==='object') return Object.assign({},t,t.stats);
+          return t;
+        };
+        let ht=unwrap(htRaw);
+        let at=unwrap(atRaw);
 
         if(!ht||!at){
-          console.log("Missing team stats: "+fixture.home_name+" vs "+fixture.away_name+" (sid="+sid+")");
-          // Still include in preds with 0 signals so user sees the match
+          console.log("Missing team stats: "+fixture.home_name+"(id="+homeId+") vs "+fixture.away_name+"(id="+awayId+") sid="+sid);
           ht=ht||{};
           at=at||{};
         }
