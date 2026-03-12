@@ -217,24 +217,26 @@ app.get("/",async(req,res)=>{
       }
     }
 
-    // 3. For each active league, fetch team stats once
+    // 3. Fetch all league-team stats in parallel, then process fixtures
     const preds=[];
-    for(const sid of Object.keys(leagueFixtures)){
-      let teamMap={};  // id -> stats object
+    const allSids=Object.keys(leagueFixtures);
+    const teamMapsArr=await Promise.all(allSids.map(async sid=>{
       try{
         const r=await ftch(BASE+"/league-teams?season_id="+sid+"&include=stats&key="+KEY);
+        const m={};
         for(const t of (r.data||[])){
-          // Index by both int and string id to avoid type mismatch
-          if(t.id!=null){ teamMap[t.id]=t; teamMap[String(t.id)]=t; }
-          // Name fallback (lowercase, trimmed)
-          teamMap["__name__"+(t.name||"").toLowerCase().trim()]=t;
-          // Also try clean_name if present
-          if(t.clean_name) teamMap["__name__"+t.clean_name.toLowerCase().trim()]=t;
+          if(t.id!=null){ m[t.id]=t; m[String(t.id)]=t; }
+          m["__name__"+(t.name||"").toLowerCase().trim()]=t;
+          if(t.clean_name) m["__name__"+t.clean_name.toLowerCase().trim()]=t;
         }
-      }catch(e){
-        console.log("league-teams error sid="+sid,e.message);
-      }
+        return m;
+      }catch(e){ console.log("league-teams error sid="+sid,e.message); return {}; }
+    }));
+    const teamMapBySid={};
+    allSids.forEach((sid,i)=>teamMapBySid[sid]=teamMapsArr[i]);
 
+    for(const sid of allSids){
+      const teamMap=teamMapBySid[sid];
       if(!Object.keys(teamMap).length){
         console.log("No team data for sid="+sid);
         continue;
@@ -362,7 +364,8 @@ app.get("/",async(req,res)=>{
       }
     }
 
-    // Populate H2H — current season first, fallback to prev season if <3 results
+    // Populate H2H — only for TODAY's leagues to limit API calls.
+    // Use cache aggressively; cap at 12 unique league fetches per request.
     const leagueMatches={};
     const fetchLeagueMatches=async(sid)=>{
       if(leagueMatches[sid]) return leagueMatches[sid];
@@ -372,17 +375,32 @@ app.get("/",async(req,res)=>{
       }catch(e){ leagueMatches[sid]=[]; }
       return leagueMatches[sid];
     };
+
+    // Only fetch H2H for TODAY's matches (not all 6 days) to limit call count
+    const todayDate=dates[0];
+    const todayPreds=preds.filter(p=>p.matchDate===todayDate);
+    const uniqueSidsToday=[...new Set(todayPreds.map(p=>p.leagueSid))].slice(0,12);
+
+    // Pre-fetch all needed league-matches in parallel (all cached after first hit)
+    await Promise.all(uniqueSidsToday.map(sid=>fetchLeagueMatches(sid)));
+    // Also pre-fetch prev seasons for leagues that need it
+    await Promise.all(uniqueSidsToday
+      .filter(sid=>PREV_SEASON[sid])
+      .map(sid=>fetchLeagueMatches(PREV_SEASON[sid]))
+    );
+
     for(const p of preds){
       const sid=p.leagueSid;
-      let all=await fetchLeagueMatches(sid);
+      // Only populate H2H if we fetched this league's matches
+      if(!uniqueSidsToday.includes(sid)){ p.h2h=[]; continue; }
+      const all=leagueMatches[sid]||[];
       const matchH2H=arr=>arr.filter(m=>
         (m.home_name===p.home&&m.away_name===p.away)||
         (m.home_name===p.away&&m.away_name===p.home)
       );
       let h2hMatches=matchH2H(all);
-      // Fall back to previous season if fewer than 2 H2H results
       if(h2hMatches.length<2&&PREV_SEASON[sid]){
-        const prevAll=await fetchLeagueMatches(PREV_SEASON[sid]);
+        const prevAll=leagueMatches[PREV_SEASON[sid]]||[];
         const prevH2H=matchH2H(prevAll);
         if(prevH2H.length>h2hMatches.length) h2hMatches=prevH2H;
       }
@@ -864,4 +882,9 @@ ${js}
 }
 
 const PORT=process.env.PORT||3001;
-app.listen(PORT,()=>console.log("Server running on port "+PORT));
+app.listen(PORT,()=>{
+  console.log("Server running on port "+PORT);
+  // Pre-warm cache on startup: fetch today's fixtures so first user request is fast
+  const today=new Date().toISOString().slice(0,10);
+  fetch("http://localhost:"+PORT+"/?tz=0").catch(()=>{});
+});
