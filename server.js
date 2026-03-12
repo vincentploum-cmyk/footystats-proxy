@@ -771,33 +771,33 @@ function buildHTML(preds,dates){
     })();
   `;
 
-  return `<!DOCTYPE html>
-<html lang="en">
-<head>
-<meta charset="UTF-8">
-<meta name="viewport" content="width=device-width,initial-scale=1">
-<title>First Half Score</title>
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=Barlow+Condensed:wght@400;600;700;800&family=Barlow:wght@400;500;600&display=swap" rel="stylesheet">
-<script>(function(){var p=new URLSearchParams(window.location.search);if(!p.has('tz')){p.set('tz',-new Date().getTimezoneOffset());window.location.search=p.toString();}})()</script>
-<style>${css}</style>
-</head>
-<body>
-<div id="topbar">
-  <div class="logo">⚽ First <span>Half</span></div>
-  <div id="daytabs"></div>
-  <button id="refreshbtn" onclick="location.reload()">↺ Refresh</button>
-</div>
-<div id="layout">
-  <div id="sidebar"></div>
-  <div id="main"></div>
-</div>
-<script>
-var ALL_PREDS=${predsJSON};
-${js}
-</script>
-</body>
-</html>`;
+  return '<!DOCTYPE html>\n'
+    +'<html lang="en">\n'
+    +'<head>\n'
+    +'<meta charset="UTF-8">\n'
+    +'<meta name="viewport" content="width=device-width,initial-scale=1">\n'
+    +'<title>First Half Score</title>\n'
+    +'<link rel="preconnect" href="https://fonts.googleapis.com">\n'
+    +'<link href="https://fonts.googleapis.com/css2?family=DM+Mono:wght@400;500&family=Barlow+Condensed:wght@400;600;700;800&family=Barlow:wght@400;500;600&display=swap" rel="stylesheet">\n'
+    +'<script>(function(){var p=new URLSearchParams(window.location.search);if(!p.has(\'tz\')){p.set(\'tz\',-new Date().getTimezoneOffset());window.location.search=p.toString();}})()</script>\n'
+    +'<style>'+css+'</style>\n'
+    +'</head>\n'
+    +'<body>\n'
+    +'<div id="topbar">\n'
+    +'  <div class="logo">&#9917; First <span>Half</span></div>\n'
+    +'  <div id="daytabs"></div>\n'
+    +'  <button id="refreshbtn" onclick="location.reload()">&#8635; Refresh</button>\n'
+    +'</div>\n'
+    +'<div id="layout">\n'
+    +'  <div id="sidebar"></div>\n'
+    +'  <div id="main"></div>\n'
+    +'</div>\n'
+    +'<script>\n'
+    +'var ALL_PREDS='+predsJSON+';\n'
+    +js+'\n'
+    +'</script>\n'
+    +'</body>\n'
+    +'</html>';
 }
 
 const PORT=process.env.PORT||3001;
