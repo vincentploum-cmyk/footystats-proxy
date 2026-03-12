@@ -106,10 +106,7 @@ app.get("/debug-league",async(req,res)=>{
       sampleTeamStatsKeys:sampleTeam.stats?Object.keys(sampleTeam.stats).slice(0,30):[],
       sampleFixtureOddsKeys:oddsKeys,
       sampleFixtureOddsValues:oddsValues,
-      sampleFixtureAllKeys:Object.keys(sampleFixture),
-      sampleFixtureOddsObject:sampleFixture.odds||sampleFixture.unified_odds||null,
-      // Show full fixture for first match to see every field
-      sampleFixtureFull:sampleFixture
+      sampleFixtureAllKeys:Object.keys(sampleFixture)
     });
   }catch(e){res.status(500).json({error:e.message});}
 });
@@ -159,13 +156,22 @@ function calcT1(ht, at){
   return { hVal: hv, aVal: av, met: hv >= 20 && av >= 20 };
 }
 
-// O1: both teams seasonOver15PercentageHT_overall >= 35%
-// Replaces odds-based signal (odds not available in this API plan)
-// Uses confirmed field from stats sub-object
-function calcO1(ht, at){
-  const hv = safe(ht.seasonOver15PercentageHT_overall);
-  const av = safe(at.seasonOver15PercentageHT_overall);
-  return { hVal: hv, aVal: av, met: hv >= 35 && av >= 35 };
+// O1: odds_1st_half_over15 <= 2.0 (from fixture odds, not team stats)
+function calcO1(fixture){
+  // Try every field name FootyStats might use for FH over 1.5 odds
+  const raw = safe(
+    fixture.odds_1st_half_over15 ||
+    fixture["odds_1st_half_over_1.5"] ||
+    fixture.odds_htOver15 ||
+    fixture.odds_ht_over15 ||
+    fixture.o15_1h ||
+    fixture["1h_over15"] ||
+    fixture.ht_over15_odds ||
+    0
+  );
+  // A value of exactly 0 means not available; filter out clearly wrong values too
+  const unavailable = raw === 0 || raw > 20;
+  return { val: unavailable ? 0 : raw, met: !unavailable && raw <= 2.0, unavailable };
 }
 
 // CN010: either team goals_conceded_min_0_to_10 / mp_role >= 0.25
@@ -276,7 +282,7 @@ app.get("/",async(req,res)=>{
         // ── Compute signals ──
         const ci  = calcCI(ht, at);
         const t1  = calcT1(ht, at);
-        const o1  = calcO1(ht, at);
+        const o1  = calcO1(fixture);
         const cn  = calcCN010(ht, at);
 
         // Count met signals (O1 only counts if odds available)
@@ -305,14 +311,15 @@ app.get("/",async(req,res)=>{
           },
           {
             key:"O1",
-            label:"Both Teams FH Over 1.5 Rate",
-            desc:"seasonOver15PercentageHT_overall ≥ 35% for both teams — 2.08x lift",
-            hVal: safe(ht.seasonOver15PercentageHT_overall).toFixed(1)+"%",
-            aVal: safe(at.seasonOver15PercentageHT_overall).toFixed(1)+"%",
-            combinedVal: Math.min(safe(ht.seasonOver15PercentageHT_overall),safe(at.seasonOver15PercentageHT_overall)).toFixed(1)+"% (lower)",
-            threshold:"both ≥ 35%",
+            label:"FH Over 1.5 Odds ≤ 2.0",
+            desc:"Market implies >50% chance of 2+ first half goals — 2.08x lift",
+            hVal:"—",
+            aVal:"—",
+            combinedVal: o1.unavailable?"N/A":o1.val.toFixed(2),
+            threshold:"≤ 2.0",
             met: o1.met,
-            lift:"2.08x lift"
+            lift: o1.unavailable?"no odds":"2.08x lift",
+            unavailable: o1.unavailable
           },
           {
             key:"CN010",
