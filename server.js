@@ -60,7 +60,7 @@ const LEAGUE_NAMES = {
 
 const PROB_TABLE = [10, 20, 25, 35, 45];
 
-// ── Cache (20-min TTL) ───────────────────────────────────────────────────────
+// ── Cache ────────────────────────────────────────────────────────────────────
 const CACHE_TTL = 20 * 60 * 1000;
 const _cache = new Map();
 
@@ -83,6 +83,10 @@ function redactKey(url) {
   return String(url).replace(/key=[^&]+/, "key=***");
 }
 
+function sleep(ms) {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
 async function _rawFetch(url) {
   const r = await fetch(url);
   if (!r.ok) {
@@ -91,7 +95,7 @@ async function _rawFetch(url) {
   return r.json();
 }
 
-const ftch = async (url) => {
+async function ftch(url) {
   const hit = cacheGet(url);
   if (hit) {
     console.log("CACHE: " + redactKey(url));
@@ -101,7 +105,7 @@ const ftch = async (url) => {
   cacheSet(url, data);
   console.log("API:   " + redactKey(url));
   return data;
-};
+}
 
 const safe = (v) => (v == null || isNaN(v) || !isFinite(v) ? 0 : +v);
 
@@ -114,7 +118,8 @@ function normalizeName(s) {
     .trim();
 }
 
-const getDates = (tzOffset = 0) => {
+// IMPORTANT: only fetch 2 days, not 6
+function getDates(tzOffset = 0) {
   const now = new Date();
   const local = new Date(now.getTime() + tzOffset * 60 * 1000);
 
@@ -126,13 +131,13 @@ const getDates = (tzOffset = 0) => {
   };
 
   const dates = [];
-  for (let i = 0; i < 6; i++) {
+  for (let i = 0; i < 2; i++) {
     const d = new Date(local);
     d.setUTCDate(local.getUTCDate() + i);
     dates.push(fmt(d));
   }
   return [...new Set(dates)];
-};
+}
 
 // ── Debug / utility endpoints ────────────────────────────────────────────────
 app.get("/debug-league", async (req, res) => {
@@ -167,10 +172,7 @@ app.get("/debug-league", async (req, res) => {
       sampleTeamId: sampleTeam.id,
       sampleTeamTopKeys: Object.keys(sampleTeam),
       sampleTeamStatsKeys: sampleTeam.stats ? Object.keys(sampleTeam.stats).slice(0, 40) : [],
-      sampleFixtureKeys: Object.keys(sampleFixture),
-      sampleFixtureOddsFields: Object.fromEntries(
-        Object.entries(sampleFixture).filter(([k]) => k.toLowerCase().includes("odd"))
-      )
+      sampleFixtureKeys: Object.keys(sampleFixture)
     });
   } catch (e) {
     res.status(500).json({ error: e.message });
@@ -204,7 +206,6 @@ app.get(/^\/api\/.*/, async (req, res) => {
 });
 
 // ── Signal helpers ───────────────────────────────────────────────────────────
-
 function calcCI(ht, at) {
   const val =
     safe(ht.scoredAVGHT_home) +
@@ -266,14 +267,16 @@ app.get("/", async (req, res) => {
     const tzOffset = parseInt(req.query.tz || "0", 10);
     const dates = getDates(isNaN(tzOffset) ? 0 : tzOffset);
 
-    const dayResults = await Promise.all(
-      dates.map((d) => ftch(BASE + "/todays-matches?date=" + d + "&key=" + KEY))
-    );
-
+    // IMPORTANT: sequential fetch, not Promise.all
     const allFixtures = [];
     for (let i = 0; i < dates.length; i++) {
-      for (const m of dayResults[i].data || []) {
-        allFixtures.push(Object.assign({}, m, { _date: dates[i] }));
+      const d = dates[i];
+      const result = await ftch(BASE + "/todays-matches?date=" + d + "&key=" + KEY);
+      for (const m of result.data || []) {
+        allFixtures.push(Object.assign({}, m, { _date: d }));
+      }
+      if (i < dates.length - 1) {
+        await sleep(400);
       }
     }
 
@@ -296,10 +299,13 @@ app.get("/", async (req, res) => {
 
     const leagueTeamMaps = {};
 
+    // also sequential to stay gentle with API
     for (const sid of Object.keys(leagueFixtures)) {
       const teamMap = {};
       try {
-        const r = await ftch(BASE + "/league-teams?season_id=" + sid + "&include=stats&key=" + KEY);
+        const r = await ftch(
+          BASE + "/league-teams?season_id=" + sid + "&include=stats&key=" + KEY
+        );
         for (const t of r.data || []) {
           if (t.id != null) {
             teamMap[t.id] = t;
@@ -320,6 +326,7 @@ app.get("/", async (req, res) => {
       }
 
       leagueTeamMaps[sid] = teamMap;
+      await sleep(250);
     }
 
     const preds = [];
@@ -364,18 +371,18 @@ app.get("/", async (req, res) => {
           {
             key: "CI",
             label: "HT Intensity Index (CI)",
-            desc: "H scored(home) + A scored(away) + H conceded(home) + A conceded(away) ≥ 3.2 — 2.76x lift",
+            desc: "H scored(home) + A scored(away) + H conceded(home) + A conceded(away) ≥ 3.2",
             hVal: safe(ht.scoredAVGHT_home).toFixed(2) + " sc / " + safe(ht.concededAVGHT_home).toFixed(2) + " cn",
             aVal: safe(at.scoredAVGHT_away).toFixed(2) + " sc / " + safe(at.concededAVGHT_away).toFixed(2) + " cn",
             combinedVal: ci.val.toFixed(3),
             threshold: "≥ 3.2",
             met: ci.met,
-            lift: "2.76x lift"
+            lift: "signal"
           },
           {
             key: "T1",
             label: "Both Teams FH Over 2.5 Rate",
-            desc: "seasonOver25PercentageHT_overall ≥ 20% for both teams — 2.65x lift",
+            desc: "seasonOver25PercentageHT_overall ≥ 20% for both teams",
             hVal: safe(ht.seasonOver25PercentageHT_overall).toFixed(1) + "%",
             aVal: safe(at.seasonOver25PercentageHT_overall).toFixed(1) + "%",
             combinedVal:
@@ -385,12 +392,12 @@ app.get("/", async (req, res) => {
               ).toFixed(1) + "% (lower)",
             threshold: "both ≥ 20%",
             met: t1.met,
-            lift: "2.65x lift"
+            lift: "signal"
           },
           {
             key: "FH15",
             label: "Both Teams FH Over 1.5 Rate",
-            desc: "seasonOver15PercentageHT_overall ≥ 40% for both teams — 2.08x lift",
+            desc: "seasonOver15PercentageHT_overall ≥ 40% for both teams",
             hVal: safe(ht.seasonOver15PercentageHT_overall).toFixed(1) + "%",
             aVal: safe(at.seasonOver15PercentageHT_overall).toFixed(1) + "%",
             combinedVal:
@@ -400,18 +407,18 @@ app.get("/", async (req, res) => {
               ).toFixed(1) + "% (lower)",
             threshold: "both ≥ 40%",
             met: fh15.met,
-            lift: "2.08x lift"
+            lift: "signal"
           },
           {
             key: "CN010",
             label: "Early Goal Conceded Rate (0-10 min)",
-            desc: "Either team concedes ≥ 0.25 goals/game in minutes 0–10 — chaos signal",
+            desc: "Either team concedes ≥ 0.25 goals/game in minutes 0–10",
             hVal: cn.hCon + " in " + cn.hMP + " (" + cn.hRate.toFixed(3) + "/g home)",
             aVal: cn.aCon + " in " + cn.aMP + " (" + cn.aRate.toFixed(3) + "/g away)",
             combinedVal: Math.max(cn.hRate, cn.aRate).toFixed(3) + " (higher)",
             threshold: "either ≥ 0.25",
             met: cn.met,
-            lift: "chaos signal"
+            lift: "signal"
           }
         ];
 
@@ -434,8 +441,6 @@ app.get("/", async (req, res) => {
           fhA: parseInt(fixture.ht_goals_team_b || 0, 10),
           ftH: parseInt(fixture.homeGoalCount || 0, 10),
           ftA: parseInt(fixture.awayGoalCount || 0, 10),
-          hLast5: [],
-          aLast5: [],
           hAvgFH: {
             scored: safe(ht.scoredAVGHT_overall).toFixed(2),
             scoredHome: safe(ht.scoredAVGHT_home).toFixed(2),
@@ -505,14 +510,14 @@ function buildHTML(preds, dates) {
   H += '<div style="padding:16px 20px;max-width:780px;margin:0 auto">';
   H += '<div style="background:#fffbeb;border:1px solid #fde68a;border-radius:8px;padding:12px 16px;margin-bottom:16px;font-size:13px;color:#92400e;line-height:1.6">';
   H += "<strong>How it works:</strong> 4 data-driven signals from team season stats. ";
-  H += "0 signals = 10% &nbsp;|&nbsp; 1 = 20% &nbsp;|&nbsp; 2 = 25% &nbsp;|&nbsp; 3 = 35% &nbsp;|&nbsp; 4 = 45% chance of FH &gt; 2.5 goals.";
+  H += "0 signals = 10% &nbsp;|&nbsp; 1 = 20% &nbsp;|&nbsp; 2 = 25% &nbsp;|&nbsp; 3 = 35% &nbsp;|&nbsp; 4 = 45%.";
   H += "</div>";
   H += '<div id="mainView"></div></div>';
 
   H += "<script>";
   H += "var ALL_PREDS=" + predsJSON + ";";
   H += "var DATES=" + datesJSON + ";";
-  H += 'var DAY_LABELS=["Today","Tomorrow","Day 3","Day 4","Day 5","Day 6"];';
+  H += 'var DAY_LABELS=["Today","Tomorrow"];';
   H += "var activeDate=DATES[0];var activeLeague=null;";
   H += "function fmt(d){return new Date(d).toLocaleDateString('en-GB',{weekday:'long',day:'2-digit',month:'short'});}";
 
@@ -521,7 +526,7 @@ function buildHTML(preds, dates) {
   H += "for(var i=0;i<DATES.length;i++){";
   H += "var d=DATES[i],count=ALL_PREDS.filter(function(p){return p.matchDate===d;}).length;";
   H += "var cls=d===activeDate?'tab active':'tab';";
-  H += "html+='<button class=\"'+cls+'\" onclick=\"selectDay('+i+')\">'+( DAY_LABELS[i]||d)+' <span style=\"font-size:12px;opacity:.7\">('+count+')</span></button>';";
+  H += "html+='<button class=\"'+cls+'\" onclick=\"selectDay('+i+')\">'+(DAY_LABELS[i]||d)+' <span style=\"font-size:12px;opacity:.7\">('+count+')</span></button>';";
   H += "}el.innerHTML=html;}";
 
   H += "function selectDay(i){activeDate=DATES[i];activeLeague=null;renderTabs();renderLeagueList();document.getElementById('headerTitle').textContent=fmt(new Date(DATES[i]+'T12:00:00'));}";
