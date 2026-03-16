@@ -85,40 +85,62 @@ function unixToLocalDate(unix, tzOffset) {
 function computeRank(snap) {
   const h    = snap.home;
   const a    = snap.away;
-  const odds = snap.odds_fh_o15 || 99;
+
+  // Odds: null/0 means genuinely unavailable — NOT a miss, just unknown
+  const rawOdds    = snap.odds_fh_o15;
+  const oddsAvail  = rawOdds && rawOdds > 0 && rawOdds < 90;  // 99 = our sentinel for missing
+  const odds       = oddsAvail ? rawOdds : null;
 
   const expFH = safe((h.scored_fh * a.conced_fh) + (a.scored_fh * h.conced_fh));
 
+  // Stat-only signals — always computable
   const S1 = expFH >= 1.20;
-  const S2 = odds  <= 1.80;
   const S3 = h.btts_ht_pct >= 25 && a.btts_ht_pct >= 25;
-
-  const M1 = odds <= 2.00;
   const M2 = h.cs_ht_pct  <= 30 || a.cs_ht_pct  <= 30;
   const M3 = h.o25ht_pct  >= 20 || a.o25ht_pct  >= 20;
   const M4 = h.cn010_avg  >= 0.25 || a.cn010_avg >= 0.25;
 
-  const strongMet = [S1,S2,S3].filter(Boolean).length;
-  const medMet    = [M1,M2,M3,M4].filter(Boolean).length;
+  // Odds-dependent signals — null = no data (greyed out, not counted)
+  const S2 = oddsAvail ? odds <= 1.80 : null;  // null = no data
+  const M1 = oddsAvail ? odds <= 2.00 : null;  // null = no data
+
+  // Count only signals where we have data
+  const strongMet = [S1, S2===true, S3].filter(Boolean).length;
+  const medMet    = [M1===true, M2, M3, M4].filter(Boolean).length;
+
+  // Rank logic — S2 and M1 are simply absent when odds unavailable.
+  // The remaining signals (S1, S3, M2, M3, M4) score normally.
+  // Rank 5 requires S1+S2+S3 — can only be reached with odds.
+  // Rank 4 can be reached via S1+S3 (no odds needed).
+  // Ranks 1-3 score on whatever signals are available.
+  // An asterisk (*) on the label flags that odds were missing.
+  const suffix = oddsAvail ? "" : "*";
 
   let rank, prob, label;
-  if      (S1 && S2 && S3)              { rank=5; prob=48; label="Prime Pick";     }
-  else if (S1 && (S2 || S3))            { rank=4; prob=42; label="Strong Pick";    }
-  else if (S1 && M1 && medMet >= 2)     { rank=3; prob=35; label="Worth Watching"; }
-  else if (M1 && medMet >= 2)           { rank=2; prob=25; label="Moderate";       }
-  else                                  { rank=1; prob=13; label="Low Signal";     }
+  if      (S1 && S2===true && S3)                    { rank=5; prob=48; label="Prime Pick";       }
+  else if (S1 && S3)                                 { rank=4; prob=42; label="Strong Pick"+suffix; }
+  else if (S1 && S2===true)                          { rank=4; prob=42; label="Strong Pick";      }
+  else if (S1 && M1===true && medMet >= 2)           { rank=3; prob=35; label="Worth Watching";   }
+  else if (S1 && !oddsAvail && (M2||M3||M4))         { rank=3; prob=35; label="Worth Watching"+suffix; }
+  else if (M1===true && medMet >= 2)                 { rank=2; prob=25; label="Moderate";         }
+  else if (!oddsAvail && (M2||M3||M4))               { rank=2; prob=25; label="Moderate"+suffix;  }
+  else                                               { rank=1; prob=13; label="Low Signal";       }
 
   return {
-    rank, prob, label, eligible: rank >= 4,
-    expFH: +expFH.toFixed(3), strongMet, medMet,
+    rank, prob, label,
+    eligible:    rank >= 4,
+    oddsAvail,
+    expFH:       +expFH.toFixed(3),
+    strongMet,
+    medMet,
     signals: {
-      S1:{ met:S1, label:"Exp FH Goals >= 1.20",    value:expFH.toFixed(2),                     threshold:">= 1.20",    tier:"strong" },
-      S2:{ met:S2, label:"FH Odds (o1.5) <= 1.80",  value:odds<99?odds.toFixed(2):"n/a",        threshold:"<= 1.80",    tier:"strong" },
-      S3:{ met:S3, label:"Both BTTS FH >= 25%",     value:h.btts_ht_pct+"%/"+a.btts_ht_pct+"%",threshold:"both >= 25%", tier:"strong" },
-      M1:{ met:M1, label:"FH Odds (o1.5) <= 2.00",  value:odds<99?odds.toFixed(2):"n/a",        threshold:"<= 2.00",    tier:"medium" },
-      M2:{ met:M2, label:"FH Clean Sheet <= 30%",   value:h.cs_ht_pct+"%/"+a.cs_ht_pct+"%",    threshold:"either<=30%", tier:"medium" },
-      M3:{ met:M3, label:"FH Over 2.5 >= 20%",      value:h.o25ht_pct+"%/"+a.o25ht_pct+"%",    threshold:"either>=20%", tier:"medium" },
-      M4:{ met:M4, label:"Early Goals >= 0.25/gm",  value:h.cn010_avg.toFixed(2)+"/"+a.cn010_avg.toFixed(2), threshold:"either>=0.25", tier:"medium" },
+      S1: { met:S1,       noData:false,      label:"Exp FH Goals >= 1.20",   value:expFH.toFixed(2),                              threshold:">= 1.20",    tier:"strong" },
+      S2: { met:S2===true, noData:!oddsAvail, label:"FH Odds (o1.5) <= 1.80", value:oddsAvail?odds.toFixed(2):"no data",           threshold:"<= 1.80",    tier:"strong" },
+      S3: { met:S3,       noData:false,      label:"Both BTTS FH >= 25%",    value:h.btts_ht_pct+"%/"+a.btts_ht_pct+"%",         threshold:"both>=25%",  tier:"strong" },
+      M1: { met:M1===true, noData:!oddsAvail, label:"FH Odds (o1.5) <= 2.00", value:oddsAvail?odds.toFixed(2):"no data",           threshold:"<= 2.00",    tier:"medium" },
+      M2: { met:M2,       noData:false,      label:"FH Clean Sheet <= 30%",  value:h.cs_ht_pct+"%/"+a.cs_ht_pct+"%",             threshold:"either<=30%", tier:"medium" },
+      M3: { met:M3,       noData:false,      label:"FH Over 2.5 >= 20%",     value:h.o25ht_pct+"%/"+a.o25ht_pct+"%",             threshold:"either>=20%", tier:"medium" },
+      M4: { met:M4,       noData:false,      label:"Early Goals >= 0.25/gm", value:h.cn010_avg.toFixed(2)+"/"+a.cn010_avg.toFixed(2), threshold:"either>=0.25", tier:"medium" },
     },
   };
 }
@@ -315,6 +337,7 @@ app.get("/", async (req,res) => {
           prob:        rankResult ? rankResult.prob      : 0,
           label:       rankResult ? rankResult.label     : "No data",
           eligible:    rankResult ? rankResult.eligible  : false,
+          oddsAvail:   rankResult ? rankResult.oddsAvail : false,
           expFH:       rankResult ? rankResult.expFH     : 0,
           strongMet:   rankResult ? rankResult.strongMet : 0,
           medMet:      rankResult ? rankResult.medMet    : 0,
@@ -429,23 +452,36 @@ function buildHTML(preds, dates) {
   J += "  document.getElementById('backBtn').addEventListener('click',function(){activeLeague=null;renderLeagueList();});";
   J += "}";
 
-  // sigRow helper
+  // sigRow helper — 3 states:
+  //   met     → green background, green left border, green icon, green value
+  //   missed  → red background, red left border, red icon, grey value
+  //   noData  → grey background, grey left border, grey dash, grey value
   J += "function sigRow(s){";
   J += "  if(!s)return '';";
-  J += "  var icon=s.met?'&#10003;':'&#10007;';";
-  J += "  var icol=s.met?'#15803d':'#dc2626';";
-  J += "  var rbg=s.met?(s.tier==='strong'?'#fef2f2':'#f0fdf4'):'#fafafa';";
-  J += "  var lc=s.met?(s.tier==='strong'?'#dc2626':'#15803d'):'#e5e7eb';";
-  J += "  var badge=s.tier==='strong'?'<span style=\"background:#dc2626;color:#fff;font-size:9px;padding:1px 5px;border-radius:3px;margin-right:6px;font-weight:700\">STRONG</span>':'';";
-  J += "  return '<div style=\"display:flex;align-items:flex-start;gap:10px;padding:9px 12px;background:'+rbg+';border-radius:7px;border-left:3px solid '+lc+';margin-bottom:5px\">'";
-  J += "    +'<span style=\"font-size:14px;color:'+icol+';font-weight:700;min-width:18px;margin-top:1px\">'+icon+'</span>'";
+  J += "  var icon,icol,rbg,lc,labelCol,valueCol;";
+  J += "  if(s.noData){";
+  J += "    icon='&#8212;';icol='#9ca3af';rbg='#f9fafb';lc='#e5e7eb';labelCol='#9ca3af';valueCol='#9ca3af';";
+  J += "  } else if(s.met){";
+  J += "    icon='&#10003;';icol='#15803d';rbg='#f0fdf4';lc='#16a34a';labelCol='#111827';valueCol='#15803d';";
+  J += "  } else {";
+  J += "    icon='&#10007;';icol='#dc2626';rbg='#fef2f2';lc='#dc2626';labelCol='#111827';valueCol='#dc2626';";
+  J += "  }";
+  J += "  var badgeBg=s.noData?'#9ca3af':s.tier==='strong'?'#15803d':'#ca8a04';";
+  J += "  var badge=s.tier==='strong'";
+  J += "    ?'<span style=\"background:'+badgeBg+';color:#fff;font-size:9px;padding:1px 5px;border-radius:3px;margin-right:6px;font-weight:700\">STRONG</span>'";
+  J += "    :'<span style=\"background:'+badgeBg+';color:#fff;font-size:9px;padding:1px 5px;border-radius:3px;margin-right:6px;font-weight:700\">MED</span>';";
+  J += "  var noDataNote=s.noData?'<div style=\"font-size:10px;color:#9ca3af;margin-top:3px;font-style:italic\">No odds from API \u2014 check your sportsbook for the line</div>':'';";
+  J += "  return '<div style=\"display:flex;align-items:flex-start;gap:10px;padding:10px 14px;background:'+rbg+';border-radius:7px;border-left:4px solid '+lc+';margin-bottom:6px;'+(s.noData?'opacity:0.55':'')+'\">'";
+  J += "    +'<span style=\"font-size:16px;color:'+icol+';font-weight:700;min-width:20px;margin-top:1px\">'+icon+'</span>'";
   J += "    +'<div style=\"flex:1\">'";
   J += "    +'<div style=\"display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:4px\">'";
-  J += "    +'<span style=\"font-weight:600;font-size:12px;color:#111827\">'+badge+esc(s.label)+'</span>'";
+  J += "    +'<span style=\"font-weight:600;font-size:12px;color:'+labelCol+'\">'+badge+esc(s.label)+'</span>'";
   J += "    +'<div style=\"display:flex;align-items:center;gap:8px\">'";
-  J += "    +'<span style=\"font-family:monospace;font-weight:700;font-size:12px;color:'+(s.met?icol:'#9ca3af')+'\">'+esc(s.value)+'</span>'";
+  J += "    +'<span style=\"font-family:monospace;font-weight:700;font-size:13px;color:'+valueCol+'\">'+esc(s.value)+'</span>'";
   J += "    +'<span style=\"font-size:10px;color:#d1d5db\">('+esc(s.threshold)+')</span>'";
-  J += "    +'</div></div></div></div>';";
+  J += "    +'</div></div>'";
+  J += "    +noDataNote";
+  J += "    +'</div></div>';";
   J += "}";
 
   // statBox helper
@@ -508,17 +544,8 @@ function buildHTML(preds, dates) {
   J += "  var statusBadge='<span style=\"padding:2px 8px;border-radius:20px;font-size:10px;font-weight:700;background:'+sc.bg+';border:1px solid '+sc.border+';color:'+sc.color+'\">'+sc.txt+'</span>';";
   J += "  var frozen=m.snapshot?'<span style=\"padding:2px 8px;border-radius:20px;font-size:10px;font-weight:600;background:#fffbeb;border:1px solid #fde68a;color:#92400e;margin-left:6px\">&#128274; '+esc((m.snapshot||{}).fetchedAt||'')+'</span>':'';";
   J += "  var missWarn=m.missingStats?'<span style=\"background:#fef3c7;color:#92400e;font-size:11px;padding:2px 7px;border-radius:4px;font-weight:600;margin-left:6px\">&#9888; missing stats</span>':'';";
-
-  // signals block
-  J += "  var sigHTML='';";
-  J += "  if(m.missingStats){";
-  J += "    sigHTML='<div style=\"color:#9ca3af;font-size:13px;padding:12px 0\">No team stats available.</div>';";
-  J += "  } else {";
-  J += "    sigHTML+='<div style=\"font-size:10px;font-weight:700;color:#dc2626;letter-spacing:1.5px;text-transform:uppercase;margin-bottom:8px\">&#9679; Strong Signals</div>';";
-  J += "    ['S1','S2','S3'].forEach(function(k){sigHTML+=sigRow(m.signals[k]);});";
-  J += "    sigHTML+='<div style=\"font-size:10px;font-weight:700;color:#ca8a04;letter-spacing:1.5px;text-transform:uppercase;margin:14px 0 8px\">&#9670; Medium Signals</div>';";
-  J += "    ['M1','M2','M3','M4'].forEach(function(k){sigHTML+=sigRow(m.signals[k]);});";
-  J += "  }";
+  J += "  var noOddsWarn=(!m.missingStats&&!m.oddsAvail)?'<span style=\"background:#f3f4f6;color:#6b7280;font-size:11px;padding:2px 7px;border-radius:4px;font-weight:600;margin-left:6px\">&#9711; No odds available \u2014 check your sportsbook</span>':'';";
+  J += "  var noStatsMsg=m.missingStats?'<div style=\"color:#9ca3af;font-size:13px;padding:12px 0\">No team stats available.</div>':'';";
 
   // stats block
   J += "  var statsHTML='';";
@@ -544,7 +571,9 @@ function buildHTML(preds, dates) {
   J += "      +statBox('Early Goals /gm',a.cn010_avg.toFixed(2),a.cn010_avg>=0.25)";
   J += "      +'</div></div>';";
   J += "    statsHTML+='</div>';";
-  J += "    var oddsColor=m.snapshot.odds_fh_o15<=1.80?'#dc2626':'#374151';";
+  J += "    var oddsColor=m.oddsAvail&&m.snapshot.odds_fh_o15<=1.80?'#dc2626':'#374151';";
+  J += "    var oddsDisplay=m.oddsAvail?m.snapshot.odds_fh_o15.toFixed(2):'no data';";
+  J += "    var oddsColorFinal=m.oddsAvail?oddsColor:'#9ca3af';";
   J += "    statsHTML+='<div style=\"background:#eff6ff;border:1px solid #bfdbfe;border-radius:8px;padding:10px 14px\">'";
   J += "      +'<div style=\"font-size:10px;color:#1d4ed8;font-weight:700;text-transform:uppercase;letter-spacing:.8px;margin-bottom:6px\">Expected FH Goals</div>'";
   J += "      +'<div style=\"font-family:monospace;font-size:12px;color:#374151;line-height:2\">'";
@@ -554,7 +583,7 @@ function buildHTML(preds, dates) {
   J += "      +' <span style=\"font-size:11px;color:'+(m.expFH>=1.2?'#15803d':'#9ca3af')+'\">'+( m.expFH>=1.2?'&#10003; &ge; 1.20':'&#10007; &lt; 1.20')+'</span>'";
   J += "      +'</div>'";
   J += "      +'<div style=\"margin-top:8px;display:flex;gap:16px\">'";
-  J += "      +'<div><span style=\"font-size:10px;color:#9ca3af\">FH o1.5 Odds</span> <span style=\"font-family:monospace;font-weight:700;color:'+oddsColor+'\">'+( m.snapshot.odds_fh_o15<99?m.snapshot.odds_fh_o15.toFixed(2):'n/a')+'</span></div>'";
+  J += "      +'<div><span style=\"font-size:10px;color:#9ca3af\">FH o1.5 Odds</span> <span style=\"font-family:monospace;font-weight:700;color:'+oddsColorFinal+'\">'+oddsDisplay+'</span></div>'";
   J += "      +(m.snapshot.odds_ft_o25?'<div><span style=\"font-size:10px;color:#9ca3af\">FT o2.5 Odds</span> <span style=\"font-family:monospace;font-weight:700;color:#374151\">'+m.snapshot.odds_ft_o25.toFixed(2)+'</span></div>':'')";
   J += "      +'</div></div>';";
   J += "  }";
@@ -581,7 +610,7 @@ function buildHTML(preds, dates) {
   J += "    +'<div style=\"padding:18px 20px\">'";
   J += "    +'<div style=\"display:flex;justify-content:space-between;align-items:flex-start;gap:12px;margin-bottom:14px\">'";
   J += "    +'<div>'";
-  J += "    +'<div style=\"font-size:11px;color:#9ca3af;text-transform:uppercase;letter-spacing:.8px;margin-bottom:4px\">'+esc(m.league)+' &middot; '+esc(dt)+missWarn+'</div>'";
+  J += "    +'<div style=\"font-size:11px;color:#9ca3af;text-transform:uppercase;letter-spacing:.8px;margin-bottom:4px\">'+esc(m.league)+' &middot; '+esc(dt)+missWarn+noOddsWarn+'</div>'";
   J += "    +'<div style=\"display:flex;align-items:center;gap:6px;flex-wrap:wrap\">'+statusBadge+frozen+'</div>'";
   J += "    +'</div>'";
   J += "    +'<div style=\"text-align:center;min-width:90px;background:'+bg+';border:1px solid '+br+';border-radius:10px;padding:10px 8px;flex-shrink:0\">'";
@@ -591,8 +620,8 @@ function buildHTML(preds, dates) {
   J += "    +'</div></div>'";
   J += "    +'<div style=\"font-size:22px;font-weight:800;color:#111827;margin-bottom:8px\">'+esc(m.home)+' <span style=\"color:#d1d5db;font-weight:400;font-size:14px\">vs</span> '+esc(m.away)+'</div>'";
   J += "    +'<div style=\"display:flex;gap:6px;margin-bottom:12px;flex-wrap:wrap\">'";
-  J += "    +'<div style=\"padding:3px 10px;border-radius:20px;background:'+(m.strongMet>0?'#fef2f2':'#f3f4f6')+';border:1px solid '+(m.strongMet>0?'#fca5a5':'#e5e7eb')+'\">'";
-  J += "    +'<span style=\"font-family:monospace;font-weight:700;font-size:11px;color:'+(m.strongMet>0?'#dc2626':'#9ca3af')+'\">'+m.strongMet+'/3</span>'";
+  J += "    +'<div style=\"padding:3px 10px;border-radius:20px;background:'+(m.strongMet>0?'#f0fdf4':'#f3f4f6')+';border:1px solid '+(m.strongMet>0?'#86efac':'#e5e7eb')+'\">'";
+  J += "    +'<span style=\"font-family:monospace;font-weight:700;font-size:11px;color:'+(m.strongMet>0?'#15803d':'#9ca3af')+'\">'+m.strongMet+'/3</span>'";
   J += "    +'<span style=\"font-size:10px;color:#9ca3af;margin-left:4px\">strong</span></div>'";
   J += "    +'<div style=\"padding:3px 10px;border-radius:20px;background:'+(m.medMet>0?'#fffbeb':'#f3f4f6')+';border:1px solid '+(m.medMet>0?'#fde68a':'#e5e7eb')+'\">'";
   J += "    +'<span style=\"font-family:monospace;font-weight:700;font-size:11px;color:'+(m.medMet>0?'#ca8a04':'#9ca3af')+'\">'+m.medMet+'/4</span>'";
@@ -605,8 +634,11 @@ function buildHTML(preds, dates) {
   J += "    +'<details style=\"margin-top:14px\">'";
   J += "    +'<summary style=\"font-size:13px;color:#6b7280;cursor:pointer;padding-top:10px;border-top:1px solid #f3f4f6\">&#9660; Show full detail</summary>'";
   J += "    +'<div style=\"padding-top:14px\">'";
-  J += "    +'<div style=\"font-size:11px;font-weight:700;color:#374151;margin-bottom:10px;text-transform:uppercase;letter-spacing:.8px\">Signals</div>'";
-  J += "    +sigHTML";
+  J += "    +'<div style=\"font-size:10px;font-weight:700;color:#15803d;letter-spacing:1.5px;text-transform:uppercase;margin-bottom:8px\">&#9679; Strong Signals</div>'";
+  J += "    +noStatsMsg";
+  J += "    +(m.missingStats?'':sigRow(m.signals.S1)+sigRow(m.signals.S2)+sigRow(m.signals.S3))";
+  J += "    +(m.missingStats?'':'<div style=\"font-size:10px;font-weight:700;color:#ca8a04;letter-spacing:1.5px;text-transform:uppercase;margin:14px 0 8px\">&#9670; Medium Signals</div>')";
+  J += "    +(m.missingStats?'':sigRow(m.signals.M1)+sigRow(m.signals.M2)+sigRow(m.signals.M3)+sigRow(m.signals.M4))";
   J += "    +'<div style=\"background:#f9fafb;border:1px solid #e5e7eb;border-radius:9px;padding:14px 16px;margin-top:14px\">'";
   J += "    +'<div style=\"font-size:10px;color:#9ca3af;text-transform:uppercase;letter-spacing:.8px;margin-bottom:10px;font-weight:600\">Probability Reference &middot; 5,699 matches</div>'";
   J += "    +probRefHTML()";
