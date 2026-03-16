@@ -489,7 +489,6 @@ function buildPredictionForFixture(
   const ht = unwrapTeam(htRaw) || {};
   const at = unwrapTeam(atRaw) || {};
 
-  // Freeze all history inputs to pre-match only.
   const preMatchTeamHistory = filterHistoryBeforeFixture(teamHistory, fixture);
   const preMatchCompletedMatches = filterCompletedMatchesBeforeFixture(
     completedMatches,
@@ -734,7 +733,7 @@ function buildHTML(preds, dates) {
   H += "var ALL_PREDS=" + predsJSON + ";";
   H += "var DATES=" + datesJSON + ";";
   H += 'var DAY_LABELS=["Today","Tomorrow","Day 3","Day 4","Day 5","Day 6"];';
-  H += "var activeDate=DATES[0];";
+  H += "var activeDate=DATES[0]||null;";
   H += "var activeLeague=null;";
   H += "function fmt(d){return new Date(d).toLocaleDateString('en-GB',{weekday:'long',day:'2-digit',month:'short'});}";
   H += "function shortName(n){return (n||'').split(' ').slice(0,2).join(' ');}";
@@ -765,6 +764,9 @@ function buildHTML(preds, dates) {
   H += "function backToLeagues(){activeLeague=null;renderLeagueList();}";
 
   H += "function renderLeagueList(){";
+  H += "if(!activeDate){";
+  H += "document.getElementById('mainView').innerHTML='<div style=\"background:#fff;border:1px solid #e5e7eb;border-radius:8px;padding:40px;text-align:center;color:#6b7280\">No matches found.</div>';";
+  H += "return;}";
   H += "var dayPreds=ALL_PREDS.filter(function(p){return p.matchDate===activeDate;});";
   H += "var leagueMap={};";
   H += "for(var i=0;i<dayPreds.length;i++){";
@@ -818,7 +820,7 @@ function buildHTML(preds, dates) {
   H += "rows+='<td>'+g.opp+'</td>';";
   H += "rows+='<td>'+g.htFor+'-'+g.htAgainst+' ('+htTot+')</td>';";
   H += "rows+='<td>'+g.ftFor+'-'+g.ftAgainst+'</td>';";
-  H += "'</tr>';";
+  H += "rows+='</tr>';";
   H += "}";
   H += "return '<div style=\"margin-top:12px\"><div style=\"font-size:12px;font-weight:700;color:#374151;margin-bottom:6px\">'+title+'</div><table class=\"mini-table\"><thead><tr><th>Date</th><th>H/A</th><th>Opponent</th><th>HT</th><th>FT</th></tr></thead><tbody>'+rows+'</tbody></table></div>';";
   H += "}";
@@ -878,7 +880,11 @@ function buildHTML(preds, dates) {
   H += "return html;";
   H += "}";
 
+  H += "if(DATES.length){";
   H += "document.getElementById('headerTitle').textContent=fmt(new Date(DATES[0]+'T12:00:00'));";
+  H += "}else{";
+  H += "document.getElementById('headerTitle').textContent='No matches found';";
+  H += "}";
   H += "renderTabs();";
   H += "renderLeagueList();";
   H += "<\/script></body></html>";
