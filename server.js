@@ -18,35 +18,31 @@ async function fetchLeagueList() {
     const data = await fetch(url).then(r => r.json());
     const list = data.data || [];
 
-    // Log raw structure of first item so we can see exact field names in Render logs
-    if (list.length > 0) {
-      console.log("League-list first item:", JSON.stringify(list[0]));
-    } else {
-      console.log("League-list returned empty data. Full response:", JSON.stringify(data).slice(0, 500));
-    }
+    console.log("League-list: " + list.length + " leagues found");
 
     const map = {};
     for (const league of list) {
-      // FootyStats league-list fields vary — try all known field name combinations
-      const name = league.name || league.league_name || league.competition_name || "";
+      // Name: prefer league_name (short), fall back to name (full)
+      const name = league.league_name || league.name || "";
       if (!name) continue;
 
-      // Map every ID variant we can find
-      const ids = [
-        league.id,
-        league.season_id,
-        league.league_id,
-        league.competition_id,
-      ].filter(Boolean).map(Number);
-
-      for (const id of ids) {
-        if (id && !map[id]) map[id] = name;
+      // Seasons is an array — map EVERY season ID to this league name
+      // so historical and current seasons all resolve correctly
+      const seasons = league.season || [];
+      for (const s of seasons) {
+        if (s.id) map[parseInt(s.id)] = name;
       }
     }
 
     LEAGUE_NAMES = map;
-    console.log("Loaded " + Object.keys(map).length + " league IDs from subscription:");
-    Object.entries(map).forEach(([id, name]) => console.log("  " + id + ": " + name));
+    console.log("Mapped " + Object.keys(map).length + " season IDs across " + list.length + " leagues");
+    // Log each league with its current (latest) season ID
+    for (const league of list) {
+      const seasons = league.season || [];
+      const latest  = seasons[seasons.length - 1];
+      const name    = league.league_name || league.name || "?";
+      if (latest) console.log("  " + latest.id + " (" + latest.year + "): " + name);
+    }
   } catch (e) {
     console.error("Failed to load league list: " + e.message);
     LEAGUE_NAMES = {};
