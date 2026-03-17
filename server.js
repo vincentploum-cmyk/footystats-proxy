@@ -164,9 +164,10 @@ function extractSnapshotStats(teamObj, role) {
 
   // pick role-specific field first; only fall back to overall if role field is null/undefined
   // critically: do NOT use || because 0 is a valid value and || would skip it
+  // also fall back to overall if fewer than 3 role-specific games (small sample = unreliable)
   const pick = (roleKey, fallbackKey) => {
     const rv = s[roleKey];
-    if (rv !== null && rv !== undefined) return rv;
+    if (rv !== null && rv !== undefined && mpR >= 3) return rv;
     const fv = s[fallbackKey];
     if (fv !== null && fv !== undefined) return fv;
     return 0;
