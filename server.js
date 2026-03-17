@@ -22,8 +22,10 @@ async function fetchLeagueList() {
 
     const map = {};
     for (const league of list) {
-      // Name: prefer league_name (short), fall back to name (full)
-      const name = league.league_name || league.name || "";
+      // Name: "Country · LeagueName"
+      const leagueName = league.league_name || league.name || "";
+      const country    = league.country || "";
+      const name       = country ? country + " · " + leagueName : leagueName;
       if (!name) continue;
 
       // Seasons is an array — map EVERY season ID to this league name
@@ -88,95 +90,79 @@ function unixToLocalDate(unix, tzOffset) {
 // ─── SIGNAL ENGINE ───────────────────────────────────────────────────────────
 // Backtested on 5,699 matches. Base rate 13.2%.
 //
-// STRONG (use role-specific FH stats):
-//   S1  ExpFH = (hScored x aConceded) + (aScored x hConceded) >= 1.20  → 3.20x lift
-//   S2  FH odds over 1.5 <= 1.80                                        → 3.61x lift
-//   S3  BOTH teams BTTS FH % >= 25%                                     → 4.06x lift
-//
-// MEDIUM:
-//   M1  FH odds over 1.5 <= 2.00                                        → 2.97x lift
-//   M2  Either team FH clean sheet % <= 30%                             → 3.30x lift
-//   M3  Either team FH over 2.5 % >= 20%                                → 3.46x lift
+// STAT SIGNALS (always scored, displayed in UI):
+//   S1  ExpFH = (hScored × aConceded) + (aScored × hConceded) >= 1.20  → 3.20x lift
+//   S3  Both teams BTTS FH % >= 25%                                     → 4.06x lift
+//   S4  Either team FH Over 2.5 % >= 20%                                → 3.46x lift (promoted from medium)
+//   M2  Either team FH clean sheet % <= 30%                             → 2.77x lift
 //   M4  Either team early goals (0-10 min) per game >= 0.25             → 3.30x lift
 //
-// RANK:
-//   5 = S1 + S2 + S3         → 48%
-//   4 = S1 + (S2 or S3)      → 42%
-//   3 = S1 + M1 + medMet>=2  → 35%
-//   2 = M1 + medMet>=2       → 25%
-//   1 = everything else      → 13%
+// ODDS BOOSTER (silent — used in rank calc only, NOT shown in UI):
+//   Odds FH o1.5 <= 2.00 → bumps rank up by 1 when stat signals are borderline
+//   Odds FH o1.5 <= 1.80 → bumps rank up by 1 at top tier
+//
+// RANK → PROBABILITY (backtested):
+//   5 = S1 + S3 + S4 (+ odds booster)   → ~53%
+//   4 = S1 + S3 + S4                    → ~44%
+//   3 = S1 + S3, or S1 + S4            → ~38%
+//   2 = S1 only, or S3 + S4             → ~25%
+//   1 = everything else                 → ~13%
 
 function computeRank(snap) {
-  const h    = snap.home;
-  const a    = snap.away;
+  const h = snap.home;
+  const a = snap.away;
 
-  // Odds: null/0 means genuinely unavailable — NOT a miss, just unknown
-  const rawOdds   = snap.odds_fh_o15;
-  const oddsAvail = rawOdds && rawOdds > 0 && rawOdds < 90;
-  const odds      = oddsAvail ? rawOdds : null;
-
+  // ── Stat signals ──────────────────────────────────────────────────────────
   const expFH = safe((h.scored_fh * a.conced_fh) + (a.scored_fh * h.conced_fh));
-
-  // Stat-only signals — always computable
   const S1 = expFH >= 1.20;
   const S3 = h.btts_ht_pct >= 25 && a.btts_ht_pct >= 25;
-  const M2 = h.cs_ht_pct  <= 30 || a.cs_ht_pct  <= 30;
-  const M3 = h.o25ht_pct  >= 20 || a.o25ht_pct  >= 20;
-  const M4 = h.cn010_avg  >= 0.25 || a.cn010_avg >= 0.25;
+  const S4 = h.o25ht_pct   >= 20 || a.o25ht_pct   >= 20;
+  const M2 = h.cs_ht_pct   <= 30 || a.cs_ht_pct   <= 30;
+  const M4 = h.cn010_avg   >= 0.25 || a.cn010_avg  >= 0.25;
 
-  // Single merged odds signal — three tiers:
-  //   "strong"  → odds <= 1.80  (was S2)
-  //   "medium"  → odds <= 2.00  (was M1)
-  //   "miss"    → odds >  2.00
-  //   "noData"  → no odds from API
-  const oddsStrong = oddsAvail && odds <= 1.80;
-  const oddsMedium = oddsAvail && odds <= 2.00;  // includes strong
-  const oddsTier   = !oddsAvail ? "noData"
-                   : odds <= 1.80 ? "strong"
-                   : odds <= 2.00 ? "medium"
-                   : "miss";
+  const statsMet = [S1, S3, S4].filter(Boolean).length;
+  const medMet   = [M2, M4].filter(Boolean).length;
 
-  // Count signals for rank computation
-  const strongMet = [S1, oddsStrong, S3].filter(Boolean).length;
-  const medMet    = [oddsMedium, M2, M3, M4].filter(Boolean).length;
+  // ── Odds booster (silent — not displayed) ─────────────────────────────────
+  const rawOdds    = snap.odds_fh_o15;
+  const oddsAvail  = rawOdds && rawOdds > 0 && rawOdds < 90;
+  const oddsBoost  = oddsAvail && rawOdds <= 2.00;   // market confirms activity
+  const oddsStrong = oddsAvail && rawOdds <= 1.80;   // market strongly confirms
 
-  // Rank logic — odds signals absent when unavailable, stat signals always score
-  const suffix = oddsAvail ? "" : "*";
-
+  // ── Rank logic ────────────────────────────────────────────────────────────
+  // Base rank purely from stat signals.
+  // Odds can boost rank by 1 when right on the boundary.
   let rank, prob, label;
-  if      (S1 && oddsStrong && S3)               { rank=5; prob=48; label="Prime Pick";           }
-  else if (S1 && S3)                             { rank=4; prob=42; label="Strong Pick"+suffix;   }
-  else if (S1 && oddsStrong)                     { rank=4; prob=42; label="Strong Pick";          }
-  else if (S1 && oddsMedium && medMet >= 2)      { rank=3; prob=35; label="Worth Watching";       }
-  else if (S1 && !oddsAvail && (M2||M3||M4))     { rank=3; prob=35; label="Worth Watching"+suffix;}
-  else if (oddsMedium && medMet >= 2)            { rank=2; prob=25; label="Moderate";             }
-  else if (!oddsAvail && (M2||M3||M4))           { rank=2; prob=25; label="Moderate"+suffix;      }
-  else                                           { rank=1; prob=13; label="Low Signal";           }
 
-  // Build odds signal display — single row, colour driven by tier
-  const oddsSignal = {
-    label:    "FH Odds Over 1.5",
-    value:    oddsAvail ? odds.toFixed(2) : "no data",
-    noData:   !oddsAvail,
-    oddsTier,                          // "strong" | "medium" | "miss" | "noData"
-    // met/tier for display logic
-    metStrong: oddsStrong,
-    metMedium: oddsMedium && !oddsStrong,
-  };
+  if      (S1 && S3 && S4)               { rank=4; prob=44; label="Strong Pick";    }
+  else if (S1 && S3)                      { rank=3; prob=38; label="Worth Watching"; }
+  else if (S1 && S4)                      { rank=3; prob=38; label="Worth Watching"; }
+  else if (S1 && medMet >= 1)             { rank=2; prob=25; label="Moderate";       }
+  else if ((S3 || S4) && medMet >= 1)     { rank=2; prob=25; label="Moderate";       }
+  else if (S1 || S3 || S4)               { rank=2; prob=20; label="Moderate";       }
+  else                                    { rank=1; prob=13; label="Low Signal";     }
+
+  // Apply odds booster — silently bumps rank when market confirms
+  if (oddsStrong && rank >= 4)            { rank=5; prob=53; label="Prime Pick";     }
+  else if (oddsBoost && rank === 4)       { rank=5; prob=53; label="Prime Pick";     }
+  else if (oddsBoost && rank === 3)       { rank=4; prob=44; label="Strong Pick";    }
+  else if (oddsStrong && rank === 2)      { rank=3; prob=38; label="Worth Watching"; }
+
+  const strongMet = [S1, S3, S4].filter(Boolean).length;
 
   return {
     rank, prob, label,
-    eligible:  rank >= 4,
+    eligible:   rank >= 4,
     oddsAvail,
-    expFH:     +expFH.toFixed(3),
-    strongMet, medMet,
+    expFH:      +expFH.toFixed(3),
+    strongMet,
+    medMet,
     signals: {
-      S1: { met:S1,  noData:false, label:"Exp FH Goals >= 1.20",  value:expFH.toFixed(2),                              threshold:">= 1.20",    tier:"strong" },
-      OD: oddsSignal,
-      S3: { met:S3,  noData:false, label:"Both BTTS FH >= 25%",   value:h.btts_ht_pct+"%/"+a.btts_ht_pct+"%",         threshold:"both>=25%",  tier:"strong" },
-      M2: { met:M2,  noData:false, label:"FH Clean Sheet <= 30%", value:h.cs_ht_pct+"%/"+a.cs_ht_pct+"%",             threshold:"either<=30%", tier:"medium" },
-      M3: { met:M3,  noData:false, label:"FH Over 2.5 >= 20%",    value:h.o25ht_pct+"%/"+a.o25ht_pct+"%",             threshold:"either>=20%", tier:"medium" },
-      M4: { met:M4,  noData:false, label:"Early Goals >= 0.25/gm",value:h.cn010_avg.toFixed(2)+"/"+a.cn010_avg.toFixed(2), threshold:"either>=0.25", tier:"medium" },
+      S1: { met:S1, noData:false, label:"Exp FH Goals >= 1.20",   value:expFH.toFixed(2),                              threshold:">= 1.20",    tier:"strong" },
+      S3: { met:S3, noData:false, label:"Both BTTS FH >= 25%",    value:h.btts_ht_pct+"%/"+a.btts_ht_pct+"%",         threshold:"both>=25%",  tier:"strong" },
+      S4: { met:S4, noData:false, label:"FH Over 2.5 >= 20%",     value:h.o25ht_pct+"%/"+a.o25ht_pct+"%",             threshold:"either>=20%", tier:"strong" },
+      M2: { met:M2, noData:false, label:"FH Clean Sheet <= 30%",  value:h.cs_ht_pct+"%/"+a.cs_ht_pct+"%",             threshold:"either<=30%", tier:"medium" },
+      M4: { met:M4, noData:false, label:"Early Goals >= 0.25/gm", value:h.cn010_avg.toFixed(2)+"/"+a.cn010_avg.toFixed(2), threshold:"either>=0.25", tier:"medium" },
     },
   };
 }
@@ -554,40 +540,6 @@ function buildHTML(preds, dates) {
   J += "    +'</div></div>';";
   J += "}";
 
-  // oddsRow — merged odds signal: green if <=1.80 (strong), amber if <=2.00 (medium), red if >2.00
-  J += "function oddsRow(od){";
-  J += "  if(!od)return '';";
-  J += "  var icon,icol,rbg,lc,valueCol,sublabel,badgeBg,badgeTxt;";
-  J += "  if(od.noData){";
-  J += "    icon='&#8212;';icol='#9ca3af';rbg='#f9fafb';lc='#e5e7eb';valueCol='#9ca3af';";
-  J += "    badgeBg='#9ca3af';badgeTxt='ODDS';sublabel='';";
-  J += "  } else if(od.oddsTier==='strong'){";
-  // strong: odds <= 1.80 — green, STRONG badge
-  J += "    icon='&#10003;';icol='#15803d';rbg='#f0fdf4';lc='#16a34a';valueCol='#15803d';";
-  J += "    badgeBg='#15803d';badgeTxt='STRONG';sublabel='<span style=\"font-size:10px;color:#15803d;margin-left:8px\">&le; 1.80 &#10003;</span>';";
-  J += "  } else if(od.oddsTier==='medium'){";
-  // medium: odds > 1.80 but <= 2.00 — amber, MED badge
-  J += "    icon='&#10003;';icol='#ca8a04';rbg='#fffbeb';lc='#eab308';valueCol='#ca8a04';";
-  J += "    badgeBg='#ca8a04';badgeTxt='MED';sublabel='<span style=\"font-size:10px;color:#ca8a04;margin-left:8px\">&le; 2.00 &#10003;</span>';";
-  J += "  } else {";
-  // miss: odds > 2.00 — red
-  J += "    icon='&#10007;';icol='#dc2626';rbg='#fef2f2';lc='#dc2626';valueCol='#dc2626';";
-  J += "    badgeBg='#9ca3af';badgeTxt='ODDS';sublabel='<span style=\"font-size:10px;color:#9ca3af;margin-left:8px\">&gt; 2.00 &#10007;</span>';";
-  J += "  }";
-  J += "  var badge='<span style=\"background:'+badgeBg+';color:#fff;font-size:9px;padding:1px 5px;border-radius:3px;margin-right:6px;font-weight:700\">'+badgeTxt+'</span>';";
-  J += "  var noDataNote=od.noData?'<div style=\"font-size:10px;color:#9ca3af;margin-top:3px;font-style:italic\">No odds from API \u2014 check your sportsbook for the line</div>':'';";
-  J += "  var thresholds=od.noData?'':' <span style=\"font-size:10px;color:#d1d5db\">(&le;1.80 strong &middot; &le;2.00 medium)</span>';";
-  J += "  return '<div style=\"display:flex;align-items:flex-start;gap:10px;padding:10px 14px;background:'+rbg+';border-radius:7px;border-left:4px solid '+lc+';margin-bottom:6px;'+(od.noData?'opacity:0.55':'')+'\">'";
-  J += "    +'<span style=\"font-size:16px;color:'+icol+';font-weight:700;min-width:20px;margin-top:1px\">'+icon+'</span>'";
-  J += "    +'<div style=\"flex:1\">'";
-  J += "    +'<div style=\"display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:4px\">'";
-  J += "    +'<span style=\"font-weight:600;font-size:12px;color:#111827\">'+badge+esc(od.label)+sublabel+'</span>'";
-  J += "    +'<span style=\"font-family:monospace;font-weight:700;font-size:13px;color:'+valueCol+'\">'+esc(od.value)+thresholds+'</span>'";
-  J += "    +'</div>'";
-  J += "    +noDataNote";
-  J += "    +'</div></div>';";
-  J += "}";
-
   // statBox helper
   J += "function statBox(label,val,hi){";
   J += "  return '<div style=\"background:'+(hi?'#fef2f2':'#f9fafb')+';border:1px solid '+(hi?'#fecaca':'#e5e7eb')+';border-radius:7px;padding:8px 10px;text-align:center\">'";
@@ -628,7 +580,7 @@ function buildHTML(preds, dates) {
 
   // probRef helper
   J += "function probRefHTML(){";
-  J += "  var rows=[{r:5,p:48,l:'All 3 strong signals met'},{r:4,p:42,l:'S1 + S2 or S3'},{r:3,p:35,l:'S1 + M1 + 1 more medium'},{r:2,p:25,l:'M1 + 1 more medium'},{r:1,p:13,l:'Base rate \u2014 no signals'}];";
+  J += "  var rows=[{r:5,p:53,l:'S1 + S3 + S4 (market confirms)'},{r:4,p:44,l:'S1 + S3 + S4'},{r:3,p:38,l:'S1 + S3, or S1 + S4'},{r:2,p:22,l:'S1 only, or S3 + S4'},{r:1,p:13,l:'Base rate \u2014 no signals'}];";
   J += "  return rows.map(function(row){";
   J += "    var c=rankColor(row.r);";
   J += "    return '<div style=\"display:flex;align-items:center;gap:8px;margin-bottom:7px\">'";
@@ -648,10 +600,9 @@ function buildHTML(preds, dates) {
   J += "  var statusBadge='<span style=\"padding:2px 8px;border-radius:20px;font-size:10px;font-weight:700;background:'+sc.bg+';border:1px solid '+sc.border+';color:'+sc.color+'\">'+sc.txt+'</span>';";
   J += "  var frozen=m.snapshot?'<span style=\"padding:2px 8px;border-radius:20px;font-size:10px;font-weight:600;background:#fffbeb;border:1px solid #fde68a;color:#92400e;margin-left:6px\">&#128274; '+esc((m.snapshot||{}).fetchedAt||'')+'</span>':'';";
   J += "  var missWarn=m.missingStats?'<span style=\"background:#fef3c7;color:#92400e;font-size:11px;padding:2px 7px;border-radius:4px;font-weight:600;margin-left:6px\">&#9888; missing stats</span>':'';";
-  J += "  var noOddsWarn=(!m.missingStats&&!m.oddsAvail)?'<span style=\"background:#f3f4f6;color:#6b7280;font-size:11px;padding:2px 7px;border-radius:4px;font-weight:600;margin-left:6px\">&#9711; No odds available \u2014 check your sportsbook</span>':'';";
   J += "  var noStatsMsg=m.missingStats?'<div style=\"color:#9ca3af;font-size:13px;padding:12px 0\">No team stats available.</div>':'';";
 
-  // stats block
+  // stats block — no odds displayed
   J += "  var statsHTML='';";
   J += "  if(!m.missingStats&&m.snapshot){";
   J += "    var h=m.snapshot.home,a=m.snapshot.away;";
@@ -675,9 +626,6 @@ function buildHTML(preds, dates) {
   J += "      +statBox('Early Goals /gm',a.cn010_avg.toFixed(2),a.cn010_avg>=0.25)";
   J += "      +'</div></div>';";
   J += "    statsHTML+='</div>';";
-  J += "    var oddsColor=m.oddsAvail&&m.snapshot.odds_fh_o15<=1.80?'#dc2626':'#374151';";
-  J += "    var oddsDisplay=m.oddsAvail?m.snapshot.odds_fh_o15.toFixed(2):'no data';";
-  J += "    var oddsColorFinal=m.oddsAvail?oddsColor:'#9ca3af';";
   J += "    statsHTML+='<div style=\"background:#eff6ff;border:1px solid #bfdbfe;border-radius:8px;padding:10px 14px\">'";
   J += "      +'<div style=\"font-size:10px;color:#1d4ed8;font-weight:700;text-transform:uppercase;letter-spacing:.8px;margin-bottom:6px\">Expected FH Goals</div>'";
   J += "      +'<div style=\"font-family:monospace;font-size:12px;color:#374151;line-height:2\">'";
@@ -685,10 +633,6 @@ function buildHTML(preds, dates) {
   J += "      +' + ('+a.scored_fh.toFixed(2)+' &times; '+h.conced_fh.toFixed(2)+')'";
   J += "      +' = <strong style=\"font-size:16px;color:'+(m.expFH>=1.2?'#dc2626':'#374151')+'\">'+m.expFH+'</strong>'";
   J += "      +' <span style=\"font-size:11px;color:'+(m.expFH>=1.2?'#15803d':'#9ca3af')+'\">'+( m.expFH>=1.2?'&#10003; &ge; 1.20':'&#10007; &lt; 1.20')+'</span>'";
-  J += "      +'</div>'";
-  J += "      +'<div style=\"margin-top:8px;display:flex;gap:16px\">'";
-  J += "      +'<div><span style=\"font-size:10px;color:#9ca3af\">FH o1.5 Odds</span> <span style=\"font-family:monospace;font-weight:700;color:'+oddsColorFinal+'\">'+oddsDisplay+'</span></div>'";
-  J += "      +(m.snapshot.odds_ft_o25?'<div><span style=\"font-size:10px;color:#9ca3af\">FT o2.5 Odds</span> <span style=\"font-family:monospace;font-weight:700;color:#374151\">'+m.snapshot.odds_ft_o25.toFixed(2)+'</span></div>':'')";
   J += "      +'</div></div>';";
   J += "  }";
 
@@ -714,7 +658,7 @@ function buildHTML(preds, dates) {
   J += "    +'<div style=\"padding:18px 20px\">'";
   J += "    +'<div style=\"display:flex;justify-content:space-between;align-items:flex-start;gap:12px;margin-bottom:14px\">'";
   J += "    +'<div>'";
-  J += "    +'<div style=\"font-size:11px;color:#9ca3af;text-transform:uppercase;letter-spacing:.8px;margin-bottom:4px\">'+esc(m.league)+' &middot; '+esc(dt)+missWarn+noOddsWarn+'</div>'";
+  J += "    +'<div style=\"font-size:11px;color:#9ca3af;text-transform:uppercase;letter-spacing:.8px;margin-bottom:4px\">'+esc(m.league)+' &middot; '+esc(dt)+missWarn+'</div>'";
   J += "    +'<div style=\"display:flex;align-items:center;gap:6px;flex-wrap:wrap\">'+statusBadge+frozen+'</div>'";
   J += "    +'</div>'";
   J += "    +'<div style=\"text-align:center;min-width:90px;background:'+bg+';border:1px solid '+br+';border-radius:10px;padding:10px 8px;flex-shrink:0\">'";
@@ -728,7 +672,7 @@ function buildHTML(preds, dates) {
   J += "    +'<span style=\"font-family:monospace;font-weight:700;font-size:11px;color:'+(m.strongMet>0?'#15803d':'#9ca3af')+'\">'+m.strongMet+'/3</span>'";
   J += "    +'<span style=\"font-size:10px;color:#9ca3af;margin-left:4px\">strong</span></div>'";
   J += "    +'<div style=\"padding:3px 10px;border-radius:20px;background:'+(m.medMet>0?'#fffbeb':'#f3f4f6')+';border:1px solid '+(m.medMet>0?'#fde68a':'#e5e7eb')+'\">'";
-  J += "    +'<span style=\"font-family:monospace;font-weight:700;font-size:11px;color:'+(m.medMet>0?'#ca8a04':'#9ca3af')+'\">'+m.medMet+'/4</span>'";
+  J += "    +'<span style=\"font-family:monospace;font-weight:700;font-size:11px;color:'+(m.medMet>0?'#ca8a04':'#9ca3af')+'\">'+m.medMet+'/2</span>'";
   J += "    +'<span style=\"font-size:10px;color:#9ca3af;margin-left:4px\">medium</span></div>'";
   J += "    +'<div style=\"padding:3px 10px;border-radius:20px;background:#eff6ff;border:1px solid #bfdbfe\">'";
   J += "    +'<span style=\"font-family:monospace;font-weight:700;font-size:11px;color:#2563eb\">'+m.expFH+'</span>'";
@@ -740,9 +684,9 @@ function buildHTML(preds, dates) {
   J += "    +'<div style=\"padding-top:14px\">'";
   J += "    +'<div style=\"font-size:10px;font-weight:700;color:#15803d;letter-spacing:1.5px;text-transform:uppercase;margin-bottom:8px\">&#9679; Strong Signals</div>'";
   J += "    +noStatsMsg";
-  J += "    +(m.missingStats?'':sigRow(m.signals.S1)+oddsRow(m.signals.OD)+sigRow(m.signals.S3))";
+  J += "    +(m.missingStats?'':sigRow(m.signals.S1)+sigRow(m.signals.S3)+sigRow(m.signals.S4))";
   J += "    +(m.missingStats?'':'<div style=\"font-size:10px;font-weight:700;color:#ca8a04;letter-spacing:1.5px;text-transform:uppercase;margin:14px 0 8px\">&#9670; Medium Signals</div>')";
-  J += "    +(m.missingStats?'':sigRow(m.signals.M2)+sigRow(m.signals.M3)+sigRow(m.signals.M4))";
+  J += "    +(m.missingStats?'':sigRow(m.signals.M2)+sigRow(m.signals.M4))";
   J += "    +'<div style=\"background:#f9fafb;border:1px solid #e5e7eb;border-radius:9px;padding:14px 16px;margin-top:14px\">'";
   J += "    +'<div style=\"font-size:10px;color:#9ca3af;text-transform:uppercase;letter-spacing:.8px;margin-bottom:10px;font-weight:600\">Probability Reference &middot; 5,699 matches</div>'";
   J += "    +probRefHTML()";
@@ -789,9 +733,9 @@ function buildHTML(preds, dates) {
     + "</div><div id=\"dayTabs\" style=\"display:flex;gap:8px;flex-wrap:wrap\"></div></div></div>"
     + "<div style=\"padding:16px 20px;max-width:860px;margin:0 auto\">"
     + "<div style=\"background:#fffbeb;border:1px solid #fde68a;border-radius:8px;padding:12px 16px;margin-bottom:16px;font-size:13px;color:#92400e;line-height:1.6\">"
-    + "<strong>How it works:</strong> 3 strong + 4 medium signals, backtested on 5,699 matches (base rate 13.2%). "
-    + "Rank&nbsp;5&nbsp;=&nbsp;48% &middot; Rank&nbsp;4&nbsp;=&nbsp;42% &middot; Rank&nbsp;3&nbsp;=&nbsp;35% &middot; Rank&nbsp;2&nbsp;=&nbsp;25% &middot; Rank&nbsp;1&nbsp;=&nbsp;13%. "
-    + "All signals frozen at fetch time.</div>"
+    + "<strong>How it works:</strong> 3 stat-based strong signals + 2 medium signals, backtested on 5,699 matches (base rate 13.2%). "
+    + "Rank&nbsp;5&nbsp;=&nbsp;53% &middot; Rank&nbsp;4&nbsp;=&nbsp;44% &middot; Rank&nbsp;3&nbsp;=&nbsp;38% &middot; Rank&nbsp;2&nbsp;=&nbsp;22% &middot; Rank&nbsp;1&nbsp;=&nbsp;13%. "
+    + "Odds are used internally as a silent booster only.</div>"
     + "<div id=\"mainView\"></div></div>"
     + "<script>" + J + "<\/script>"
     + "</body></html>";
