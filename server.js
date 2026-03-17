@@ -17,24 +17,38 @@ async function fetchLeagueList() {
     const url  = BASE + "/league-list?key=" + KEY;
     const data = await fetch(url).then(r => r.json());
     const list = data.data || [];
-    const map  = {};
+
+    // Log raw structure of first item so we can see exact field names in Render logs
+    if (list.length > 0) {
+      console.log("League-list first item:", JSON.stringify(list[0]));
+    } else {
+      console.log("League-list returned empty data. Full response:", JSON.stringify(data).slice(0, 500));
+    }
+
+    const map = {};
     for (const league of list) {
-      // Each league object has: id, name, country, season, season_id
-      // We key by season_id so it matches competition_id in match data
-      if (league.season_id && league.name) {
-        map[parseInt(league.season_id)] = league.name;
-      }
-      // Also key by id in case some endpoints use that
-      if (league.id && league.name) {
-        map[parseInt(league.id)] = league.name;
+      // FootyStats league-list fields vary — try all known field name combinations
+      const name = league.name || league.league_name || league.competition_name || "";
+      if (!name) continue;
+
+      // Map every ID variant we can find
+      const ids = [
+        league.id,
+        league.season_id,
+        league.league_id,
+        league.competition_id,
+      ].filter(Boolean).map(Number);
+
+      for (const id of ids) {
+        if (id && !map[id]) map[id] = name;
       }
     }
+
     LEAGUE_NAMES = map;
-    console.log("Loaded " + Object.keys(map).length + " leagues from FootyStats subscription:");
-    list.forEach(l => console.log("  " + l.season_id + " / " + l.id + ": " + l.name));
+    console.log("Loaded " + Object.keys(map).length + " league IDs from subscription:");
+    Object.entries(map).forEach(([id, name]) => console.log("  " + id + ": " + name));
   } catch (e) {
     console.error("Failed to load league list: " + e.message);
-    // Keep LEAGUE_NAMES as empty — matches will still show but without filtering
     LEAGUE_NAMES = {};
   }
 }
