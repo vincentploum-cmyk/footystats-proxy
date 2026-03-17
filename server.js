@@ -235,6 +235,7 @@ app.get("/form/:teamId", async (req, res) => {
     const teamId = parseInt(req.params.teamId, 10);
     if (!teamId) return res.status(400).json({ error: "invalid teamId" });
 
+    res.setHeader("Cache-Control", "no-store");
     const url = BASE + "/team-matches?team_id=" + teamId + "&max_per_page=20&page=1&key=" + KEY;
     const data = await ftch(url);
     const matches = (data.data || [])
@@ -577,7 +578,7 @@ function buildHTML(preds, dates) {
 
   // ── background form fetch ──
   J += "function fetchForm(matchId,teamId,teamName){";
-  J += "  fetch('/form/'+teamId)";
+  J += "  fetch(window.location.origin+'/form/'+teamId+'?t='+Date.now())";
   J += "    .then(function(r){return r.json();})";
   J += "    .then(function(d){renderFormTable(matchId,teamId,teamName,d);})";
   J += "    .catch(function(){});";
