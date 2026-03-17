@@ -162,20 +162,30 @@ function extractSnapshotStats(teamObj, role) {
   const sfx = role === "home" ? "_home" : "_away";
   const mpR = s["seasonMatchesPlayed" + sfx] || 1;
 
+  // pick role-specific field first; only fall back to overall if role field is null/undefined
+  // critically: do NOT use || because 0 is a valid value and || would skip it
+  const pick = (roleKey, fallbackKey) => {
+    const rv = s[roleKey];
+    if (rv !== null && rv !== undefined) return rv;
+    const fv = s[fallbackKey];
+    if (fv !== null && fv !== undefined) return fv;
+    return 0;
+  };
+
   return {
     name: teamObj.name || teamObj.cleanName || "",
-    scored_fh: safe(s["scoredAVGHT" + sfx] || s.scoredAVGHT_overall || 0),
-    conced_fh: safe(s["concededAVGHT" + sfx] || s.concededAVGHT_overall || 0),
-    btts_ht_pct: safe(s["seasonBTTSPercentageHT" + sfx] || s.seasonBTTSPercentageHT_overall || 0),
-    cs_ht_pct: safe(s["seasonCSPercentageHT" + sfx] || s.seasonCSPercentageHT_overall || 0),
-    o25ht_pct: safe(s["seasonOver25PercentageHT" + sfx] || s.seasonOver25PercentageHT_overall || 0),
-    o15ht_pct: safe(s["seasonOver15PercentageHT" + sfx] || s.seasonOver15PercentageHT_overall || 0),
-    fts_ht_pct: safe(s["seasonFTSPercentageHT" + sfx] || s.seasonFTSPercentageHT_overall || 0),
+    scored_fh: safe(pick("scoredAVGHT" + sfx, "scoredAVGHT_overall")),
+    conced_fh: safe(pick("concededAVGHT" + sfx, "concededAVGHT_overall")),
+    btts_ht_pct: safe(pick("seasonBTTSPercentageHT" + sfx, "seasonBTTSPercentageHT_overall")),
+    cs_ht_pct: safe(pick("seasonCSPercentageHT" + sfx, "seasonCSPercentageHT_overall")),
+    o25ht_pct: safe(pick("seasonOver25PercentageHT" + sfx, "seasonOver25PercentageHT_overall")),
+    o15ht_pct: safe(pick("seasonOver15PercentageHT" + sfx, "seasonOver15PercentageHT_overall")),
+    fts_ht_pct: safe(pick("seasonFTSPercentageHT" + sfx, "seasonFTSPercentageHT_overall")),
     cn010_avg: safe(safeDiv(s["goals_conceded_min_0_to_10" + sfx] || 0, mpR)),
     scored_ft: safe(s.seasonScoredAVG_overall || 0),
     conced_ft: safe(s.seasonConcededAVG_overall || 0),
     o25ft_pct: safe(s.seasonOver25Percentage_overall || 0),
-    ppg: safe(s["seasonPPG" + sfx] || s.seasonPPG_overall || 0),
+    ppg: safe(pick("seasonPPG" + sfx, "seasonPPG_overall")),
     mp: s.seasonMatchesPlayed_overall || 0,
     mpRole: mpR,
   };
@@ -196,6 +206,27 @@ function buildH2H(homeId, awayId, completedMatches) {
       awayGoalCount: parseInt(m.awayGoalCount || 0, 10),
     }));
 }
+
+// ─── DEBUG ENDPOINT — dump raw stats for a team ──────────────────────────
+app.get("/debug/team/:teamId", async (req, res) => {
+  try {
+    const teamId = req.params.teamId;
+    const url = BASE + "/team?team_id=" + teamId + "&include=stats&key=" + KEY;
+    const data = await ftch(url);
+    const team = (data.data && data.data[0]) || data.data || null;
+    if (!team) return res.json({ error: "team not found", raw: data });
+    const stats = team.stats || {};
+    // filter to only FH-related keys so the response is readable
+    const fhKeys = Object.keys(stats).filter(k =>
+      k.match(/HT|ht|half|btts|BTTS|cs_|CS|clean|Clean|cn010|goals_conceded_min/i)
+    );
+    const fhStats = {};
+    fhKeys.forEach(k => fhStats[k] = stats[k]);
+    res.json({ teamId, name: team.name || team.cleanName, fhStats, allKeys: Object.keys(stats) });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
 
 // ─── FORM ENDPOINT — cross-competition last 5 ─────────────────────────────
 app.get("/form/:teamId", async (req, res) => {
