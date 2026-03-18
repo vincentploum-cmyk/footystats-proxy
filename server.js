@@ -260,15 +260,24 @@ function extractStats(teamObj, role, completedMatches) {
 // ─── BUILD LAST 5 ─────────────────────────────────────────────────────────────
 function buildLast5(teamId, cache) {
   if (!teamId || !cache[teamId]) return [];
-  return cache[teamId]
+  // Deduplicate: same match appears twice in cache (once as home, once as away team entry).
+  // Use date_unix + homeID + awayID as a unique key to collapse duplicates before slicing.
+  const seen = new Set();
+  const unique = cache[teamId].filter(m => {
+    const key = (m.date_unix || 0) + "_" + (m.homeID || "") + "_" + (m.awayID || "");
+    if (seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+  return unique
     .sort((a, b) => (b.date_unix || 0) - (a.date_unix || 0))
     .slice(0, 5)
     .map(m => {
       const isHome = m.homeID === teamId;
-      const ftFor  = isHome ? m.homeGoalCount    : m.awayGoalCount;
-      const ftAgst = isHome ? m.awayGoalCount     : m.homeGoalCount;
-      const fhFor  = isHome ? m.ht_goals_team_a   : m.ht_goals_team_b;
-      const fhAgst = isHome ? m.ht_goals_team_b   : m.ht_goals_team_a;
+      const ftFor  = isHome ? m.homeGoalCount  : m.awayGoalCount;
+      const ftAgst = isHome ? m.awayGoalCount  : m.homeGoalCount;
+      const fhFor  = isHome ? m.ht_goals_team_a : m.ht_goals_team_b;
+      const fhAgst = isHome ? m.ht_goals_team_b : m.ht_goals_team_a;
       const result = ftFor > ftAgst ? "W" : ftFor < ftAgst ? "L" : "D";
       const date   = m.date_unix ? new Date(m.date_unix * 1000).toISOString().slice(0, 10) : "";
       return { date, venue: isHome ? "H" : "A", opp: isHome ? m.away_name : m.home_name,
@@ -524,6 +533,7 @@ body{background:#f3f4f6;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',
 .sig{display:flex;align-items:center;gap:4px;font-size:10px;padding:3px 8px;border-radius:20px;font-weight:500;border:1px solid}
 .sig-y{background:#f0fdf4;color:#15803d;border-color:#a5d6a7}
 .sig-n{background:#fef2f2;color:#b91c1c;border-color:#fca5a5}
+.sig-dim{background:#fffbeb;color:#92400e;border-color:#fde68a}
 .sig-dot{width:5px;height:5px;border-radius:50%;flex-shrink:0}
 .sig-y .sig-dot{background:#16a34a} .sig-n .sig-dot{background:#dc2626}
 .expfh{background:#eff6ff;border:1px solid #bfdbfe;border-radius:8px;padding:7px 10px;font-size:11px;color:#1e40af;font-family:monospace;margin-bottom:12px;word-break:break-all}
@@ -717,12 +727,12 @@ body{background:#f3f4f6;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',
   J += "    if(sn){";
   J += "      if(role==='Home'){";
   J += "        chips+=mkChip('FH Scored (home)',sn.scored_fh.toFixed(2),'\u2265 1.20',sn.scored_fh>=1.2);";
-  J += "        chips+=mkChip('FH Conceded (home)',sn.conced_fh.toFixed(2),'higher = more goals',sn.conced_fh>=0.5);";
+  J += "        chips+=mkChip('FH Conceded (home)',sn.conced_fh.toFixed(2),'used in formula A',false);";
   J += "        chips+=mkChip('Early goals / game',sn.cn010_avg.toFixed(2),'\u2265 0.25',sn.cn010_avg>=0.25);";
   J += "        chips+=mkChip('BTTS first half %',sn.btts_ht_pct.toFixed(0)+'%','\u2265 30%',sn.btts_ht_pct>=30);";
   J += "      } else {";
   J += "        chips+=mkChip('FH Scored (away)',sn.scored_fh.toFixed(2),'\u2265 0.70',sn.scored_fh>=0.7);";
-  J += "        chips+=mkChip('FH Conceded (away)',sn.conced_fh.toFixed(2),'higher = more goals',sn.conced_fh>=0.5);";
+  J += "        chips+=mkChip('FH Conceded (away)',sn.conced_fh.toFixed(2),'used in formula A',false);";
   J += "        chips+=mkChip('Early goals / game',sn.cn010_avg.toFixed(2),'\u2265 0.25',sn.cn010_avg>=0.25);";
   J += "        chips+=mkChip('Goals in FH (away %)',sn.fh_share.toFixed(1)+'%','\u2265 45%',sn.fh_share>=45);";
   J += "      }";
@@ -735,10 +745,15 @@ body{background:#f3f4f6;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',
   J += "  }";
 
   // signals row
+  // Boosters D/E/F that meet their threshold but can't contribute (core A+B+C not met)
+  // are shown as amber "dim" rather than red "miss" — threshold met but irrelevant without core
   J += "  var sigsH='<div class=\"signals\">';";
+  J += "  var _coreMet=m.signals.A&&m.signals.A.met&&m.signals.B&&m.signals.B.met&&m.signals.C&&m.signals.C.met;";
   J += "  ['A','B','C','D','E','F'].forEach(function(k){";
   J += "    var s=m.signals[k];if(!s)return;";
-  J += "    sigsH+='<div class=\"sig '+(s.met?'sig-y':'sig-n')+'\">'";
+  J += "    var isBooster='DEF'.indexOf(k)>=0;";
+  J += "    var cls=s.met?'sig-y':(isBooster&&!_coreMet?'sig-dim':'sig-n');";
+  J += "    sigsH+='<div class=\"sig '+cls+'\">'";
   J += "      +'<div class=\"sig-dot\"></div>'+esc(k)+' \u00b7 '+esc(s.label)+'</div>';";
   J += "  });";
   J += "  sigsH+='</div>';";
@@ -766,7 +781,13 @@ body{background:#f3f4f6;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',
   J += "          +'<div style=\"font-size:10px;color:#9ca3af;text-transform:uppercase;letter-spacing:.7px;margin-bottom:5px\">'+esc(m.league)+' \u00b7 '+esc(dt)+mw+'</div>'";
   J += "          +sb";
   J += "        +'</div>'";
-  J += "        +'<div class=\"rank-pill '+rc+'\"><div class=\"rn\">'+m.rank+'/5</div><div class=\"rl\">'+esc(m.label)+'</div></div>'";
+  J += "        +(function(){";
+  J += "          var sigs=m.signals||{};";
+  J += "          var boosterFired=(sigs.D&&sigs.D.met)||(sigs.E&&sigs.E.met)||(sigs.F&&sigs.F.met);";
+  J += "          var coreMet=sigs.A&&sigs.A.met&&sigs.B&&sigs.B.met&&sigs.C&&sigs.C.met;";
+  J += "          var note=boosterFired&&!coreMet?'<div style=\"font-size:8px;color:#9ca3af;margin-top:3px;line-height:1.3\">needs A+B+C<br>core first</div>':'';";
+  J += "          return '<div class=\"rank-pill '+rc+'\"><div class=\"rn\">'+m.rank+'/5</div><div class=\"rl\">'+esc(m.label)+'</div>'+note+'</div>';";
+  J += "        })()";
   J += "      +'</div>'";
   J += "    +ps+rb";
   J += "    +'<div class=\"teams\">'";
