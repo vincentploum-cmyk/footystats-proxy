@@ -89,6 +89,7 @@ async function fetchLeagueList() {
     }
     LEAGUE_NAMES = map;
     console.log("Mapped " + Object.keys(map).length + " season IDs across " + list.length + " leagues");
+    if (list.length === 0) { console.log("Got 0 leagues — retrying in 2 min..."); setTimeout(fetchLeagueList, 2 * 60 * 1000); }
     for (const league of list) {
       const seasons = league.season || [];
       const latest = seasons[seasons.length - 1];
@@ -959,7 +960,12 @@ function buildHTML(preds, dates) {
 }
 
 fetchLeagueList().then(() => {
-  buildServerMatchCache(); // fire and forget — cache builds in background
+  // delay cache warming by 5 minutes to avoid rate limit conflicts at startup
+  // only warm if league list loaded successfully
+  if (Object.keys(LEAGUE_NAMES).length > 0) {
+    setTimeout(buildServerMatchCache, 5 * 60 * 1000);
+    console.log('Server match cache warming scheduled in 5 minutes...');
+  }
   app.listen(PORT, () => {
     console.log("Server running on port " + PORT);
     console.log("Memory at start: " + Math.round(process.memoryUsage().heapUsed / 1024 / 1024) + "MB");
