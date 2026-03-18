@@ -285,6 +285,33 @@ function buildLast5(teamId, cache) {
     });
 }
 
+// ─── DEBUG ENDPOINT ──────────────────────────────────────────────────────────
+app.get("/debug", async (req, res) => {
+  try {
+    const tzOffset = parseInt(req.query.tz || "0", 10);
+    const dates    = getDates(tzOffset);
+    const leagueCount = Object.keys(LEAGUE_NAMES).length;
+    const raw = await ftch(BASE + "/todays-matches?date=" + dates[0] + "&key=" + KEY);
+    const fixtures = raw.data || [];
+    const passing = fixtures.filter(m => {
+      const sid = parseInt(m.competition_id, 10);
+      return !leagueCount || LEAGUE_NAMES[sid];
+    });
+    const cids = [...new Set(fixtures.map(m => m.competition_id))].slice(0, 20);
+    const knownSids = Object.keys(LEAGUE_NAMES).slice(0, 20);
+    res.json({
+      date: dates[0],
+      leagueRegistrySize: leagueCount,
+      totalFixtures: fixtures.length,
+      passingFilter: passing.length,
+      sampleCompetitionIds: cids,
+      sampleKnownSeasonIds: knownSids,
+      cacheBuiltAt: SERVER_CACHE_BUILT_AT ? new Date(SERVER_CACHE_BUILT_AT).toISOString() : "not built",
+      cachedTeams: Object.keys(SERVER_MATCH_CACHE).length,
+    });
+  } catch(e) { res.status(500).json({ error: e.message }); }
+});
+
 // ─── API PASSTHROUGH ─────────────────────────────────────────────────────────
 app.get("/api/*", async (req, res) => {
   try {
