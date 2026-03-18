@@ -196,37 +196,39 @@ function computeRank(snap) {
 }
 
 // ─── EXTRACTORS ──────────────────────────────────────────────────────────────
+// Option C: use role-specific stats if >= 6 role games, otherwise fall back to _overall.
+// usingOverall flag is exposed so the UI can warn the user.
 function extractSnapshotStats(teamObj, role) {
-  const s   = teamObj.stats || {};
-  const sfx = role === "home" ? "_home" : "_away";
-  const mpR = s["seasonMatchesPlayed" + sfx] || 1;
+  const s       = teamObj.stats || {};
+  const sfx     = role === "home" ? "_home" : "_away";
+  const mpR     = s["seasonMatchesPlayed" + sfx] || 0;
+  const useRole = mpR >= 6;  // threshold: 6 role-specific games required
 
-  // Use null/undefined check so 0 is not treated as missing
-  // Fall back to overall if fewer than 3 role-specific games (small sample)
   const pick = (roleKey, fallbackKey) => {
     const rv = s[roleKey];
-    if (rv !== null && rv !== undefined && mpR >= 3) return rv;
+    if (rv !== null && rv !== undefined && useRole) return rv;
     const fv = s[fallbackKey];
     if (fv !== null && fv !== undefined) return fv;
     return 0;
   };
 
   return {
-    name:        teamObj.name || teamObj.cleanName || "",
-    scored_fh:   safe(pick("scoredAVGHT" + sfx,              "scoredAVGHT_overall")),
-    conced_fh:   safe(pick("concededAVGHT" + sfx,            "concededAVGHT_overall")),
-    btts_ht_pct: safe(pick("seasonBTTSPercentageHT" + sfx,   "seasonBTTSPercentageHT_overall")),
-    cs_ht_pct:   safe(pick("seasonCSPercentageHT" + sfx,     "seasonCSPercentageHT_overall")),
-    o25ht_pct:   safe(pick("seasonOver25PercentageHT" + sfx, "seasonOver25PercentageHT_overall")),
-    o15ht_pct:   safe(pick("seasonOver15PercentageHT" + sfx, "seasonOver15PercentageHT_overall")),
-    fts_ht_pct:  safe(pick("seasonFTSPercentageHT" + sfx,    "seasonFTSPercentageHT_overall")),
-    cn010_avg:   safe(safeDiv(s["goals_conceded_min_0_to_10" + sfx] || 0, mpR)),
-    scored_ft:   safe(s.seasonScoredAVG_overall   || 0),
-    conced_ft:   safe(s.seasonConcededAVG_overall || 0),
-    o25ft_pct:   safe(s.seasonOver25Percentage_overall || 0),
-    ppg:         safe(pick("seasonPPG" + sfx, "seasonPPG_overall")),
-    mp:          s.seasonMatchesPlayed_overall || 0,
-    mpRole:      mpR,
+    name:         teamObj.name || teamObj.cleanName || "",
+    usingOverall: !useRole,
+    scored_fh:    safe(pick("scoredAVGHT" + sfx,              "scoredAVGHT_overall")),
+    conced_fh:    safe(pick("concededAVGHT" + sfx,            "concededAVGHT_overall")),
+    btts_ht_pct:  safe(pick("seasonBTTSPercentageHT" + sfx,   "seasonBTTSPercentageHT_overall")),
+    cs_ht_pct:    safe(pick("seasonCSPercentageHT" + sfx,     "seasonCSPercentageHT_overall")),
+    o25ht_pct:    safe(pick("seasonOver25PercentageHT" + sfx, "seasonOver25PercentageHT_overall")),
+    o15ht_pct:    safe(pick("seasonOver15PercentageHT" + sfx, "seasonOver15PercentageHT_overall")),
+    fts_ht_pct:   safe(pick("seasonFTSPercentageHT" + sfx,    "seasonFTSPercentageHT_overall")),
+    cn010_avg:    safe(safeDiv(s["goals_conceded_min_0_to_10" + sfx] || 0, mpR || 1)),
+    scored_ft:    safe(s.seasonScoredAVG_overall   || 0),
+    conced_ft:    safe(s.seasonConcededAVG_overall || 0),
+    o25ft_pct:    safe(s.seasonOver25Percentage_overall || 0),
+    ppg:          safe(pick("seasonPPG" + sfx, "seasonPPG_overall")),
+    mp:           s.seasonMatchesPlayed_overall || 0,
+    mpRole:       mpR,
   };
 }
 
@@ -422,8 +424,28 @@ app.get("/", async (req, res) => {
             fetchedAt:   snapshot.fetchedAt,
             odds_fh_o15: snapshot.odds_fh_o15,
             odds_ft_o25: snapshot.odds_ft_o25,
-            home: { name: snapshot.home.name, scored_fh: snapshot.home.scored_fh, conced_fh: snapshot.home.conced_fh, btts_ht_pct: snapshot.home.btts_ht_pct, cs_ht_pct: snapshot.home.cs_ht_pct, o25ht_pct: snapshot.home.o25ht_pct, cn010_avg: snapshot.home.cn010_avg },
-            away: { name: snapshot.away.name, scored_fh: snapshot.away.scored_fh, conced_fh: snapshot.away.conced_fh, btts_ht_pct: snapshot.away.btts_ht_pct, cs_ht_pct: snapshot.away.cs_ht_pct, o25ht_pct: snapshot.away.o25ht_pct, cn010_avg: snapshot.away.cn010_avg },
+            home: {
+              name: snapshot.home.name,
+              usingOverall: snapshot.home.usingOverall,
+              mpRole: snapshot.home.mpRole,
+              scored_fh: snapshot.home.scored_fh,
+              conced_fh: snapshot.home.conced_fh,
+              btts_ht_pct: snapshot.home.btts_ht_pct,
+              cs_ht_pct: snapshot.home.cs_ht_pct,
+              o25ht_pct: snapshot.home.o25ht_pct,
+              cn010_avg: snapshot.home.cn010_avg,
+            },
+            away: {
+              name: snapshot.away.name,
+              usingOverall: snapshot.away.usingOverall,
+              mpRole: snapshot.away.mpRole,
+              scored_fh: snapshot.away.scored_fh,
+              conced_fh: snapshot.away.conced_fh,
+              btts_ht_pct: snapshot.away.btts_ht_pct,
+              cs_ht_pct: snapshot.away.cs_ht_pct,
+              o25ht_pct: snapshot.away.o25ht_pct,
+              cn010_avg: snapshot.away.cn010_avg,
+            },
           } : null,
           rank:      rankResult ? rankResult.rank      : 0,
           prob:      rankResult ? rankResult.prob      : 0,
@@ -659,12 +681,17 @@ function buildHTML(preds, dates) {
   J += "  var frozen=m.snapshot?'<span style=\"padding:2px 8px;border-radius:20px;font-size:10px;font-weight:600;background:#fffbeb;border:1px solid #fde68a;color:#92400e;margin-left:6px\">&#128274; '+esc((m.snapshot||{}).fetchedAt||'')+'</span>':'';";
   J += "  var missWarn=m.missingStats?'<span style=\"background:#fef3c7;color:#92400e;font-size:11px;padding:2px 7px;border-radius:4px;font-weight:600;margin-left:6px\">&#9888; missing stats</span>':'';";
 
-  J += "  function fhStatMini(key,val){";
+  // fhStatMini now accepts usingOverall + role to show the correct source badge
+  J += "  function fhStatMini(key,val,usingOverall,role){";
   J += "    if(val===null||val===undefined)return '';";
   J += "    var c=statBoxColor(key,val);var bg=c.bg||'#fff';";
+  J += "    var roleLabel=usingOverall?'OVERALL*':(role==='home'?'HOME':'AWAY');";
+  J += "    var roleBg=usingOverall?'#fef3c7':'#eff6ff';";
+  J += "    var roleCol=usingOverall?'#92400e':'#1d4ed8';";
   J += "    return '<div style=\"flex:1;text-align:center;background:'+bg+';border:1px solid '+c.border+';border-radius:6px;padding:5px 4px\">'";
   J += "      +'<div style=\"font-size:9px;color:#9ca3af;text-transform:uppercase;letter-spacing:.4px;margin-bottom:1px\">'+(key==='scored_fh'?'FH Scored':'FH Conceded')+'</div>'";
   J += "      +'<div style=\"font-size:15px;font-weight:700;color:'+c.col+'\">'+val.toFixed(2)+'</div>'";
+  J += "      +'<div style=\"font-size:8px;font-weight:700;background:'+roleBg+';color:'+roleCol+';border-radius:3px;padding:1px 4px;margin-top:2px;display:inline-block\">'+roleLabel+'</div>'";
   J += "      +'</div>';";
   J += "  }";
 
@@ -672,20 +699,32 @@ function buildHTML(preds, dates) {
   J += "  var fhConcedH=m.snapshot?m.snapshot.home.conced_fh:null;";
   J += "  var fhScoredA=m.snapshot?m.snapshot.away.scored_fh:null;";
   J += "  var fhConcedA=m.snapshot?m.snapshot.away.conced_fh:null;";
-  J += "  var teamGrid='<div style=\"display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:10px;margin-bottom:12px\">';";
+  J += "  var hUsingOverall=m.snapshot?!!m.snapshot.home.usingOverall:false;";
+  J += "  var aUsingOverall=m.snapshot?!!m.snapshot.away.usingOverall:false;";
+  J += "  var anyOverall=hUsingOverall||aUsingOverall;";
+
+  J += "  var teamGrid='<div style=\"display:grid;grid-template-columns:minmax(0,1fr) minmax(0,1fr);gap:10px;margin-bottom:4px\">';";
   J += "  teamGrid+='<div style=\"background:#f9fafb;border:1px solid #e5e7eb;border-radius:8px;padding:10px 12px\">';";
   J += "  teamGrid+='<div style=\"font-size:9px;color:#9ca3af;text-transform:uppercase;letter-spacing:.7px;margin-bottom:3px\">Home</div>';";
   J += "  teamGrid+='<div style=\"font-size:17px;font-weight:800;color:#111827;margin-bottom:5px\">'+esc(m.home)+'</div>';";
   J += "  teamGrid+='<div id=\"strip-'+m.id+'-'+m.homeId+'\" style=\"margin-bottom:8px;min-height:18px\"><span style=\"font-size:11px;color:#9ca3af\">...</span></div>';";
-  J += "  if(fhScoredH!==null){teamGrid+='<div style=\"display:flex;gap:6px\">'+fhStatMini('scored_fh',fhScoredH)+fhStatMini('conced_fh',fhConcedH)+'</div>';}";
+  J += "  if(fhScoredH!==null){teamGrid+='<div style=\"display:flex;gap:6px\">'+fhStatMini('scored_fh',fhScoredH,hUsingOverall,'home')+fhStatMini('conced_fh',fhConcedH,hUsingOverall,'home')+'</div>';}";
   J += "  teamGrid+='</div>';";
   J += "  teamGrid+='<div style=\"background:#f9fafb;border:1px solid #e5e7eb;border-radius:8px;padding:10px 12px\">';";
   J += "  teamGrid+='<div style=\"font-size:9px;color:#9ca3af;text-transform:uppercase;letter-spacing:.7px;margin-bottom:3px\">Away</div>';";
   J += "  teamGrid+='<div style=\"font-size:17px;font-weight:800;color:#111827;margin-bottom:5px\">'+esc(m.away)+'</div>';";
   J += "  teamGrid+='<div id=\"strip-'+m.id+'-'+m.awayId+'\" style=\"margin-bottom:8px;min-height:18px\"><span style=\"font-size:11px;color:#9ca3af\">...</span></div>';";
-  J += "  if(fhScoredA!==null){teamGrid+='<div style=\"display:flex;gap:6px\">'+fhStatMini('scored_fh',fhScoredA)+fhStatMini('conced_fh',fhConcedA)+'</div>';}";
+  J += "  if(fhScoredA!==null){teamGrid+='<div style=\"display:flex;gap:6px\">'+fhStatMini('scored_fh',fhScoredA,aUsingOverall,'away')+fhStatMini('conced_fh',fhConcedA,aUsingOverall,'away')+'</div>';}";
   J += "  teamGrid+='</div>';";
-  J += "  teamGrid+='</div>';";
+  // footnote row spanning both columns — only shown when at least one team uses overall
+  J += "  if(anyOverall){";
+  J += "    teamGrid+='<div style=\"grid-column:1/-1;font-size:10px;color:#92400e;background:#fffbeb;border:1px solid #fde68a;border-radius:6px;padding:6px 10px;margin-top:2px\">'";
+  J += "      +'&#9888; <strong>OVERALL*</strong> = fewer than 6 role-specific games in this competition &mdash; all-venue average used instead of home/away split.'";
+  J += "      +'</div>';";
+  J += "  }";
+  J += "  teamGrid+='</div>';";  // close grid, now with bottom margin
+  // add bottom margin after grid (including optional footnote)
+  J += "  teamGrid='<div style=\"margin-bottom:12px\">'+teamGrid+'</div>';";
 
   J += "  var resultHTML='';";
   J += "  if(m.result){";
@@ -815,7 +854,8 @@ function buildHTML(preds, dates) {
     "<div style=\"background:#fffbeb;border:1px solid #fde68a;border-radius:8px;padding:12px 16px;margin-bottom:16px;font-size:13px;color:#92400e;line-height:1.6\">" +
     "<strong>How it works:</strong> 3 stat-based strong signals + 2 medium signals, backtested on 6,567 matches (base rate 12.4%). " +
     "Rank&nbsp;5&nbsp;=&nbsp;53% &middot; Rank&nbsp;4&nbsp;=&nbsp;45-49% &middot; Rank&nbsp;3&nbsp;=&nbsp;37% &middot; Rank&nbsp;2&nbsp;=&nbsp;22% &middot; Rank&nbsp;1&nbsp;=&nbsp;13%. " +
-    "Odds used internally as a silent booster only.</div>" +
+    "Odds used internally as a silent booster only. " +
+    "Stats use home/away splits where &ge;6 role games exist; otherwise all-venue average is used (<strong>OVERALL*</strong>).</div>" +
     "<div id=\"mainView\"></div></div>" +
     "<script>" + J + "<\/script>" +
     "</body></html>"
