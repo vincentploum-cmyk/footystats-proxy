@@ -1,4 +1,3 @@
-
 require("dotenv").config();
 
 const express = require("express");
@@ -19,6 +18,57 @@ if (!KEY) {
 
 // ─── LEAGUE REGISTRY ─────────────────────────────────────────────────────────
 let LEAGUE_NAMES = {};
+
+// ─── SERVER-LEVEL MATCH CACHE — built once at startup, refreshed hourly ──────
+// Stores last 100 completed matches per team across all subscribed leagues
+// so that cross-competition last 5 works without per-request API calls
+let SERVER_MATCH_CACHE = {};
+let SERVER_CACHE_BUILT_AT = 0;
+
+async function buildServerMatchCache() {
+  if (!Object.keys(LEAGUE_NAMES).length) return;
+  console.log('Building server match cache for ' + Object.keys(LEAGUE_NAMES).length + ' leagues...');
+  const newCache = {};
+  let totalMatches = 0;
+
+  // process in batches of 5 to avoid hammering the API
+  const sids = Object.keys(LEAGUE_NAMES);
+  for (let i = 0; i < sids.length; i += 5) {
+    const batch = sids.slice(i, i + 5);
+    await Promise.all(batch.map(async (sid) => {
+      try {
+        const leagueName = LEAGUE_NAMES[parseInt(sid, 10)] || 'League ' + sid;
+        const r = await fetch(BASE + '/league-matches?season_id=' + sid + '&max_per_page=100&page=1&key=' + KEY).then(r => r.json());
+        const completed = (r.data || []).filter(m => m.status === 'complete');
+        for (const m of completed) {
+          const slim = {
+            homeID: m.homeID, awayID: m.awayID,
+            home_name: m.home_name || '', away_name: m.away_name || '',
+            date_unix: m.date_unix || 0,
+            ht_goals_team_a: parseInt(m.ht_goals_team_a || 0, 10),
+            ht_goals_team_b: parseInt(m.ht_goals_team_b || 0, 10),
+            homeGoalCount: parseInt(m.homeGoalCount || 0, 10),
+            awayGoalCount: parseInt(m.awayGoalCount || 0, 10),
+            status: m.status,
+            league: leagueName,
+          };
+          if (m.homeID) { if (!newCache[m.homeID]) newCache[m.homeID] = []; newCache[m.homeID].push(slim); }
+          if (m.awayID) { if (!newCache[m.awayID]) newCache[m.awayID] = []; newCache[m.awayID].push(slim); }
+          totalMatches++;
+        }
+      } catch(e) {
+        // silently skip failed leagues
+      }
+    }));
+  }
+
+  SERVER_MATCH_CACHE = newCache;
+  SERVER_CACHE_BUILT_AT = Date.now();
+  console.log('Server match cache built: ' + Object.keys(newCache).length + ' teams, ' + totalMatches + ' match records');
+}
+
+// refresh cache every 60 minutes
+setInterval(buildServerMatchCache, 60 * 60 * 1000);
 
 async function fetchLeagueList() {
   try {
@@ -312,6 +362,11 @@ app.get("/", async (req, res) => {
 
     // global cross-league match cache: teamId -> array of slim matches
     const globalMatchCache = {};
+
+    // merge server-level match cache into per-request global cache
+    for (const [teamId, matches] of Object.entries(SERVER_MATCH_CACHE)) {
+      globalMatchCache[teamId] = [...(globalMatchCache[teamId] || []), ...matches];
+    }
 
     const slimMatch = (m, leagueName) => ({
       homeID: m.homeID, awayID: m.awayID,
@@ -904,6 +959,7 @@ function buildHTML(preds, dates) {
 }
 
 fetchLeagueList().then(() => {
+  buildServerMatchCache(); // fire and forget — cache builds in background
   app.listen(PORT, () => {
     console.log("Server running on port " + PORT);
     console.log("Memory at start: " + Math.round(process.memoryUsage().heapUsed / 1024 / 1024) + "MB");
