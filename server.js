@@ -442,10 +442,18 @@ app.get("/", async (req, res) => {
       }
     }
 
-    // Seed global match cache from server cache
-    const globalCache = {};
-    for (const [tid, matches] of Object.entries(SERVER_MATCH_CACHE)) {
-      globalCache[tid] = [...matches];
+    // Per-request local cache — extends SERVER_MATCH_CACHE with matches
+    // fetched this request that may not be in the server cache yet.
+    // SERVER_MATCH_CACHE is the authoritative clean source; we never mutate it here.
+    // localExtra holds only NEW match keys not already present in SERVER_MATCH_CACHE.
+    const localExtra = {};  // teamId → Set of "date_homeID_awayID" keys already in server cache
+
+    // Pre-build a set of keys already in SERVER_MATCH_CACHE so we don't re-add them
+    const serverCacheKeys = new Set();
+    for (const matches of Object.values(SERVER_MATCH_CACHE)) {
+      for (const m of matches) {
+        serverCacheKeys.add((m.date_unix||0) + "_" + (m.homeID||"") + "_" + (m.awayID||""));
+      }
     }
 
     const slimM = (m, lg) => ({
@@ -459,12 +467,16 @@ app.get("/", async (req, res) => {
       status: m.status, league: lg || "",
     });
 
-    const addToCache = (matches, lg) => {
+    // Only add matches that are NOT already in SERVER_MATCH_CACHE
+    const addToLocalExtra = (matches, lg) => {
       for (const m of matches) {
         if (m.status !== "complete") continue;
+        const key = (m.date_unix||0) + "_" + (m.homeID||"") + "_" + (m.awayID||"");
+        if (serverCacheKeys.has(key)) continue; // already in server cache — skip
         const slim = slimM(m, lg);
-        if (m.homeID) { if (!globalCache[m.homeID]) globalCache[m.homeID] = []; globalCache[m.homeID].push(slim); }
-        if (m.awayID) { if (!globalCache[m.awayID]) globalCache[m.awayID] = []; globalCache[m.awayID].push(slim); }
+        if (m.homeID) { if (!localExtra[m.homeID]) localExtra[m.homeID] = []; localExtra[m.homeID].push(slim); }
+        if (m.awayID) { if (!localExtra[m.awayID]) localExtra[m.awayID] = []; localExtra[m.awayID].push(slim); }
+        serverCacheKeys.add(key); // prevent double-add within same request
       }
     };
 
@@ -480,11 +492,11 @@ app.get("/", async (req, res) => {
       try {
         const p1 = await fetchLeagueMatches(sid);
         completed = (p1.data || []).filter(m => m.status === "complete");
-        addToCache(completed, leagueName);
+        addToLocalExtra(completed, leagueName);
         if (completed.length < 5 && PREV_SEASON[sid]) {
           const prev = await fetchLeagueMatches(PREV_SEASON[sid]);
           const prevC = (prev.data || []).filter(m => m.status === "complete");
-          addToCache(prevC, leagueName);
+          addToLocalExtra(prevC, leagueName);
           completed = [...completed, ...prevC];
         }
       } catch(e) { console.error("[" + sid + "] match fetch: " + e.message); }
@@ -521,8 +533,14 @@ app.get("/", async (req, res) => {
           result = computeSignals(snap);
         }
 
-        const hLast5 = buildLast5(homeId, globalCache);
-        const aLast5 = buildLast5(awayId, globalCache);
+        // Merge server cache + local extras for this request (no mutation of server cache)
+        const mergedCache = (tid) => {
+          const base = SERVER_MATCH_CACHE[tid] || [];
+          const extra = localExtra[tid] || [];
+          return base.concat(extra);
+        };
+        const hLast5 = buildLast5(homeId, { [homeId]: mergedCache(homeId), [awayId]: mergedCache(awayId) });
+        const aLast5 = buildLast5(awayId, { [homeId]: mergedCache(homeId), [awayId]: mergedCache(awayId) });
         const hAvgFH = hLast5.length ? +(hLast5.reduce((s,g) => s + g.fhFor + g.fhAgst, 0) / hLast5.length).toFixed(2) : null;
         const aAvgFH = aLast5.length ? +(aLast5.reduce((s,g) => s + g.fhFor + g.fhAgst, 0) / aLast5.length).toFixed(2) : null;
 
@@ -973,7 +991,7 @@ app.listen(PORT, () => {
   console.log("Memory: " + Math.round(process.memoryUsage().heapUsed/1024/1024) + "MB");
   fetchLeagueList().then(() => {
     if (Object.keys(LEAGUE_NAMES).length > 0) {
-      setTimeout(buildServerMatchCache, 5 * 60 * 1000);
+      setTimeout(rebuildServerMatchCache, 5 * 60 * 1000);
       console.log("Match cache warming in 5 min...");
     }
   }).catch(e => console.error("League list failed:", e.message));
