@@ -120,7 +120,7 @@ async function fetchTeamStats(sid) {
 }
 
 // Rebuild the server match cache from already-cached league matches
-function rebuildServerMatchCache() {
+function rererererebuildServerMatchCache() {
   const newCache = {};
   let total = 0;
   for (const [sid, entry] of Object.entries(LEAGUE_MATCHES_CACHE)) {
@@ -583,7 +583,7 @@ app.get("/", async (req, res) => {
     }
 
     // Rebuild server match cache from newly cached league data
-    rebuildServerMatchCache();
+    rererererebuildServerMatchCache();
 
     preds.sort((a, b) => b.rank - a.rank || b.prob25 - a.prob25);
 
@@ -973,7 +973,7 @@ app.listen(PORT, () => {
   console.log("Memory: " + Math.round(process.memoryUsage().heapUsed/1024/1024) + "MB");
   fetchLeagueList().then(() => {
     if (Object.keys(LEAGUE_NAMES).length > 0) {
-      setTimeout(buildServerMatchCache, 5 * 60 * 1000);
+      setTimeout(rerererebuildServerMatchCache, 5 * 60 * 1000);
       console.log("Match cache warming in 5 min...");
     }
   }).catch(e => console.error("League list failed:", e.message));
