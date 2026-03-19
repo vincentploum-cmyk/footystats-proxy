@@ -18,7 +18,8 @@ let LEAGUE_NAMES = {};
 
 async function fetchLeagueList() {
   try {
-    const data = await fetch(BASE + "/league-list?key=" + KEY).then(r => r.json());
+    const data = await safeFetch(BASE + "/league-list?key=" + KEY);
+    if (!data) { console.warn("fetchLeagueList skipped — rate limited"); return; }
     const list = data.data || [];
     console.log("League-list: " + list.length + " leagues found");
     const map = {};
@@ -42,46 +43,107 @@ async function fetchLeagueList() {
   }
 }
 
-// ─── SERVER MATCH CACHE — refreshed hourly ───────────────────────────────────
-let SERVER_MATCH_CACHE    = {};
-let SERVER_CACHE_BUILT_AT = 0;
+// ─── CACHE LAYER ─────────────────────────────────────────────────────────────
+// All expensive API calls are cached server-side.
+// Only re-fetched when TTL expires — never on every page load.
+//
+//  FIXTURE_CACHE   : /todays-matches per date        TTL = 10 min
+//  LEAGUE_MATCHES_CACHE : /league-matches per sid    TTL = 30 min
+//  TEAM_STATS_CACHE     : /league-teams per sid      TTL = 60 min
+//  SERVER_MATCH_CACHE   : team → completed matches   built from LEAGUE_MATCHES_CACHE
 
-async function buildServerMatchCache() {
-  if (!Object.keys(LEAGUE_NAMES).length) return;
-  console.log("Building server match cache...");
-  const newCache = {};
-  let total = 0;
-  const sids = Object.keys(LEAGUE_NAMES);
-  for (let i = 0; i < sids.length; i += 5) {
-    const batch = sids.slice(i, i + 5);
-    await Promise.all(batch.map(async (sid) => {
-      try {
-        const leagueName = LEAGUE_NAMES[parseInt(sid, 10)] || "League " + sid;
-        const r = await fetch(BASE + "/league-matches?season_id=" + sid + "&max_per_page=100&page=1&key=" + KEY).then(r => r.json());
-        for (const m of (r.data || []).filter(m => m.status === "complete")) {
-          const slim = {
-            homeID: m.homeID, awayID: m.awayID,
-            home_name: m.home_name || "", away_name: m.away_name || "",
-            date_unix: m.date_unix || 0,
-            ht_goals_team_a: parseInt(m.ht_goals_team_a || 0, 10),
-            ht_goals_team_b: parseInt(m.ht_goals_team_b || 0, 10),
-            homeGoalCount:   parseInt(m.homeGoalCount   || 0, 10),
-            awayGoalCount:   parseInt(m.awayGoalCount   || 0, 10),
-            status: m.status, league: leagueName,
-          };
-          if (m.homeID) { if (!newCache[m.homeID]) newCache[m.homeID] = []; newCache[m.homeID].push(slim); }
-          if (m.awayID) { if (!newCache[m.awayID]) newCache[m.awayID] = []; newCache[m.awayID].push(slim); }
-          total++;
-        }
-      } catch(e) { /* skip */ }
-    }));
+const FIXTURE_CACHE        = {};   // date → { data, ts }
+const LEAGUE_MATCHES_CACHE = {};   // sid  → { data, ts }
+const TEAM_STATS_CACHE     = {};   // sid  → { data, ts }
+let   SERVER_MATCH_CACHE   = {};   // teamId → [slim matches]
+let   RATE_LIMITED_UNTIL   = 0;    // epoch ms — back off when 429 received
+
+const TTL_FIXTURES = 10 * 60 * 1000;   // 10 minutes
+const TTL_MATCHES  = 30 * 60 * 1000;   // 30 minutes
+const TTL_TEAMS    = 60 * 60 * 1000;   // 60 minutes
+
+// Safe fetch — detects rate limit, returns null if hit
+async function safeFetch(url) {
+  if (Date.now() < RATE_LIMITED_UNTIL) {
+    console.warn("Rate limited — skipping: " + url);
+    return null;
   }
-  SERVER_MATCH_CACHE    = newCache;
-  SERVER_CACHE_BUILT_AT = Date.now();
-  console.log("Match cache built: " + Object.keys(newCache).length + " teams, " + total + " records");
+  try {
+    const data = await fetch(url).then(r => r.json());
+    if (data && data.error && String(data.error).toLowerCase().includes("rate limit")) {
+      const reset = data.metadata && data.metadata.request_limit_refresh_next
+        ? data.metadata.request_limit_refresh_next * 1000
+        : Date.now() + 60 * 60 * 1000;
+      RATE_LIMITED_UNTIL = reset;
+      const mins = Math.ceil((reset - Date.now()) / 60000);
+      console.warn("Rate limit hit — backing off for " + mins + " min");
+      return null;
+    }
+    return data;
+  } catch(e) {
+    console.error("Fetch error: " + e.message);
+    return null;
+  }
 }
 
-setInterval(buildServerMatchCache, 60 * 60 * 1000);
+// Cached fixture fetch
+async function fetchFixtures(date) {
+  const now = Date.now();
+  if (FIXTURE_CACHE[date] && (now - FIXTURE_CACHE[date].ts) < TTL_FIXTURES) {
+    return FIXTURE_CACHE[date].data;
+  }
+  const data = await safeFetch(BASE + "/todays-matches?date=" + date + "&key=" + KEY);
+  if (data) FIXTURE_CACHE[date] = { data, ts: now };
+  return data || FIXTURE_CACHE[date]?.data || { data: [] };
+}
+
+// Cached league matches fetch
+async function fetchLeagueMatches(sid) {
+  const now = Date.now();
+  if (LEAGUE_MATCHES_CACHE[sid] && (now - LEAGUE_MATCHES_CACHE[sid].ts) < TTL_MATCHES) {
+    return LEAGUE_MATCHES_CACHE[sid].data;
+  }
+  const data = await safeFetch(BASE + "/league-matches?season_id=" + sid + "&max_per_page=100&page=1&key=" + KEY);
+  if (data) LEAGUE_MATCHES_CACHE[sid] = { data, ts: now };
+  return data || LEAGUE_MATCHES_CACHE[sid]?.data || { data: [] };
+}
+
+// Cached team stats fetch
+async function fetchTeamStats(sid) {
+  const now = Date.now();
+  if (TEAM_STATS_CACHE[sid] && (now - TEAM_STATS_CACHE[sid].ts) < TTL_TEAMS) {
+    return TEAM_STATS_CACHE[sid].data;
+  }
+  const data = await safeFetch(BASE + "/league-teams?season_id=" + sid + "&include=stats&key=" + KEY);
+  if (data) TEAM_STATS_CACHE[sid] = { data, ts: now };
+  return data || TEAM_STATS_CACHE[sid]?.data || { data: [] };
+}
+
+// Rebuild the server match cache from already-cached league matches
+function rebuildServerMatchCache() {
+  const newCache = {};
+  let total = 0;
+  for (const [sid, entry] of Object.entries(LEAGUE_MATCHES_CACHE)) {
+    const leagueName = LEAGUE_NAMES[parseInt(sid, 10)] || "League " + sid;
+    for (const m of (entry.data.data || []).filter(m => m.status === "complete")) {
+      const slim = {
+        homeID: m.homeID, awayID: m.awayID,
+        home_name: m.home_name || "", away_name: m.away_name || "",
+        date_unix: m.date_unix || 0,
+        ht_goals_team_a: parseInt(m.ht_goals_team_a || 0, 10),
+        ht_goals_team_b: parseInt(m.ht_goals_team_b || 0, 10),
+        homeGoalCount:   parseInt(m.homeGoalCount   || 0, 10),
+        awayGoalCount:   parseInt(m.awayGoalCount   || 0, 10),
+        status: m.status, league: leagueName,
+      };
+      if (m.homeID) { if (!newCache[m.homeID]) newCache[m.homeID] = []; newCache[m.homeID].push(slim); }
+      if (m.awayID) { if (!newCache[m.awayID]) newCache[m.awayID] = []; newCache[m.awayID].push(slim); }
+      total++;
+    }
+  }
+  SERVER_MATCH_CACHE = newCache;
+  console.log("Server match cache rebuilt: " + Object.keys(newCache).length + " teams, " + total + " records");
+}
 
 const PREV_SEASON = {
   16504:13973, 16544:11321, 16571:15746,
@@ -285,29 +347,61 @@ function buildLast5(teamId, cache) {
     });
 }
 
-// ─── DEBUG ENDPOINT ──────────────────────────────────────────────────────────
+// ─── CACHE STATUS + DEBUG ENDPOINTS ─────────────────────────────────────────
+app.get("/cache-status", (req, res) => {
+  const now = Date.now();
+  const fixtureEntries = Object.entries(FIXTURE_CACHE).map(([date, e]) => ({
+    date, ageMin: Math.round((now - e.ts) / 60000), expiresInMin: Math.round((TTL_FIXTURES - (now - e.ts)) / 60000),
+    matchCount: (e.data.data || []).length,
+  }));
+  const matchEntries = Object.entries(LEAGUE_MATCHES_CACHE).map(([sid, e]) => ({
+    sid, league: LEAGUE_NAMES[parseInt(sid)] || "?",
+    ageMin: Math.round((now - e.ts) / 60000), expiresInMin: Math.round((TTL_MATCHES - (now - e.ts)) / 60000),
+    matchCount: (e.data.data || []).length,
+  }));
+  const teamEntries = Object.entries(TEAM_STATS_CACHE).map(([sid, e]) => ({
+    sid, league: LEAGUE_NAMES[parseInt(sid)] || "?",
+    ageMin: Math.round((now - e.ts) / 60000), expiresInMin: Math.round((TTL_TEAMS - (now - e.ts)) / 60000),
+    teamCount: (e.data.data || []).length,
+  }));
+  res.json({
+    rateLimitedUntil: RATE_LIMITED_UNTIL > now ? new Date(RATE_LIMITED_UNTIL).toISOString() : "not limited",
+    rateLimitedMinRemaining: RATE_LIMITED_UNTIL > now ? Math.ceil((RATE_LIMITED_UNTIL - now) / 60000) : 0,
+    leagueRegistry: Object.keys(LEAGUE_NAMES).length + " seasons mapped",
+    serverMatchCache: Object.keys(SERVER_MATCH_CACHE).length + " teams",
+    fixtureCacheEntries: fixtureEntries,
+    leagueMatchesCacheEntries: matchEntries.length,
+    teamStatsCacheEntries: teamEntries.length,
+    leagueMatchesCache: matchEntries,
+    teamStatsCache: teamEntries,
+  });
+});
+
 app.get("/debug", async (req, res) => {
   try {
-    const tzOffset = parseInt(req.query.tz || "0", 10);
-    const dates    = getDates(tzOffset);
+    const tzOffset   = parseInt(req.query.tz || "0", 10);
+    const dates      = getDates(tzOffset);
     const leagueCount = Object.keys(LEAGUE_NAMES).length;
-    const raw = await ftch(BASE + "/todays-matches?date=" + dates[0] + "&key=" + KEY);
+    // Use cached fixture fetch — costs 0 calls if already cached
+    const raw      = await fetchFixtures(dates[0]);
     const fixtures = raw.data || [];
-    const passing = fixtures.filter(m => {
+    const passing  = fixtures.filter(m => {
       const sid = parseInt(m.competition_id, 10);
       return !leagueCount || LEAGUE_NAMES[sid];
     });
-    const cids = [...new Set(fixtures.map(m => m.competition_id))].slice(0, 20);
+    const cids      = [...new Set(fixtures.map(m => m.competition_id))].slice(0, 20);
     const knownSids = Object.keys(LEAGUE_NAMES).slice(0, 20);
     res.json({
       date: dates[0],
+      rateLimited: Date.now() < RATE_LIMITED_UNTIL,
+      rateLimitedUntil: RATE_LIMITED_UNTIL > Date.now() ? new Date(RATE_LIMITED_UNTIL).toISOString() : null,
       leagueRegistrySize: leagueCount,
       totalFixtures: fixtures.length,
       passingFilter: passing.length,
       sampleCompetitionIds: cids,
       sampleKnownSeasonIds: knownSids,
-      cacheBuiltAt: SERVER_CACHE_BUILT_AT ? new Date(SERVER_CACHE_BUILT_AT).toISOString() : "not built",
       cachedTeams: Object.keys(SERVER_MATCH_CACHE).length,
+      fixtureCacheAge: FIXTURE_CACHE[dates[0]] ? Math.round((Date.now() - FIXTURE_CACHE[dates[0]].ts) / 60000) + " min" : "not cached",
     });
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
@@ -328,14 +422,12 @@ app.get("/", async (req, res) => {
     const dates     = getDates(tzOffset);
     const fetchedAt = new Date().toISOString().slice(0, 16).replace("T", " ");
 
-    // Fetch fixtures for 5 days
-    const dayResults = await Promise.all(
-      dates.map(d => ftch(BASE + "/todays-matches?date=" + d + "&key=" + KEY))
-    );
+    // Fetch fixtures for 5 days — cached, max 1 API call per date per 10 min
     const allFixtures = [];
-    for (let i = 0; i < dates.length; i++) {
-      for (const m of (dayResults[i].data || [])) {
-        allFixtures.push(Object.assign({}, m, { _date: dates[i] }));
+    for (const d of dates) {
+      const r = await fetchFixtures(d);
+      for (const m of (r.data || [])) {
+        allFixtures.push(Object.assign({}, m, { _date: d }));
       }
     }
 
@@ -383,27 +475,27 @@ app.get("/", async (req, res) => {
       if (!fixtures.length) continue;
       const leagueName = LEAGUE_NAMES[parseInt(sid, 10)] || "League " + sid;
 
-      // Completed matches for this league (for stats + H2H)
+      // Completed matches — cached, max 1 API call per league per 30 min
       let completed = [];
       try {
-        const p1 = await ftch(BASE + "/league-matches?season_id=" + sid + "&max_per_page=100&page=1&key=" + KEY);
+        const p1 = await fetchLeagueMatches(sid);
         completed = (p1.data || []).filter(m => m.status === "complete");
         addToCache(completed, leagueName);
         if (completed.length < 5 && PREV_SEASON[sid]) {
-          const prev = await ftch(BASE + "/league-matches?season_id=" + PREV_SEASON[sid] + "&max_per_page=100&page=1&key=" + KEY);
+          const prev = await fetchLeagueMatches(PREV_SEASON[sid]);
           const prevC = (prev.data || []).filter(m => m.status === "complete");
           addToCache(prevC, leagueName);
           completed = [...completed, ...prevC];
         }
       } catch(e) { console.error("[" + sid + "] match fetch: " + e.message); }
 
-      // Team stats
+      // Team stats — cached, max 1 API call per league per 60 min
       let teamMap = {};
       try {
-        const tr = await ftch(BASE + "/league-teams?season_id=" + sid + "&include=stats&key=" + KEY);
+        const tr = await fetchTeamStats(sid);
         for (const t of (tr.data || [])) teamMap[t.id] = t;
         if (!Object.keys(teamMap).length && PREV_SEASON[sid]) {
-          const tr2 = await ftch(BASE + "/league-teams?season_id=" + PREV_SEASON[sid] + "&include=stats&key=" + KEY);
+          const tr2 = await fetchTeamStats(PREV_SEASON[sid]);
           for (const t of (tr2.data || [])) teamMap[t.id] = t;
         }
       } catch(e) { console.error("[" + sid + "] team fetch: " + e.message); }
@@ -490,8 +582,13 @@ app.get("/", async (req, res) => {
       }
     }
 
+    // Rebuild server match cache from newly cached league data
+    rebuildServerMatchCache();
+
     preds.sort((a, b) => b.rank - a.rank || b.prob25 - a.prob25);
-    res.send(buildHTML(preds, dates));
+
+    const rateLimited = Date.now() < RATE_LIMITED_UNTIL;
+    res.send(buildHTML(preds, dates, rateLimited));
   } catch(e) {
     console.error(e);
     res.status(500).send("<pre>Error: " + e.message + "\n" + e.stack + "</pre>");
@@ -499,7 +596,7 @@ app.get("/", async (req, res) => {
 });
 
 // ─── HTML BUILDER ─────────────────────────────────────────────────────────────
-function buildHTML(preds, dates) {
+function buildHTML(preds, dates, rateLimited) {
   const predsJSON = JSON.stringify(preds)
     .replace(/</g,"\\u003c").replace(/>/g,"\\u003e").replace(/&/g,"\\u0026");
 
@@ -858,6 +955,7 @@ body{background:#f3f4f6;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',
   </div>
 </div>
 <div class="body">
+  ${rateLimited ? '<div style="background:#fef2f2;border:1px solid #fca5a5;border-radius:8px;padding:10px 14px;margin-bottom:14px;font-size:12px;color:#b91c1c;line-height:1.6"><strong>&#9888; API rate limit reached</strong> — showing cached data. Resets at ' + new Date(RATE_LIMITED_UNTIL).toLocaleTimeString('en-GB') + '. <a href="/cache-status" style="color:#b91c1c">View cache status</a></div>' : ''}
   <div style="background:#fffbeb;border:1px solid #fde68a;border-radius:8px;padding:10px 14px;margin-bottom:14px;font-size:12px;color:#92400e;line-height:1.6">
     <strong>How it works:</strong> 3 core signals (A+B+C) + 3 boosters (D,E,F), backtested on 4,672 matches. Base rate 12.4%.
     Probabilities are calibrated per exact signal combination fired. Fire rank = 47.6% FH&gt;2.5 &middot; 64.3% FH&gt;1.5.
