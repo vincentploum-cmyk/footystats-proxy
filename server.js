@@ -767,7 +767,7 @@ body{background:#f3f4f6;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',
 <meta name="viewport" content="width=device-width,initial-scale=1"/>
 <title>First Half Predictor</title>
 <script>(function(){var p=new URLSearchParams(window.location.search);if(!p.has('tz')){p.set('tz',-new Date().getTimezoneOffset());window.location.search=p.toString();}})();<\/script>
-<style>\${CSS}</style>
+<style>${CSS}</style>
 </head>
 <body>
 <div class="hdr">
@@ -783,14 +783,14 @@ body{background:#f3f4f6;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',
   </div>
 </div>
 <div class="body">
-  \${rateLimited ? '<div style="background:#fef2f2;border:1px solid #fca5a5;border-radius:8px;padding:10px 14px;margin-bottom:14px;font-size:12px;color:#b91c1c;line-height:1.6"><strong>&#9888; API rate limit reached</strong> \u2014 showing cached data. Resets at ' + new Date(RATE_LIMITED_UNTIL).toLocaleTimeString('en-GB') + '. <a href="/cache-status" style="color:#b91c1c">View cache status</a></div>' : ''}
+  ${rateLimited ? '<div style="background:#fef2f2;border:1px solid #fca5a5;border-radius:8px;padding:10px 14px;margin-bottom:14px;font-size:12px;color:#b91c1c;line-height:1.6"><strong>&#9888; API rate limit reached</strong> \u2014 showing cached data. Resets at ' + new Date(RATE_LIMITED_UNTIL).toLocaleTimeString('en-GB') + '. <a href="/cache-status" style="color:#b91c1c">View cache status</a></div>' : ''}
   <div style="background:#fffbeb;border:1px solid #fde68a;border-radius:8px;padding:10px 14px;margin-bottom:14px;font-size:12px;color:#92400e;line-height:1.6">
     <strong>How it works:</strong> 4 independent signals (A\u2013D), each worth 1 point. Rank = signals fired.
     Backtested on 24,203 matches \u00b7 base rate 12.6% \u00b7 Rank 4 = 73.2% FH&gt;2.5 \u00b7 85.4% FH&gt;1.5.
   </div>
   <div id="mainView"></div>
 </div>
-<script>\${J}<\/script>
+<script>${J}<\/script>
 </body>
 </html>`;
 }
