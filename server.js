@@ -375,12 +375,12 @@ app.get("/", async (req, res) => {
     const dates     = getDates(tzOffset);
     const fetchedAt = new Date().toISOString().slice(0, 16).replace("T", " ");
 
-    // Fetch fixtures for 5 days — cached, max 1 API call per date per 10 min
+    // Fetch fixtures for all 5 days in parallel — cached, max 1 API call per date per 10 min
     const allFixtures = [];
-    for (const d of dates) {
-      const r = await fetchFixtures(d);
-      for (const m of (r.data || [])) {
-        allFixtures.push(Object.assign({}, m, { _date: d }));
+    const dayResults = await Promise.all(dates.map(d => fetchFixtures(d)));
+    for (let i = 0; i < dates.length; i++) {
+      for (const m of (dayResults[i].data || [])) {
+        allFixtures.push(Object.assign({}, m, { _date: dates[i] }));
       }
     }
 
@@ -440,36 +440,50 @@ app.get("/", async (req, res) => {
 
     const preds = [];
 
-    for (const sid of Object.keys(leagueFixtures)) {
-      const fixtures   = leagueFixtures[sid];
-      if (!fixtures.length) continue;
+    // Fetch league matches + team stats for all leagues in parallel
+    const leagueSids = Object.keys(leagueFixtures).filter(sid => leagueFixtures[sid].length);
+
+    const leagueData = await Promise.all(leagueSids.map(async (sid) => {
       const leagueName = LEAGUE_NAMES[parseInt(sid, 10)] || "League " + sid;
 
-      // Completed matches — cached, max 1 API call per league per 30 min
-      let completed = [];
-      try {
-        const p1 = await fetchLeagueMatches(sid);
-        completed = (p1.data || []).filter(m => m.status === "complete");
-        addToLocalExtra(completed, leagueName);
-        if (completed.length < 5 && PREV_SEASON[sid]) {
-          const prev  = await fetchLeagueMatches(PREV_SEASON[sid]);
-          const prevC = (prev.data || []).filter(m => m.status === "complete");
-          addToLocalExtra(prevC, leagueName);
-          completed = [...completed, ...prevC];
-        }
-      } catch(e) { console.error("[" + sid + "] match fetch: " + e.message); }
+      // Fetch matches and team stats concurrently for this league
+      const [matchRes, teamRes] = await Promise.all([
+        fetchLeagueMatches(sid).catch(e => { console.error("[" + sid + "] match fetch: " + e.message); return { data: [] }; }),
+        fetchTeamStats(sid).catch(e => { console.error("[" + sid + "] team fetch: " + e.message); return { data: [] }; }),
+      ]);
 
-      // Team stats — cached, max 1 API call per league per 60 min
+      // Completed matches
+      let completed = (matchRes.data || []).filter(m => m.status === "complete");
+      addToLocalExtra(completed, leagueName);
+
+      // Fallback to prev season if sparse
+      if (completed.length < 5 && PREV_SEASON[sid]) {
+        const [prevMatch, prevTeam] = await Promise.all([
+          fetchLeagueMatches(PREV_SEASON[sid]).catch(() => ({ data: [] })),
+          Object.keys(teamRes.data || {}).length === 0
+            ? fetchTeamStats(PREV_SEASON[sid]).catch(() => ({ data: [] }))
+            : Promise.resolve(null),
+        ]);
+        const prevC = (prevMatch.data || []).filter(m => m.status === "complete");
+        addToLocalExtra(prevC, leagueName);
+        completed = [...completed, ...prevC];
+        if (prevTeam) teamRes.data = [...(teamRes.data || []), ...(prevTeam.data || [])];
+      }
+
+      // Build team map
       let teamMap = {};
-      try {
-        const tr = await fetchTeamStats(sid);
-        for (const t of (tr.data || [])) teamMap[t.id] = t;
-        if (!Object.keys(teamMap).length && PREV_SEASON[sid]) {
+      for (const t of (teamRes.data || [])) teamMap[t.id] = t;
+      if (!Object.keys(teamMap).length && PREV_SEASON[sid]) {
+        // Already fetched above if needed — but guard in case teamRes was empty
+        try {
           const tr2 = await fetchTeamStats(PREV_SEASON[sid]);
           for (const t of (tr2.data || [])) teamMap[t.id] = t;
-        }
-      } catch(e) { console.error("[" + sid + "] team fetch: " + e.message); }
+        } catch(e) {}
+      }
+      return { sid, leagueName, teamMap, fixtures: leagueFixtures[sid] };
+    }));
 
+    for (const { sid, leagueName, teamMap, fixtures } of leagueData) {
       for (const fix of fixtures) {
         const homeId   = fix.homeID || fix.home_id;
         const awayId   = fix.awayID || fix.away_id;
