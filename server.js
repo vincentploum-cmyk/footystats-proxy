@@ -282,31 +282,14 @@ const isPlayedMatch = (m, nowSecs) =>
    (m.date_unix || 0) < nowSecs &&
    (parseInt(m.homeGoalCount || 0, 10) + parseInt(m.awayGoalCount || 0, 10)) > 0);
 
-app.get("/", async (req, res) => {
-  const routeTimer = setTimeout(() => {
-    if (!res.headersSent) res.status(503).send("<pre>Timeout: API calls took too long. Try refreshing.</pre>");
-  }, 25000);
-  try {
-    const tzOffset  = parseInt(req.query.tz || "0", 10);
-    const dates     = getDates(tzOffset);
-    const fetchedAt = new Date().toISOString().slice(0, 16).replace("T", " ");
+// ─── SHARED PREDS COMPUTATION ────────────────────────────────────────────────
+async function computePreds(tzOffset) {
+  const fetchedAt = new Date().toISOString().slice(0, 16).replace("T", " ");
+  const dates     = getDates(tzOffset);
 
-    if (Object.keys(LEAGUE_NAMES).length === 0) {
-      await fetchLeagueList();
-      if (LEAGUE_LIST_LOADING) await new Promise(r => setTimeout(r, 3000));
-    }
-    if (Object.keys(LEAGUE_NAMES).length === 0) {
-      clearTimeout(routeTimer);
-      return res.send(`<!DOCTYPE html><html><head><meta charset="UTF-8"/>
-<meta http-equiv="refresh" content="5"/>
-<meta name="viewport" content="width=device-width,initial-scale=1"/>
-<title>First Half Predictor</title>
-<style>body{background:#f3f4f6;font-family:-apple-system,sans-serif;display:flex;align-items:center;justify-content:center;height:100vh;margin:0}
-.box{text-align:center;color:#6b7280}.spin{font-size:32px;animation:spin 1s linear infinite;display:inline-block}
-@keyframes spin{to{transform:rotate(360deg)}}</style></head>
-<body><div class="box"><div class="spin">&#9917;</div><p style="margin-top:12px;font-weight:600">Starting up&hellip;</p>
-<p style="font-size:13px;margin-top:6px">Refreshing in 5 seconds</p></div></body></html>`);
-    }
+  // Ensure league registry is loaded — kick off if not running, no blocking wait
+  if (Object.keys(LEAGUE_NAMES).length === 0 && !LEAGUE_LIST_LOADING) fetchLeagueList();
+  const leagueFilterActive = Object.keys(LEAGUE_NAMES).length > 0;
 
     const allFixtures = [];
     const dayResults = await Promise.all(dates.map(d => fetchFixtures(d)));
@@ -322,7 +305,7 @@ app.get("/", async (req, res) => {
     const leagueFixtures = {};
     for (const m of allFixtures) {
       const sid = parseInt(m.competition_id, 10);
-      if (!LEAGUE_NAMES[sid]) continue;
+      if (leagueFilterActive && !LEAGUE_NAMES[sid]) continue;
       const fid = String(m.id || (m.homeID + "_" + m.awayID + "_" + (m.date_unix || 0)));
       if (seenFixtureIds.has(fid)) continue;
       seenFixtureIds.add(fid);
@@ -451,8 +434,45 @@ app.get("/", async (req, res) => {
 
     rebuildServerMatchCache();
     preds.sort((a, b) => b.rank - a.rank || b.prob25 - a.prob25);
+  return { preds, dates };
+}
+
+// ─── /preds JSON ENDPOINT ────────────────────────────────────────────────────
+app.get("/preds", async (req, res) => {
+  try {
+    const tzOffset = parseInt(req.query.tz || "0", 10);
+    const { preds } = await computePreds(tzOffset);
+    res.json({ ok: true, preds, rateLimited: Date.now() < RATE_LIMITED_UNTIL });
+  } catch(e) {
+    console.error(e);
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
+// ─── MAIN ROUTE — serves shell instantly, client fetches /preds async ────────
+app.get("/", async (req, res) => {
+  const routeTimer = setTimeout(() => {
+    if (!res.headersSent) res.status(503).send("<pre>Timeout. Try refreshing.</pre>");
+  }, 25000);
+  try {
+    const tzOffset = parseInt(req.query.tz || "0", 10);
+    const dates    = getDates(tzOffset);
+
+    // Kick off background league list fetch if needed — don't wait
+    if (Object.keys(LEAGUE_NAMES).length === 0 && !LEAGUE_LIST_LOADING) fetchLeagueList();
+
+    // Fetch just fixtures for today in parallel — fast, cached 30min
+    // This is all we need to render the shell immediately
+    const dayResults = await Promise.all(dates.map(d => fetchFixtures(d)));
+    const shellFixtures = [];
+    for (let i = 0; i < dates.length; i++) {
+      for (const m of (dayResults[i].data || [])) {
+        shellFixtures.push({ date: dates[i], home: m.home_name || "", away: m.away_name || "", dt: (m.date_unix||0)*1000 });
+      }
+    }
+
     clearTimeout(routeTimer);
-    res.send(buildHTML(preds, dates, Date.now() < RATE_LIMITED_UNTIL));
+    res.send(buildHTML(shellFixtures, dates, Date.now() < RATE_LIMITED_UNTIL, tzOffset));
   } catch(e) {
     clearTimeout(routeTimer);
     console.error(e);
@@ -460,9 +480,9 @@ app.get("/", async (req, res) => {
   }
 });
 
-function buildHTML(preds, dates, rateLimited) {
-  const predsJSON = JSON.stringify(preds)
-    .replace(/</g,"\\u003c").replace(/>/g,"\\u003e").replace(/&/g,"\\u0026");
+function buildHTML(shellFixtures, dates, rateLimited, tzOffset) {
+  // predsJSON starts empty — populated by /preds fetch after load
+  const predsJSON = "[]";
 
   const CSS = `
 *{box-sizing:border-box;margin:0;padding:0}
@@ -556,11 +576,13 @@ body{background:#f3f4f6;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',
 }`.trim();
 
   let J = "";
-  J += "var ALL=" + predsJSON + ";";
+  J += "var ALL=[];";
+  J += "var LOADED=false;";
   J += "var DATES=" + JSON.stringify(dates) + ";";
+  J += "var TZ=" + JSON.stringify(tzOffset) + ";";
   J += "var DAY_LABELS=['Today','Tomorrow','Day 3','Day 4','Day 5'];";
   J += "var activeDate=DATES[0]||null;";
-  J += "var openLeague=null;";  // FIX 2: single string, not object
+  J += "var openLeague=null;";
 
   J += "function esc(s){return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/\"/g,'&quot;');}";
   J += "function fmtDate(d){return new Date(d).toLocaleDateString('en-GB',{weekday:'long',day:'2-digit',month:'short'});}";
@@ -613,7 +635,7 @@ body{background:#f3f4f6;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',
   J += "  ll.forEach(function(e){";
   J += "    var lg=e[0],ms=e[1];";
   J += "    if(openLeague!==lg)return;";
-  J += "    var sorted=ms.slice().sort(function(a,b){return (a.dt||0)-(b.dt||0);});";
+  J += "    var sorted=ms.slice().sort(function(a,b){return (b.rank-a.rank)||((a.dt||0)-(b.dt||0));});";
   J += "    sections+='<div class=\"league-section\"><div class=\"league-section-hdr\">'+esc(lg)+'</div>';";
   J += "    sorted.forEach(function(m){sections+=renderCard(m);});";
   J += "    sections+='</div>';";
@@ -761,7 +783,18 @@ body{background:#f3f4f6;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',
   J += "}";
 
   J += "if(DATES.length)document.getElementById('hdrTitle').textContent=fmtDate(new Date(DATES[0]+'T12:00:00'));";
+  // Render empty shell immediately, then fetch /preds in background
   J += "renderTabs();renderLeagueList();";
+  J += "function loadPreds(){";
+  J += "  var url='/preds?tz='+TZ;";
+  J += "  var main=document.getElementById('mainView');";
+  J += "  if(main&&!LOADED)main.innerHTML='<div style=\"padding:40px;text-align:center;color:#9ca3af;font-size:13px\">⏳ Loading predictions…</div>';";
+  J += "  fetch(url).then(function(r){return r.json();}).then(function(d){";
+  J += "    if(d.ok&&d.preds){ALL=d.preds;LOADED=true;renderTabs();renderLeagueList();}";
+  J += "    else setTimeout(loadPreds,3000);";
+  J += "  }).catch(function(){setTimeout(loadPreds,3000);});";
+  J += "}";
+  J += "loadPreds();";
 
   return `<!DOCTYPE html>
 <html lang="en">
