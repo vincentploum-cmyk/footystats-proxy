@@ -58,9 +58,9 @@ const TEAM_STATS_CACHE     = {};   // sid  → { data, ts }
 let   SERVER_MATCH_CACHE   = {};   // teamId → [slim matches]
 let   RATE_LIMITED_UNTIL   = 0;    // epoch ms — back off when 429 received
 
-const TTL_FIXTURES = 10 * 60 * 1000;   // 10 minutes
-const TTL_MATCHES  = 30 * 60 * 1000;   // 30 minutes
-const TTL_TEAMS    = 60 * 60 * 1000;   // 60 minutes
+const TTL_FIXTURES = 30 * 60 * 1000;   // 30 minutes (fixtures stable pre-game)
+const TTL_MATCHES  =  2 * 60 * 60 * 1000;   // 2 hours  (completed matches stable)
+const TTL_TEAMS    =  6 * 60 * 60 * 1000;   // 6 hours  (season stats update once/day)
 
 // Safe fetch — detects rate limit, returns null if hit
 async function safeFetch(url) {
@@ -456,30 +456,29 @@ app.get("/", async (req, res) => {
       let completed = (matchRes.data || []).filter(m => m.status === "complete");
       addToLocalExtra(completed, leagueName);
 
-      // Fallback to prev season if sparse
-      if (completed.length < 5 && PREV_SEASON[sid]) {
+      // Fallback to prev season if current season is sparse on either matches or teams
+      // Fetch both in one shot — deduplicated via cache keys so no double-fetch
+      const needsPrevMatches = completed.length < 5 && PREV_SEASON[sid];
+      const needsPrevTeams   = Object.keys(teamRes.data || []).length === 0 && PREV_SEASON[sid];
+      if (needsPrevMatches || needsPrevTeams) {
+        const prevSid = PREV_SEASON[sid];
         const [prevMatch, prevTeam] = await Promise.all([
-          fetchLeagueMatches(PREV_SEASON[sid]).catch(() => ({ data: [] })),
-          Object.keys(teamRes.data || {}).length === 0
-            ? fetchTeamStats(PREV_SEASON[sid]).catch(() => ({ data: [] }))
-            : Promise.resolve(null),
+          needsPrevMatches ? fetchLeagueMatches(prevSid).catch(() => ({ data: [] })) : Promise.resolve({ data: [] }),
+          needsPrevTeams   ? fetchTeamStats(prevSid).catch(() => ({ data: [] }))     : Promise.resolve({ data: [] }),
         ]);
-        const prevC = (prevMatch.data || []).filter(m => m.status === "complete");
-        addToLocalExtra(prevC, leagueName);
-        completed = [...completed, ...prevC];
-        if (prevTeam) teamRes.data = [...(teamRes.data || []), ...(prevTeam.data || [])];
+        if (needsPrevMatches) {
+          const prevC = (prevMatch.data || []).filter(m => m.status === "complete");
+          addToLocalExtra(prevC, leagueName);
+          completed = [...completed, ...prevC];
+        }
+        if (needsPrevTeams) {
+          teamRes.data = (teamRes.data || []).concat(prevTeam.data || []);
+        }
       }
 
-      // Build team map
-      let teamMap = {};
+      // Build team map — single pass, no second fetch
+      const teamMap = {};
       for (const t of (teamRes.data || [])) teamMap[t.id] = t;
-      if (!Object.keys(teamMap).length && PREV_SEASON[sid]) {
-        // Already fetched above if needed — but guard in case teamRes was empty
-        try {
-          const tr2 = await fetchTeamStats(PREV_SEASON[sid]);
-          for (const t of (tr2.data || [])) teamMap[t.id] = t;
-        } catch(e) {}
-      }
       return { sid, leagueName, teamMap, fixtures: leagueFixtures[sid] };
     }));
 
