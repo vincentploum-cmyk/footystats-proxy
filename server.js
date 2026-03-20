@@ -13,18 +13,16 @@ const PORT = process.env.PORT || 3001;
 
 if (!KEY) { console.error("Missing FOOTY_API_KEY"); process.exit(1); }
 
-// ─── LEAGUE REGISTRY ─────────────────────────────────────────────────────────
 let LEAGUE_NAMES = {};
-let LEAGUE_LIST_LOADING = false;   // prevents concurrent /league-list calls
+let LEAGUE_LIST_LOADING = false;
 
 async function fetchLeagueList() {
-  if (LEAGUE_LIST_LOADING) return;  // already in flight — don't double-fetch
+  if (LEAGUE_LIST_LOADING) return;
   LEAGUE_LIST_LOADING = true;
   try {
     const data = await safeFetch(BASE + "/league-list?key=" + KEY);
-    if (!data) { console.warn("fetchLeagueList skipped — rate limited"); LEAGUE_LIST_LOADING = false; return; }
+    if (!data) { console.warn("fetchLeagueList skipped"); LEAGUE_LIST_LOADING = false; return; }
     const list = data.data || [];
-    console.log("League-list: " + list.length + " leagues found");
     const map = {};
     for (const league of list) {
       const leagueName = league.league_name || league.name || "";
@@ -36,10 +34,7 @@ async function fetchLeagueList() {
     }
     LEAGUE_NAMES = map;
     console.log("Mapped " + Object.keys(map).length + " season IDs");
-    if (list.length === 0) {
-      console.log("Got 0 leagues — retrying in 2 min...");
-      setTimeout(fetchLeagueList, 2 * 60 * 1000);
-    }
+    if (list.length === 0) setTimeout(fetchLeagueList, 2 * 60 * 1000);
   } catch(e) {
     console.error("Failed to load league list: " + e.message);
     LEAGUE_NAMES = {};
@@ -48,33 +43,19 @@ async function fetchLeagueList() {
   }
 }
 
-// ─── CACHE LAYER ─────────────────────────────────────────────────────────────
-// All expensive API calls are cached server-side.
-// Only re-fetched when TTL expires — never on every page load.
-//
-//  FIXTURE_CACHE        : /todays-matches per date     TTL = 10 min
-//  LEAGUE_MATCHES_CACHE : /league-matches per sid      TTL = 30 min
-//  TEAM_STATS_CACHE     : /league-teams per sid        TTL = 60 min
-//  SERVER_MATCH_CACHE   : team → completed matches     built from LEAGUE_MATCHES_CACHE
+const FIXTURE_CACHE        = {};
+const LEAGUE_MATCHES_CACHE = {};
+const TEAM_STATS_CACHE     = {};
+let   SERVER_MATCH_CACHE   = {};
+let   RATE_LIMITED_UNTIL   = 0;
 
-const FIXTURE_CACHE        = {};   // date → { data, ts }
-const LEAGUE_MATCHES_CACHE = {};   // sid  → { data, ts }
-const TEAM_STATS_CACHE     = {};   // sid  → { data, ts }
-let   SERVER_MATCH_CACHE   = {};   // teamId → [slim matches]
-let   RATE_LIMITED_UNTIL   = 0;    // epoch ms — back off when 429 received
-
-const TTL_FIXTURES = 30 * 60 * 1000;   // 30 minutes (fixtures stable pre-game)
-const TTL_MATCHES  =  2 * 60 * 60 * 1000;   // 2 hours  (completed matches stable)
-const TTL_TEAMS    =  6 * 60 * 60 * 1000;   // 6 hours  (season stats update once/day)
-
-// Safe fetch — detects rate limit, returns null if hit or timeout
-const FETCH_TIMEOUT_MS = 8000; // 8s per call — avoids hanging the whole page
+const TTL_FIXTURES = 30 * 60 * 1000;
+const TTL_MATCHES  =  2 * 60 * 60 * 1000;
+const TTL_TEAMS    =  6 * 60 * 60 * 1000;
+const FETCH_TIMEOUT_MS = 8000;
 
 async function safeFetch(url) {
-  if (Date.now() < RATE_LIMITED_UNTIL) {
-    console.warn("Rate limited — skipping: " + url);
-    return null;
-  }
+  if (Date.now() < RATE_LIMITED_UNTIL) { console.warn("Rate limited: " + url); return null; }
   try {
     const controller = new AbortController();
     const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
@@ -84,51 +65,37 @@ async function safeFetch(url) {
         ? data.metadata.request_limit_refresh_next * 1000
         : Date.now() + 60 * 60 * 1000;
       RATE_LIMITED_UNTIL = reset;
-      const mins = Math.ceil((reset - Date.now()) / 60000);
-      console.warn("Rate limit hit — backing off for " + mins + " min");
+      console.warn("Rate limit hit — backing off for " + Math.ceil((reset - Date.now()) / 60000) + " min");
       return null;
     }
     return data;
-  } catch(e) {
-    console.error("Fetch error: " + e.message);
-    return null;
-  }
+  } catch(e) { console.error("Fetch error: " + e.message); return null; }
 }
 
-// Cached fixture fetch
 async function fetchFixtures(date) {
   const now = Date.now();
-  if (FIXTURE_CACHE[date] && (now - FIXTURE_CACHE[date].ts) < TTL_FIXTURES) {
-    return FIXTURE_CACHE[date].data;
-  }
+  if (FIXTURE_CACHE[date] && (now - FIXTURE_CACHE[date].ts) < TTL_FIXTURES) return FIXTURE_CACHE[date].data;
   const data = await safeFetch(BASE + "/todays-matches?date=" + date + "&key=" + KEY);
   if (data) FIXTURE_CACHE[date] = { data, ts: now };
   return data || FIXTURE_CACHE[date]?.data || { data: [] };
 }
 
-// Cached league matches fetch
 async function fetchLeagueMatches(sid) {
   const now = Date.now();
-  if (LEAGUE_MATCHES_CACHE[sid] && (now - LEAGUE_MATCHES_CACHE[sid].ts) < TTL_MATCHES) {
-    return LEAGUE_MATCHES_CACHE[sid].data;
-  }
+  if (LEAGUE_MATCHES_CACHE[sid] && (now - LEAGUE_MATCHES_CACHE[sid].ts) < TTL_MATCHES) return LEAGUE_MATCHES_CACHE[sid].data;
   const data = await safeFetch(BASE + "/league-matches?season_id=" + sid + "&max_per_page=150&page=1&sort=date_unix&order=desc&key=" + KEY);
   if (data) LEAGUE_MATCHES_CACHE[sid] = { data, ts: now };
   return data || LEAGUE_MATCHES_CACHE[sid]?.data || { data: [] };
 }
 
-// Cached team stats fetch
 async function fetchTeamStats(sid) {
   const now = Date.now();
-  if (TEAM_STATS_CACHE[sid] && (now - TEAM_STATS_CACHE[sid].ts) < TTL_TEAMS) {
-    return TEAM_STATS_CACHE[sid].data;
-  }
+  if (TEAM_STATS_CACHE[sid] && (now - TEAM_STATS_CACHE[sid].ts) < TTL_TEAMS) return TEAM_STATS_CACHE[sid].data;
   const data = await safeFetch(BASE + "/league-teams?season_id=" + sid + "&include=stats&key=" + KEY);
   if (data) TEAM_STATS_CACHE[sid] = { data, ts: now };
   return data || TEAM_STATS_CACHE[sid]?.data || { data: [] };
 }
 
-// Rebuild the server match cache from already-cached league matches
 function rebuildServerMatchCache() {
   const newCache = {};
   let total = 0;
@@ -154,21 +121,16 @@ function rebuildServerMatchCache() {
   console.log("Server match cache rebuilt: " + Object.keys(newCache).length + " teams, " + total + " records");
 }
 
-const PREV_SEASON = {
-  16504:13973, 16544:11321, 16571:15746,
-  16614:14086, 16615:14116, 16036:13703,
-};
-
-// ─── HELPERS ─────────────────────────────────────────────────────────────────
+const PREV_SEASON = { 16504:13973, 16544:11321, 16571:15746, 16614:14086, 16615:14116, 16036:13703 };
 const ftch = url => fetch(url).then(r => r.json());
 const safe = v   => (isNaN(v) || !isFinite(v)) ? 0 : Number(v);
 
 function getDates(tzOffset) {
-  const now   = new Date();
+  const now = new Date();
   const local = new Date(now.getTime() + tzOffset * 60 * 1000);
-  const fmt   = d => {
-    const y   = d.getUTCFullYear();
-    const m   = String(d.getUTCMonth() + 1).padStart(2, "0");
+  const fmt = d => {
+    const y = d.getUTCFullYear();
+    const m = String(d.getUTCMonth() + 1).padStart(2, "0");
     const day = String(d.getUTCDate()).padStart(2, "0");
     return y + "-" + m + "-" + day;
   };
@@ -182,82 +144,43 @@ function getDates(tzOffset) {
 }
 
 function unixToLocalDate(unix, tzOffset) {
-  const d   = new Date((unix * 1000) + tzOffset * 60 * 1000);
-  const y   = d.getUTCFullYear();
-  const m   = String(d.getUTCMonth() + 1).padStart(2, "0");
+  const d = new Date((unix * 1000) + tzOffset * 60 * 1000);
+  const y = d.getUTCFullYear();
+  const m = String(d.getUTCMonth() + 1).padStart(2, "0");
   const day = String(d.getUTCDate()).padStart(2, "0");
   return y + "-" + m + "-" + day;
 }
 
-// ─── SIGNAL ENGINE ────────────────────────────────────────────────────────────
-// 4 independent signals — each worth 1 point. Rank = total points fired (0–4).
-//
-//   A  CI >= 3.2
-//      Combined FH intensity: h_scored_fh + a_scored_fh + h_conced_fh + a_conced_fh
-//      Measures raw goal volume potential for both teams.
-//
-//   B  T1: both teams seasonOver25PercentageHT >= 20%
-//      Both teams have historically produced FH>2.5 in ≥20% of their games.
-//      Mutual history signal — must fire for both sides.
-//
-//   C  CN010: either team concedes ≥0.25 goals/game in 0–10 min
-//      At least one team gets hit early, breaking defensive shape fast.
-//
-//   D  Either team FH scored avg (role) >= 1.5
-//      Home team scores ≥1.5 FH goals/game at home, OR
-//      Away team scores ≥1.5 FH goals/game away. Elite attacking threat.
-//
-// Backtested on 24,203 complete matches (base rate 12.6%):
-//   Rank 4 (4/4): 73.2% FH>2.5 | 85.4% FH>1.5  (n=82)
-//   Rank 3 (3/4): 44.7% FH>2.5 | 69.6% FH>1.5  (n=293)
-//   Rank 2 (2/4): 29.6% FH>2.5 | 61.2% FH>1.5  (n=531)
-//   Rank 1 (1/4): 12.8% FH>2.5 | 38.2% FH>1.5  (n=1549)
-//   Rank 0 (0/4): 11.5% FH>2.5 | 32.9% FH>1.5
-
-// Probability lookup by rank
 const PROB25_BY_RANK = { 4: 73.2, 3: 44.7, 2: 29.6, 1: 12.8, 0: 11.5 };
 const PROB15_BY_RANK = { 4: 85.4, 3: 69.6, 2: 61.2, 1: 38.2, 0: 32.9 };
-
 const RANK_LABELS = { 4: "Fire", 3: "Prime", 2: "Watch", 1: "Signal", 0: "Low" };
 
 function computeSignals(snap) {
-  const h = snap.home;
-  const a = snap.away;
-
-  // CI = sum of all 4 role-specific FH scoring averages
+  const h = snap.home, a = snap.away;
   const ci = safe(h.scored_fh + a.scored_fh + h.conced_fh + a.conced_fh);
-
   const sigA = ci >= 3.2;
   const sigB = h.t1_pct >= 20 && a.t1_pct >= 20;
   const sigC = h.cn010_avg >= 0.25 || a.cn010_avg >= 0.25;
   const sigD = h.scored_fh >= 1.5 || a.scored_fh >= 1.5;
-
-  const rank  = [sigA, sigB, sigC, sigD].filter(Boolean).length;
-  const label = RANK_LABELS[rank] || "Low";
-
-  const prob25 = PROB25_BY_RANK[rank] ?? 11.5;
-  const prob15 = PROB15_BY_RANK[rank] ?? 32.9;
-
+  const rank = [sigA, sigB, sigC, sigD].filter(Boolean).length;
   return {
-    rank, label,
-    prob25, prob15,
-    ci:      +ci.toFixed(2),
-    eligible: rank >= 3,
+    rank, label: RANK_LABELS[rank] || "Low",
+    prob25: PROB25_BY_RANK[rank] ?? 11.5,
+    prob15: PROB15_BY_RANK[rank] ?? 32.9,
+    ci: +ci.toFixed(2), eligible: rank >= 3,
     signals: {
-      A: { met: sigA, label: "Combined Intensity",    value: ci.toFixed(2),                                               threshold: ">= 3.20" },
-      B: { met: sigB, label: "Both Teams FH History", value: h.t1_pct.toFixed(0) + "%/" + a.t1_pct.toFixed(0) + "%",    threshold: "both >= 20%" },
-      C: { met: sigC, label: "Early Goals",           value: h.cn010_avg.toFixed(2) + "/" + a.cn010_avg.toFixed(2),      threshold: "either >= 0.25" },
-      D: { met: sigD, label: "Elite FH Scorer",       value: h.scored_fh.toFixed(2) + "/" + a.scored_fh.toFixed(2),     threshold: "either >= 1.50" },
+      A: { met: sigA, label: "Combined Intensity",    value: ci.toFixed(2),                                              threshold: ">= 3.20" },
+      B: { met: sigB, label: "Both Teams FH History", value: h.t1_pct.toFixed(0) + "%/" + a.t1_pct.toFixed(0) + "%",   threshold: "both >= 20%" },
+      C: { met: sigC, label: "Early Goals",           value: h.cn010_avg.toFixed(2) + "/" + a.cn010_avg.toFixed(2),     threshold: "either >= 0.25" },
+      D: { met: sigD, label: "Elite FH Scorer",       value: h.scored_fh.toFixed(2) + "/" + a.scored_fh.toFixed(2),    threshold: "either >= 1.50" },
     },
   };
 }
 
-// ─── STAT EXTRACTOR ──────────────────────────────────────────────────────────
 function extractStats(teamObj, role) {
-  const s   = teamObj.stats || {};
+  const s = teamObj.stats || {};
   const sfx = role === "home" ? "_home" : "_away";
   const mpR = safe(s["seasonMatchesPlayed" + sfx]) || 1;
-
   const pick = (rk, fk) => {
     const rv = s[rk];
     if (rv !== null && rv !== undefined && mpR >= 3) return rv;
@@ -265,7 +188,6 @@ function extractStats(teamObj, role) {
     if (fv !== null && fv !== undefined) return fv;
     return 0;
   };
-
   return {
     name:      teamObj.name || teamObj.cleanName || "",
     scored_fh: safe(pick("scoredAVGHT"   + sfx, "scoredAVGHT_overall")),
@@ -277,18 +199,14 @@ function extractStats(teamObj, role) {
   };
 }
 
-// ─── BUILD LAST 5 ─────────────────────────────────────────────────────────────
-// Only includes matches within the last 35 days (5 weeks) of today.
-// This prevents stale form from months-old matches showing when cache is sparse.
-const LAST5_WINDOW_SECS = 35 * 24 * 60 * 60; // 35 days in seconds
+const LAST5_WINDOW_SECS = 35 * 24 * 60 * 60;
 
 function buildLast5(teamId, cache) {
   if (!teamId || !cache[teamId]) return [];
   const cutoff = Math.floor(Date.now() / 1000) - LAST5_WINDOW_SECS;
-  // Deduplicate: same match appears twice in cache (once as home, once as away).
   const seen = new Set();
   const unique = cache[teamId].filter(m => {
-    if ((m.date_unix || 0) < cutoff) return false;          // outside 5-week window
+    if ((m.date_unix || 0) < cutoff) return false;
     const key = (m.date_unix || 0) + "_" + (m.homeID || "") + "_" + (m.awayID || "");
     if (seen.has(key)) return false;
     seen.add(key);
@@ -306,80 +224,65 @@ function buildLast5(teamId, cache) {
       const result = ftFor > ftAgst ? "W" : ftFor < ftAgst ? "L" : "D";
       const date   = m.date_unix ? new Date(m.date_unix * 1000).toISOString().slice(0, 10) : "";
       return { date, venue: isHome ? "H" : "A", opp: isHome ? m.away_name : m.home_name,
-               competition: m.league || "", fhFor, fhAgst, ftFor, ftAgst, result };
+               fhFor, fhAgst, ftFor, ftAgst, result };
     });
 }
 
-// ─── CACHE STATUS + DEBUG ENDPOINTS ─────────────────────────────────────────
 app.get("/cache-status", (req, res) => {
   const now = Date.now();
-  const fixtureEntries = Object.entries(FIXTURE_CACHE).map(([date, e]) => ({
-    date, ageMin: Math.round((now - e.ts) / 60000), expiresInMin: Math.round((TTL_FIXTURES - (now - e.ts)) / 60000),
-    matchCount: (e.data.data || []).length,
-  }));
-  const matchEntries = Object.entries(LEAGUE_MATCHES_CACHE).map(([sid, e]) => ({
-    sid, league: LEAGUE_NAMES[parseInt(sid)] || "?",
-    ageMin: Math.round((now - e.ts) / 60000), expiresInMin: Math.round((TTL_MATCHES - (now - e.ts)) / 60000),
-    matchCount: (e.data.data || []).length,
-  }));
-  const teamEntries = Object.entries(TEAM_STATS_CACHE).map(([sid, e]) => ({
-    sid, league: LEAGUE_NAMES[parseInt(sid)] || "?",
-    ageMin: Math.round((now - e.ts) / 60000), expiresInMin: Math.round((TTL_TEAMS - (now - e.ts)) / 60000),
-    teamCount: (e.data.data || []).length,
-  }));
   res.json({
     rateLimitedUntil: RATE_LIMITED_UNTIL > now ? new Date(RATE_LIMITED_UNTIL).toISOString() : "not limited",
     rateLimitedMinRemaining: RATE_LIMITED_UNTIL > now ? Math.ceil((RATE_LIMITED_UNTIL - now) / 60000) : 0,
     leagueRegistry: Object.keys(LEAGUE_NAMES).length + " seasons mapped",
     serverMatchCache: Object.keys(SERVER_MATCH_CACHE).length + " teams",
-    fixtureCacheEntries: fixtureEntries,
-    leagueMatchesCacheEntries: matchEntries.length,
-    teamStatsCacheEntries: teamEntries.length,
-    leagueMatchesCache: matchEntries,
-    teamStatsCache: teamEntries,
+    fixtureCacheEntries: Object.entries(FIXTURE_CACHE).map(([date, e]) => ({
+      date, ageMin: Math.round((now - e.ts) / 60000), matchCount: (e.data.data || []).length,
+    })),
+    leagueMatchesCacheEntries: Object.keys(LEAGUE_MATCHES_CACHE).length,
+    teamStatsCacheEntries: Object.keys(TEAM_STATS_CACHE).length,
+    leagueMatchesCache: Object.entries(LEAGUE_MATCHES_CACHE).map(([sid, e]) => ({
+      sid, league: LEAGUE_NAMES[parseInt(sid)] || "?",
+      ageMin: Math.round((now - e.ts) / 60000), matchCount: (e.data.data || []).length,
+    })),
+    teamStatsCache: Object.entries(TEAM_STATS_CACHE).map(([sid, e]) => ({
+      sid, ageMin: Math.round((now - e.ts) / 60000), teamCount: (e.data.data || []).length,
+    })),
   });
 });
 
 app.get("/debug", async (req, res) => {
   try {
-    const tzOffset    = parseInt(req.query.tz || "0", 10);
-    const dates       = getDates(tzOffset);
-    const leagueCount = Object.keys(LEAGUE_NAMES).length;
-    const raw         = await fetchFixtures(dates[0]);
-    const fixtures    = raw.data || [];
-    const passing     = fixtures.filter(m => {
-      const sid = parseInt(m.competition_id, 10);
-      return !leagueCount || LEAGUE_NAMES[sid];
-    });
-    const cids      = [...new Set(fixtures.map(m => m.competition_id))].slice(0, 20);
-    const knownSids = Object.keys(LEAGUE_NAMES).slice(0, 20);
+    const tzOffset = parseInt(req.query.tz || "0", 10);
+    const dates = getDates(tzOffset);
+    const raw = await fetchFixtures(dates[0]);
+    const fixtures = raw.data || [];
     res.json({
-      date: dates[0],
-      rateLimited: Date.now() < RATE_LIMITED_UNTIL,
-      rateLimitedUntil: RATE_LIMITED_UNTIL > Date.now() ? new Date(RATE_LIMITED_UNTIL).toISOString() : null,
-      leagueRegistrySize: leagueCount,
+      date: dates[0], rateLimited: Date.now() < RATE_LIMITED_UNTIL,
+      leagueRegistrySize: Object.keys(LEAGUE_NAMES).length,
       totalFixtures: fixtures.length,
-      passingFilter: passing.length,
-      sampleCompetitionIds: cids,
-      sampleKnownSeasonIds: knownSids,
       cachedTeams: Object.keys(SERVER_MATCH_CACHE).length,
-      fixtureCacheAge: FIXTURE_CACHE[dates[0]] ? Math.round((Date.now() - FIXTURE_CACHE[dates[0]].ts) / 60000) + " min" : "not cached",
     });
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
-// ─── API PASSTHROUGH ─────────────────────────────────────────────────────────
 app.get("/api/*", async (req, res) => {
   try {
     const path = req.path.replace("/api", "");
-    const qs   = new URLSearchParams({ ...req.query, key: KEY }).toString();
+    const qs = new URLSearchParams({ ...req.query, key: KEY }).toString();
     res.json(await ftch(BASE + path + "?" + qs));
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
-// ─── MAIN ROUTE ──────────────────────────────────────────────────────────────
+// ─── HELPERS ─────────────────────────────────────────────────────────────────
+// FIX 3: isPlayedMatch — used for both addToLocalExtra AND completed filtering
+// so that incomplete-but-played matches (e.g. Liga MX Femenil) are included
+const isPlayedMatch = (m, nowSecs) =>
+  m.status === "complete" ||
+  (m.status === "incomplete" &&
+   (m.date_unix || 0) < nowSecs &&
+   (parseInt(m.homeGoalCount || 0, 10) + parseInt(m.awayGoalCount || 0, 10)) > 0);
+
 app.get("/", async (req, res) => {
-  // Hard timeout — if the whole route takes >25s, send error rather than hang forever
   const routeTimer = setTimeout(() => {
     if (!res.headersSent) res.status(503).send("<pre>Timeout: API calls took too long. Try refreshing.</pre>");
   }, 25000);
@@ -388,17 +291,12 @@ app.get("/", async (req, res) => {
     const dates     = getDates(tzOffset);
     const fetchedAt = new Date().toISOString().slice(0, 16).replace("T", " ");
 
-    // If league registry not loaded yet, wait for the in-flight fetch or start one.
-    // The LEAGUE_LIST_LOADING flag prevents duplicate /league-list calls.
     if (Object.keys(LEAGUE_NAMES).length === 0) {
       await fetchLeagueList();
-      // If still loading (concurrent request already in flight), wait briefly
-      if (LEAGUE_LIST_LOADING) {
-        await new Promise(r => setTimeout(r, 3000));
-      }
+      if (LEAGUE_LIST_LOADING) await new Promise(r => setTimeout(r, 3000));
     }
-    // Still empty after retry → return a loading page with auto-refresh
     if (Object.keys(LEAGUE_NAMES).length === 0) {
+      clearTimeout(routeTimer);
       return res.send(`<!DOCTYPE html><html><head><meta charset="UTF-8"/>
 <meta http-equiv="refresh" content="5"/>
 <meta name="viewport" content="width=device-width,initial-scale=1"/>
@@ -410,7 +308,6 @@ app.get("/", async (req, res) => {
 <p style="font-size:13px;margin-top:6px">Refreshing in 5 seconds</p></div></body></html>`);
     }
 
-    // Fetch fixtures for all 5 days in parallel — cached, max 1 API call per date per 30 min
     const allFixtures = [];
     const dayResults = await Promise.all(dates.map(d => fetchFixtures(d)));
     for (let i = 0; i < dates.length; i++) {
@@ -419,21 +316,21 @@ app.get("/", async (req, res) => {
       }
     }
 
-    // Group by league — only include leagues present in LEAGUE_NAMES.
-    // If LEAGUE_NAMES is still empty (startup race), show nothing rather than
-    // processing every fixture from every league we have no stats for.
+    // FIX 4: deduplicate by match id before grouping — prevents same match
+    // appearing twice when it maps to two season IDs in LEAGUE_NAMES
+    const seenFixtureIds = new Set();
     const leagueFixtures = {};
     for (const m of allFixtures) {
       const sid = parseInt(m.competition_id, 10);
-      if (LEAGUE_NAMES[sid]) {
-        if (!leagueFixtures[sid]) leagueFixtures[sid] = [];
-        leagueFixtures[sid].push(m);
-      }
+      if (!LEAGUE_NAMES[sid]) continue;
+      const fid = String(m.id || (m.homeID + "_" + m.awayID + "_" + (m.date_unix || 0)));
+      if (seenFixtureIds.has(fid)) continue;
+      seenFixtureIds.add(fid);
+      if (!leagueFixtures[sid]) leagueFixtures[sid] = [];
+      leagueFixtures[sid].push(m);
     }
 
-    // Per-request local cache — extends SERVER_MATCH_CACHE with matches
-    // fetched this request that may not be in the server cache yet.
-    const localExtra    = {};
+    const localExtra = {};
     const serverCacheKeys = new Set();
     for (const matches of Object.values(SERVER_MATCH_CACHE)) {
       for (const m of matches) {
@@ -453,17 +350,10 @@ app.get("/", async (req, res) => {
     });
 
     const nowSecs = Math.floor(Date.now() / 1000);
+
     const addToLocalExtra = (matches, lg) => {
       for (const m of matches) {
-        // Accept 'complete' matches, and also 'incomplete' matches that were
-        // clearly played: kick-off was in the past AND FT score is non-zero.
-        // Some providers (e.g. FootyStats for Women's Liga MX) never flip the
-        // status to 'complete' even after the match has been played.
-        const isPlayed = m.status === "complete" ||
-          (m.status === "incomplete" &&
-           (m.date_unix || 0) < nowSecs &&
-           (parseInt(m.homeGoalCount || 0, 10) + parseInt(m.awayGoalCount || 0, 10)) > 0);
-        if (!isPlayed) continue;
+        if (!isPlayedMatch(m, nowSecs)) continue;
         const key = (m.date_unix||0) + "_" + (m.homeID||"") + "_" + (m.awayID||"");
         if (serverCacheKeys.has(key)) continue;
         const slim = slimM(m, lg);
@@ -474,44 +364,33 @@ app.get("/", async (req, res) => {
     };
 
     const preds = [];
-
-    // Fetch league matches + team stats for all leagues in parallel
     const leagueSids = Object.keys(leagueFixtures).filter(sid => leagueFixtures[sid].length);
 
     const leagueData = await Promise.all(leagueSids.map(async (sid) => {
       const leagueName = LEAGUE_NAMES[parseInt(sid, 10)] || "League " + sid;
-
-      // Fetch matches and team stats concurrently for this league
       const [matchRes, teamRes] = await Promise.all([
-        fetchLeagueMatches(sid).catch(e => { console.error("[" + sid + "] match fetch: " + e.message); return { data: [] }; }),
-        fetchTeamStats(sid).catch(e => { console.error("[" + sid + "] team fetch: " + e.message); return { data: [] }; }),
+        fetchLeagueMatches(sid).catch(e => { console.error("[" + sid + "] match: " + e.message); return { data: [] }; }),
+        fetchTeamStats(sid).catch(e => { console.error("[" + sid + "] team: " + e.message); return { data: [] }; }),
       ]);
 
-      // Completed matches
-      let completed = (matchRes.data || []).filter(m => m.status === "complete");
-      addToLocalExtra(completed, leagueName);
+      // FIX 3: pass ALL matches to addToLocalExtra (not just complete),
+      // and use isPlayedMatch for completed filter too
+      const allMatches = matchRes.data || [];
+      addToLocalExtra(allMatches, leagueName);
+      const completed = allMatches.filter(m => isPlayedMatch(m, nowSecs));
 
-      // Fallback to prev season if current season is sparse on either matches or teams
-      // Fetch both in one shot — deduplicated via cache keys so no double-fetch
       const needsPrevMatches = completed.length < 5 && PREV_SEASON[sid];
-      const needsPrevTeams   = Object.keys(teamRes.data || []).length === 0 && PREV_SEASON[sid];
+      const needsPrevTeams   = (teamRes.data || []).length === 0 && PREV_SEASON[sid];
       if (needsPrevMatches || needsPrevTeams) {
         const prevSid = PREV_SEASON[sid];
         const [prevMatch, prevTeam] = await Promise.all([
           needsPrevMatches ? fetchLeagueMatches(prevSid).catch(() => ({ data: [] })) : Promise.resolve({ data: [] }),
           needsPrevTeams   ? fetchTeamStats(prevSid).catch(() => ({ data: [] }))     : Promise.resolve({ data: [] }),
         ]);
-        if (needsPrevMatches) {
-          const prevC = (prevMatch.data || []).filter(m => m.status === "complete");
-          addToLocalExtra(prevC, leagueName);
-          completed = [...completed, ...prevC];
-        }
-        if (needsPrevTeams) {
-          teamRes.data = (teamRes.data || []).concat(prevTeam.data || []);
-        }
+        if (needsPrevMatches) addToLocalExtra(prevMatch.data || [], leagueName);
+        if (needsPrevTeams)   teamRes.data = (teamRes.data || []).concat(prevTeam.data || []);
       }
 
-      // Build team map — single pass, no second fetch
       const teamMap = {};
       for (const t of (teamRes.data || [])) teamMap[t.id] = t;
       return { sid, leagueName, teamMap, fixtures: leagueFixtures[sid] };
@@ -524,14 +403,9 @@ app.get("/", async (req, res) => {
         const homeTeam = teamMap[homeId];
         const awayTeam = teamMap[awayId];
         const missing  = !homeTeam || !awayTeam;
+        const matchDate = fix.date_unix ? unixToLocalDate(fix.date_unix, tzOffset) : fix._date;
 
-        const matchDate = fix.date_unix
-          ? unixToLocalDate(fix.date_unix, tzOffset)
-          : fix._date;
-
-        let snap   = null;
-        let result = null;
-
+        let snap = null, result = null;
         if (!missing) {
           const hStats = extractStats(homeTeam, "home");
           const aStats = extractStats(awayTeam, "away");
@@ -539,12 +413,7 @@ app.get("/", async (req, res) => {
           result = computeSignals(snap);
         }
 
-        // Merge server cache + local extras (no mutation of server cache)
-        const mergedCache = (tid) => {
-          const base  = SERVER_MATCH_CACHE[tid] || [];
-          const extra = localExtra[tid] || [];
-          return base.concat(extra);
-        };
+        const mergedCache = (tid) => (SERVER_MATCH_CACHE[tid] || []).concat(localExtra[tid] || []);
         const hLast5 = buildLast5(homeId, { [homeId]: mergedCache(homeId), [awayId]: mergedCache(awayId) });
         const aLast5 = buildLast5(awayId, { [homeId]: mergedCache(homeId), [awayId]: mergedCache(awayId) });
         const hAvgFH = hLast5.length ? +(hLast5.reduce((s, g) => s + g.fhFor + g.fhAgst, 0) / hLast5.length).toFixed(2) : null;
@@ -558,33 +427,15 @@ app.get("/", async (req, res) => {
 
         preds.push({
           id: fix.id, homeId, awayId,
-          league:       leagueName,
-          leagueSid:    parseInt(sid, 10),
-          home:         fix.home_name || "",
-          away:         fix.away_name || "",
-          dt:           (fix.date_unix || 0) * 1000,
-          matchDate,
-          status:       fix.status || "upcoming",
-          missingStats: missing,
-          // snapshot for display
+          league: leagueName, leagueSid: parseInt(sid, 10),
+          home: fix.home_name || "", away: fix.away_name || "",
+          dt: (fix.date_unix || 0) * 1000,
+          matchDate, status: fix.status || "upcoming", missingStats: missing,
           snap: snap ? {
             fetchedAt: snap.fetchedAt,
-            home: {
-              name:      snap.home.name,
-              scored_fh: snap.home.scored_fh,
-              conced_fh: snap.home.conced_fh,
-              t1_pct:    snap.home.t1_pct,
-              cn010_avg: snap.home.cn010_avg,
-            },
-            away: {
-              name:      snap.away.name,
-              scored_fh: snap.away.scored_fh,
-              conced_fh: snap.away.conced_fh,
-              t1_pct:    snap.away.t1_pct,
-              cn010_avg: snap.away.cn010_avg,
-            },
+            home: { name: snap.home.name, scored_fh: snap.home.scored_fh, conced_fh: snap.home.conced_fh, t1_pct: snap.home.t1_pct, cn010_avg: snap.home.cn010_avg },
+            away: { name: snap.away.name, scored_fh: snap.away.scored_fh, conced_fh: snap.away.conced_fh, t1_pct: snap.away.t1_pct, cn010_avg: snap.away.cn010_avg },
           } : null,
-          // signal outputs
           rank:     result ? result.rank     : 0,
           label:    result ? result.label    : "Low",
           prob25:   result ? result.prob25   : 11.5,
@@ -592,26 +443,16 @@ app.get("/", async (req, res) => {
           eligible: result ? result.eligible : false,
           ci:       result ? result.ci       : 0,
           signals:  result ? result.signals  : {},
-          // form
           hLast5, aLast5, hAvgFH, aAvgFH,
-          // result
-          matchResult: isComplete ? {
-            fhH, fhA, ftH, ftA,
-            hit25: (fhH + fhA) > 2,
-            hit15: (fhH + fhA) > 1,
-          } : null,
+          matchResult: isComplete ? { fhH, fhA, ftH, ftA, hit25: (fhH+fhA)>2, hit15: (fhH+fhA)>1 } : null,
         });
       }
     }
 
-    // Rebuild server match cache from newly cached league data
     rebuildServerMatchCache();
-
     preds.sort((a, b) => b.rank - a.rank || b.prob25 - a.prob25);
-
-    const rateLimited = Date.now() < RATE_LIMITED_UNTIL;
     clearTimeout(routeTimer);
-    res.send(buildHTML(preds, dates, rateLimited));
+    res.send(buildHTML(preds, dates, Date.now() < RATE_LIMITED_UNTIL));
   } catch(e) {
     clearTimeout(routeTimer);
     console.error(e);
@@ -619,10 +460,9 @@ app.get("/", async (req, res) => {
   }
 });
 
-// ─── HTML BUILDER ─────────────────────────────────────────────────────────────
 function buildHTML(preds, dates, rateLimited) {
   const predsJSON = JSON.stringify(preds)
-    .replace(/</g, "\\u003c").replace(/>/g, "\\u003e").replace(/&/g, "\\u0026");
+    .replace(/</g,"\\u003c").replace(/>/g,"\\u003e").replace(/&/g,"\\u0026");
 
   const CSS = `
 *{box-sizing:border-box;margin:0;padding:0}
@@ -670,7 +510,7 @@ body{background:#f3f4f6;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',
 .team-name{font-size:14px;font-weight:700;color:#111827;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;margin-bottom:6px}
 .form-strip{display:flex;gap:3px;margin-bottom:7px;align-items:center;flex-wrap:wrap}
 .form-lbl{font-size:9px;color:#9ca3af;text-transform:uppercase;letter-spacing:.5px;margin-right:1px}
-.fw{display:inline-flex;align-items:center;justify-content:center;width:17px;height:17px;border-radius:4px;font-size:9px;font-weight:700;background:#dcfce7;color:#166534}
+.fw{display:inline-flex;align-items:center;justify-content:center;width:17px;height:17px;border-radius:4px;font-size:9px;font-weight:700;background:#dcfce7;color:#166634}
 .fd{display:inline-flex;align-items:center;justify-content:center;width:17px;height:17px;border-radius:4px;font-size:9px;font-weight:700;background:#f3f4f6;color:#6b7280;border:1px solid #e5e7eb}
 .fl{display:inline-flex;align-items:center;justify-content:center;width:17px;height:17px;border-radius:4px;font-size:9px;font-weight:700;background:#fee2e2;color:#b91c1c}
 .stat-grid{display:grid;grid-template-columns:1fr 1fr;gap:4px}
@@ -697,16 +537,17 @@ body{background:#f3f4f6;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',
 .form-wrap{border-top:1px solid #f3f4f6;padding-top:10px}
 .form-team-lbl{font-size:10px;font-weight:600;color:#6b7280;text-transform:uppercase;letter-spacing:.6px;margin-bottom:6px}
 .tbl-scroll{width:100%;overflow-x:auto;-webkit-overflow-scrolling:touch}
-.ftable{width:100%;min-width:460px;border-collapse:collapse;font-size:11px;margin-bottom:10px}
-.ftable th{background:#f9fafb;padding:5px;text-align:left;font-size:9px;color:#6b7280;font-weight:600;text-transform:uppercase;letter-spacing:.4px;border-bottom:1px solid #e5e7eb;white-space:nowrap}
-.ftable td{padding:5px;border-bottom:1px solid #f9fafb;white-space:nowrap}
+.ftable{width:100%;border-collapse:collapse;font-size:11px;margin-bottom:6px}
+.ftable th{background:#f9fafb;padding:4px 5px;text-align:left;font-size:9px;color:#6b7280;font-weight:600;text-transform:uppercase;letter-spacing:.4px;border-bottom:1px solid #e5e7eb;white-space:nowrap}
+.ftable td{padding:4px 5px;border-bottom:1px solid #f9fafb;white-space:nowrap}
 .ftable tr:last-child td{border-bottom:none}
-.ftable tfoot td{background:#f9fafb;font-weight:600;font-size:10px;padding:5px;border-top:1px solid #e5e7eb}
+.ftable tfoot td{background:#f9fafb;font-weight:600;font-size:10px;padding:4px 5px;border-top:1px solid #e5e7eb}
 .fw2{color:#15803d;font-weight:700} .fl2{color:#b91c1c;font-weight:700} .fd2{color:#6b7280;font-weight:700}
-.back-btn{background:#f3f4f6;border:1px solid #e5e7eb;padding:6px 12px;border-radius:20px;font-size:12px;cursor:pointer;color:#374151;white-space:nowrap}
 @media(max-width:480px){
   .hdr-title{font-size:17px}.rn{font-size:20px}.team-name{font-size:12px}
   .sig{font-size:9px;padding:2px 6px}.ci-bar{font-size:10px}
+  .ftable{font-size:10px}.ftable th,.ftable td{padding:3px 3px}
+  .col-ft{display:none}
 }
 @media(min-width:640px){
   .hdr{padding:14px 20px}.body{padding:16px 20px}.card-inner{padding:16px}
@@ -719,18 +560,16 @@ body{background:#f3f4f6;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',
   J += "var DATES=" + JSON.stringify(dates) + ";";
   J += "var DAY_LABELS=['Today','Tomorrow','Day 3','Day 4','Day 5'];";
   J += "var activeDate=DATES[0]||null;";
-  J += "var openLeagues={};";
+  J += "var openLeague=null;";  // FIX 2: single string, not object
 
   J += "function esc(s){return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/\"/g,'&quot;');}";
   J += "function fmtDate(d){return new Date(d).toLocaleDateString('en-GB',{weekday:'long',day:'2-digit',month:'short'});}";
   J += "function rankAccent(r){return r===4?'#2e7d32':r===3?'#558b2f':r===2?'#f9a825':r===1?'#ef6c00':'#9e9e9e';}";
   J += "function rankCls(r){return r===4?'r4':r===3?'r3':r===2?'r2':r===1?'r1':'r0';}";
   J += "function lgLabel(r){return r===4?'Fire \ud83d\udd25':r===3?'Prime \u26a1':r===2?'Watch \ud83d\udc40':r===1?'Signal \ud83d\udce1':'Low';}";
-  J += "function lgLabelCol(r){return r===4?'#1b5e20':r===3?'#33691e':r===2?'#e65100':'#9ca3af';}";
   J += "function fLetter(r){return r==='W'?'<span class=\"fw\">W</span>':r==='L'?'<span class=\"fl\">L</span>':'<span class=\"fd\">D</span>';}";
-  J += "function mkChip(lbl,val,thr,on){return '<div class=\"chip'+(on?' on':'')+'\"><div class=\"chip-lbl\">'+esc(lbl)+'</div><div class=\"chip-val\">'+esc(val)+'</div><div class=\"chip-thr\">'+esc(thr)+'</div></div>';}";
+  J += "function mkChip(lbl,val,thr,on){return '<div class=\"chip'+(on?' on':'')+'\">'+'<div class=\"chip-lbl\">'+esc(lbl)+'</div><div class=\"chip-val\">'+esc(val)+'</div><div class=\"chip-thr\">'+esc(thr)+'</div></div>';}";
 
-  // renderTabs
   J += "function renderTabs(){";
   J += "  var el=document.getElementById('dayTabs');var h='';";
   J += "  for(var i=0;i<DATES.length;i++){";
@@ -741,70 +580,56 @@ body{background:#f3f4f6;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',
   J += "  el.innerHTML=h;";
   J += "  el.querySelectorAll('[data-di]').forEach(function(btn){btn.addEventListener('click',function(){";
   J += "    var i=Number(btn.getAttribute('data-di'));";
-  J += "    activeDate=DATES[i];openLeagues={};renderTabs();renderLeagueList();";
+  J += "    activeDate=DATES[i];openLeague=null;renderTabs();renderLeagueList();";
   J += "    document.getElementById('hdrTitle').textContent=fmtDate(new Date(DATES[i]+'T12:00:00'));";
   J += "  });});";
   J += "}";
 
-  // renderLeagueList — pill bar + inline match sections
+  // renderLeagueList — accordion: only one league open at a time
   J += "function renderLeagueList(){";
   J += "  var main=document.getElementById('mainView');";
   J += "  if(!activeDate){main.innerHTML='';return;}";
   J += "  var dp=ALL.filter(function(p){return p.matchDate===activeDate;});";
   J += "  var lmap={};dp.forEach(function(p){if(!lmap[p.league])lmap[p.league]=[];lmap[p.league].push(p);});";
-  J += "  var ll=Object.entries(lmap).sort(function(a,b){";
-  J += "    return Math.max.apply(null,b[1].map(function(p){return p.rank;}))-Math.max.apply(null,a[1].map(function(p){return p.rank;}));";
-  J += "  });";
+  J += "  var ll=Object.entries(lmap).sort(function(a,b){return Math.max.apply(null,b[1].map(function(p){return p.rank;}))-Math.max.apply(null,a[1].map(function(p){return p.rank;}));});";
   J += "  if(!ll.length){main.innerHTML='<p style=\"color:#6b7280;text-align:center;padding:40px\">No matches found.</p>';return;}";
-  // pill bar
   J += "  var pills='<div class=\"pill-bar\">';";
   J += "  ll.forEach(function(e){";
   J += "    var lg=e[0],ms=e[1];";
   J += "    var tr=Math.max.apply(null,ms.map(function(p){return p.rank;}));";
   J += "    var en=ms.filter(function(p){return p.eligible;}).length;";
-  J += "    var dotCol=rankAccent(tr);";
-  J += "    var isOpen=openLeagues[lg]||false;";
-  J += "    var pillCls='lpill'+(isOpen?' open':'')+'';";
-  J += "    var dotBg=isOpen?'#ff6b35':dotCol;";
+  J += "    var isOpen=openLeague===lg;";
+  J += "    var pillCls='lpill'+(isOpen?' open':'');";
+  J += "    var dotBg=isOpen?'#ff6b35':rankAccent(tr);";
   J += "    var lgShort=esc(lg.split(' \u00b7 ').pop());";
-  J += "    var badge=en?'<span class=\"lpill-badge\">('+(en)+'\u2605)</span>':'<span class=\"lpill-badge\">'+ms.length+'</span>';";
-  J += "    pills+='<button class=\"'+pillCls+'\" data-lg=\"'+esc(lg)+'\">'";
-  J += "      +'<span class=\"lpill-dot\" style=\"background:'+dotBg+'\"></span>'";
-  J += "      +lgShort+badge";
-  J += "    +'</button>';";
+  J += "    var badge=en?'<span class=\"lpill-badge\">('+en+'\u2605)</span>':'<span class=\"lpill-badge\">'+ms.length+'</span>';";
+  J += "    pills+='<button class=\"'+pillCls+'\" data-lg=\"'+esc(lg)+'\"><span class=\"lpill-dot\" style=\"background:'+dotBg+'\"></span>'+lgShort+badge+'</button>';";
   J += "  });";
   J += "  pills+='</div>';";
-  // match sections for open leagues, sorted by kick-off time
   J += "  var sections='';";
   J += "  ll.forEach(function(e){";
   J += "    var lg=e[0],ms=e[1];";
-  J += "    if(!openLeagues[lg])return;";
+  J += "    if(openLeague!==lg)return;";
   J += "    var sorted=ms.slice().sort(function(a,b){return (a.dt||0)-(b.dt||0);});";
-  J += "    sections+='<div class=\"league-section\" data-section=\"'+esc(lg)+'\">'";
-  J += "      +'<div class=\"league-section-hdr\">'+esc(lg)+'</div>';";
+  J += "    sections+='<div class=\"league-section\"><div class=\"league-section-hdr\">'+esc(lg)+'</div>';";
   J += "    sorted.forEach(function(m){sections+=renderCard(m);});";
   J += "    sections+='</div>';";
   J += "  });";
   J += "  main.innerHTML=pills+sections;";
-  // pill click toggles open/closed
+  // FIX 2: clicking a pill closes all others, toggles itself
   J += "  main.querySelectorAll('.lpill').forEach(function(btn){btn.addEventListener('click',function(){";
   J += "    var lg=btn.getAttribute('data-lg');";
-  J += "    openLeagues[lg]=!openLeagues[lg];";
+  J += "    openLeague=(openLeague===lg)?null:lg;";
   J += "    renderLeagueList();";
   J += "  });});";
-  // wire up toggle-btn and form for any newly rendered cards
   J += "  document.querySelectorAll('.toggle-btn').forEach(function(btn){btn.addEventListener('click',function(){";
   J += "    var d=btn.nextElementSibling;var o=d.classList.toggle('open');";
   J += "    btn.innerHTML=o?'\u25b2 Hide last 5 games':'\u25bc Show last 5 games';";
   J += "  });});";
-  J += "  ll.forEach(function(e){";
-  J += "    var lg=e[0],ms=e[1];";
-  J += "    if(!openLeagues[lg])return;";
-  J += "    ms.forEach(function(m){renderForm(m.id,m.homeId,m.home,m.hLast5,m.hAvgFH);renderForm(m.id,m.awayId,m.away,m.aLast5,m.aAvgFH);});";
-  J += "  });";
+  J += "  if(openLeague){var oms=lmap[openLeague]||[];oms.forEach(function(m){renderForm(m.id,m.homeId,m.home,m.hLast5,m.hAvgFH);renderForm(m.id,m.awayId,m.away,m.aLast5,m.aAvgFH);});}";
   J += "}";
 
-  // renderForm — returns empty string (hidden) when no games in window
+  // renderForm — FIX 1: mobile-friendly, no min-width, FT hidden on small screens
   J += "function renderForm(mid,tid,tname,games,avgFH){";
   J += "  var el=document.getElementById('form-'+mid+'-'+tid);if(!el)return;";
   J += "  if(!games||!games.length){el.innerHTML='';return;}";
@@ -812,46 +637,42 @@ body{background:#f3f4f6;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',
   J += "    var fhTotal=g.fhFor+g.fhAgst;";
   J += "    var fhStyle=fhTotal>2?'color:#15803d;font-weight:600':fhTotal===2?'color:#1d4ed8;font-weight:600':'color:#111827';";
   J += "    var rc=g.result==='W'?'fw2':g.result==='L'?'fl2':'fd2';";
-  J += "    return '<tr><td>'+esc(g.date)+'</td>'";
-  J += "      +'<td style=\"overflow:hidden;text-overflow:ellipsis\">'+esc(g.opp)+'</td>'";
+  J += "    var shortDate=g.date?g.date.slice(5):'';";
+  J += "    return '<tr>'";
+  J += "      +'<td>'+esc(shortDate)+'</td>'";
+  J += "      +'<td style=\"overflow:hidden;text-overflow:ellipsis;max-width:100px\">'+esc(g.opp)+'</td>'";
   J += "      +'<td style=\"text-align:center;color:#9ca3af\">'+esc(g.venue)+'</td>'";
   J += "      +'<td style=\"text-align:center;'+fhStyle+'\">'+g.fhFor+'-'+g.fhAgst+'</td>'";
-  J += "      +'<td style=\"text-align:center;color:#9ca3af\">'+g.ftFor+'-'+g.ftAgst+'</td>'";
-  J += "      +'<td style=\"text-align:center\" class=\"'+rc+'\">'+g.result+'</td></tr>';";
+  J += "      +'<td class=\"col-ft\" style=\"text-align:center;color:#9ca3af\">'+g.ftFor+'-'+g.ftAgst+'</td>'";
+  J += "      +'<td style=\"text-align:center\" class=\"'+rc+'\">'+g.result+'</td>'";
+  J += "    +'</tr>';";
   J += "  }).join('');";
   J += "  var foot='';";
   J += "  if(avgFH!==null&&avgFH!==undefined){foot='<tfoot><tr>'";
-  J += "    +'<td colspan=\"3\" style=\"color:#6b7280\">Avg FH goals (last 5)</td>'";
+  J += "    +'<td colspan=\"3\" style=\"color:#6b7280\">Avg FH goals</td>'";
   J += "    +'<td style=\"text-align:center;font-family:monospace;color:#1d4ed8;font-size:12px\">'+avgFH+'</td>'";
-  J += "    +'<td colspan=\"2\" style=\"text-align:center;color:#9ca3af\">('+games.length+' games)</td>'";
+  J += "    +'<td colspan=\"2\" style=\"text-align:center;color:#9ca3af\">('+games.length+')</td>'";
   J += "    +'</tr></tfoot>';}";
-  J += "  el.innerHTML='<div class=\"form-team-lbl\">'+esc(tname)+' \u2014 last 5 (all competitions)</div>'";
+  J += "  el.innerHTML='<div class=\"form-team-lbl\">'+esc(tname)+' \u2014 last 5</div>'";
   J += "    +'<div class=\"tbl-scroll\"><table class=\"ftable\"><thead><tr>'";
-  J += "    +'<th style=\"width:16%\">Date</th><th>Opponent</th>'";
-  J += "    +'<th style=\"width:8%;text-align:center\">H/A</th><th style=\"width:10%;text-align:center\">FH</th>'";
-  J += "    +'<th style=\"width:10%;text-align:center\">FT</th><th style=\"width:8%;text-align:center\">Res</th>'";
-  J += "    +'</tr></thead><tbody>'+rows+'</tbody>'+foot+'</table></div>'";
+  J += "    +'<th style=\"width:13%\">Date</th><th>Opponent</th>'";
+  J += "    +'<th style=\"width:9%;text-align:center\">H/A</th>'";
+  J += "    +'<th style=\"width:11%;text-align:center\">FH</th>'";
+  J += "    +'<th class=\"col-ft\" style=\"width:11%;text-align:center\">FT</th>'";
+  J += "    +'<th style=\"width:9%;text-align:center\">Res</th>'";
+  J += "    +'</tr></thead><tbody>'+rows+'</tbody>'+foot+'</table></div>';";
   J += "}";
 
-  // renderCard
   J += "function renderCard(m){";
   J += "  var accent=rankAccent(m.rank);var rc=rankCls(m.rank);";
   J += "  var dt=m.dt?new Date(m.dt).toLocaleString('en-GB',{weekday:'short',day:'2-digit',month:'short',hour:'2-digit',minute:'2-digit'}):m.matchDate;";
-
-  // status badge
-  J += "  var sb=m.status==='complete'";
-  J += "    ?'<span style=\"background:#f3f4f6;color:#6b7280;border:1px solid #e5e7eb;font-size:10px;padding:2px 8px;border-radius:20px;font-weight:600\">Final</span>'";
-  J += "    :m.status==='live'";
-  J += "    ?'<span style=\"background:#fef9c3;color:#ca8a04;border:1px solid #fde047;font-size:10px;padding:2px 8px;border-radius:20px;font-weight:600\">\u25cf Live</span>'";
+  J += "  var sb=m.status==='complete'?'<span style=\"background:#f3f4f6;color:#6b7280;border:1px solid #e5e7eb;font-size:10px;padding:2px 8px;border-radius:20px;font-weight:600\">Final</span>'";
+  J += "    :m.status==='live'?'<span style=\"background:#fef9c3;color:#ca8a04;border:1px solid #fde047;font-size:10px;padding:2px 8px;border-radius:20px;font-weight:600\">\u25cf Live</span>'";
   J += "    :'<span style=\"background:#f0fdf4;color:#15803d;border:1px solid #a5d6a7;font-size:10px;padding:2px 8px;border-radius:20px;font-weight:600\">Upcoming</span>';";
-
-  // prob strip
   J += "  var ps='<div class=\"prob-strip\">'";
   J += "    +'<div class=\"pp pp15\"><div class=\"pp-dot\"></div><span class=\"pp-lbl\">FH over 1.5</span><span class=\"pp-val\">'+m.prob15+'%</span></div>'";
   J += "    +'<div class=\"pp pp25\"><div class=\"pp-dot\"></div><span class=\"pp-lbl\">FH over 2.5</span><span class=\"pp-val\">'+m.prob25+'%</span></div>'";
   J += "    +'</div>';";
-
-  // result box
   J += "  var rb='';";
   J += "  if(m.matchResult){";
   J += "    var r=m.matchResult;";
@@ -864,12 +685,12 @@ body{background:#f3f4f6;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',
   J += "      +'</div>'";
   J += "      +'<div class=\"res-cell\" style=\"background:'+bg15+';border-right:1px solid '+bc15+'\">'";
   J += "        +'<div style=\"font-size:9px;text-transform:uppercase;letter-spacing:.6px;margin-bottom:2px;color:'+c15+'\">FH over 1.5</div>'";
-  J += "        +'<div style=\"font-size:12px;font-weight:700;color:'+c15+'\">'+(r.hit15?'\u2713 HIT':'\u2717 MISS')+'</div>'";
+  J += "        +'<div style=\"font-size:12px;font-weight:700;color:'+c15+'\">'+( r.hit15?'\u2713 HIT':'\u2717 MISS')+'</div>'";
   J += "        +'<div style=\"font-size:9px;color:#9ca3af;margin-top:1px\">'+m.prob15+'% pre</div>'";
   J += "      +'</div>'";
   J += "      +'<div class=\"res-cell\" style=\"background:'+bg25+';border-right:1px solid '+bc25+'\">'";
   J += "        +'<div style=\"font-size:9px;text-transform:uppercase;letter-spacing:.6px;margin-bottom:2px;color:'+c25+'\">FH over 2.5</div>'";
-  J += "        +'<div style=\"font-size:12px;font-weight:700;color:'+c25+'\">'+(r.hit25?'\u2713 HIT':'\u2717 MISS')+'</div>'";
+  J += "        +'<div style=\"font-size:12px;font-weight:700;color:'+c25+'\">'+( r.hit25?'\u2713 HIT':'\u2717 MISS')+'</div>'";
   J += "        +'<div style=\"font-size:9px;color:#9ca3af;margin-top:1px\">'+m.prob25+'% pre</div>'";
   J += "      +'</div>'";
   J += "      +'<div class=\"res-cell\" style=\"background:#f9fafb\">'";
@@ -878,8 +699,6 @@ body{background:#f3f4f6;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',
   J += "      +'</div>'";
   J += "    +'</div>';";
   J += "  }";
-
-  // team boxes — 4 chips each showing the 4 signal-relevant stats
   J += "  function teamBox(role,name,tid,last5,sn){";
   J += "    var fs='<div class=\"form-strip\"><span class=\"form-lbl\">Form</span>';";
   J += "    if(last5&&last5.length)last5.forEach(function(g){fs+=fLetter(g.result);});";
@@ -888,46 +707,28 @@ body{background:#f3f4f6;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',
   J += "    var chips='';";
   J += "    if(sn){";
   J += "      var sfx=role==='Home'?'(home)':'(away)';";
-  J += "      var scoredThr=role==='Home'?1.5:1.5;";
   J += "      chips+=mkChip('FH Scored '+sfx,sn.scored_fh.toFixed(2),'\u2265 1.50 \u2192 sig D',sn.scored_fh>=1.5);";
   J += "      chips+=mkChip('FH Conceded '+sfx,sn.conced_fh.toFixed(2),'used in CI (A)',false);";
   J += "      chips+=mkChip('FH>2.5 hist '+sfx,sn.t1_pct.toFixed(0)+'%','\u2265 20% \u2192 sig B',sn.t1_pct>=20);";
   J += "      chips+=mkChip('Early conceded',sn.cn010_avg.toFixed(2),'\u2265 0.25 \u2192 sig C',sn.cn010_avg>=0.25);";
   J += "    }";
-  J += "    return '<div class=\"team-box\">'";
-  J += "      +'<div class=\"team-role\">'+esc(role)+'</div>'";
-  J += "      +'<div class=\"team-name\">'+esc(name)+'</div>'";
-  J += "      +fs+'<div class=\"stat-grid\">'+chips+'</div>'";
-  J += "      +'</div>';";
+  J += "    return '<div class=\"team-box\"><div class=\"team-role\">'+esc(role)+'</div><div class=\"team-name\">'+esc(name)+'</div>'+fs+'<div class=\"stat-grid\">'+chips+'</div></div>';";
   J += "  }";
-
-  // signals row — 4 signals A/B/C/D, all equal weight
   J += "  var sigsH='<div class=\"signals\">';";
   J += "  ['A','B','C','D'].forEach(function(k){";
   J += "    var s=m.signals[k];if(!s)return;";
-  J += "    var cls=s.met?'sig-y':'sig-n';";
-  J += "    sigsH+='<div class=\"sig '+cls+'\">'";
+  J += "    sigsH+='<div class=\"sig '+(s.met?'sig-y':'sig-n')+'\">'";
   J += "      +'<div class=\"sig-dot\"></div>'+esc(k)+' \u00b7 '+esc(s.label)";
   J += "      +'<span style=\"opacity:.7;margin-left:4px;font-size:9px\">('+esc(s.value)+')</span>'";
   J += "      +'</div>';";
   J += "  });";
   J += "  sigsH+='</div>';";
-
-  // CI bar — shows the combined intensity value
   J += "  var ciH='';";
   J += "  if(m.snap){";
   J += "    var h=m.snap.home,a=m.snap.away,ciMet=m.ci>=3.2;";
-  J += "    ciH='<div class=\"ci-bar\">CI = '";
-  J += "      +h.scored_fh.toFixed(2)+' + '+a.scored_fh.toFixed(2)";
-  J += "      +' + '+h.conced_fh.toFixed(2)+' + '+a.conced_fh.toFixed(2)";
-  J += "      +' = <strong style=\"color:'+(ciMet?'#15803d':'#374151')+'\">'+m.ci+'</strong>'";
-  J += "      +' \u00b7 needs \u2265 3.20 '+(ciMet?'\u2713':'\u2717')+'</div>';";
+  J += "    ciH='<div class=\"ci-bar\">CI = '+h.scored_fh.toFixed(2)+' + '+a.scored_fh.toFixed(2)+' + '+h.conced_fh.toFixed(2)+' + '+a.conced_fh.toFixed(2)+' = <strong style=\"color:'+(ciMet?'#15803d':'#374151')+'\">'+m.ci+'</strong> \u00b7 needs \u2265 3.20 '+(ciMet?'\u2713':'\u2717')+'</div>';";
   J += "  }";
-
-  // missing stats warning
   J += "  var mw=m.missingStats?'<span style=\"background:#fef3c7;color:#92400e;font-size:10px;padding:2px 6px;border-radius:4px;font-weight:600;margin-left:6px\">\u26a0 no stats</span>':'';";
-
-  // assemble card
   J += "  return '<div class=\"card\">'";
   J += "    +'<div class=\"card-accent\" style=\"background:'+accent+'\"></div>'";
   J += "    +'<div class=\"card-inner\">'";
@@ -936,10 +737,7 @@ body{background:#f3f4f6;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',
   J += "          +'<div style=\"font-size:10px;color:#9ca3af;text-transform:uppercase;letter-spacing:.7px;margin-bottom:5px\">'+esc(m.league)+' \u00b7 '+esc(dt)+mw+'</div>'";
   J += "          +sb";
   J += "        +'</div>'";
-  J += "        +'<div class=\"rank-pill '+rc+'\">'";
-  J += "          +'<div class=\"rn\">'+m.rank+'/4</div>'";
-  J += "          +'<div class=\"rl\">'+esc(m.label)+'</div>'";
-  J += "        +'</div>'";
+  J += "        +'<div class=\"rank-pill '+rc+'\"><div class=\"rn\">'+m.rank+'/4</div><div class=\"rl\">'+esc(m.label)+'</div></div>'";
   J += "      +'</div>'";
   J += "    +ps+rb";
   J += "    +'<div class=\"teams\">'";
@@ -947,7 +745,6 @@ body{background:#f3f4f6;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',
   J += "    +teamBox('Away',m.away,m.awayId,m.aLast5,m.snap?m.snap.away:null)";
   J += "    +'</div>'";
   J += "    +sigsH+ciH";
-  // Only render toggle + form section when at least one team has recent data
   J += "    +(m.hLast5&&m.hLast5.length||m.aLast5&&m.aLast5.length?";
   J += "      '<div class=\"toggle-btn\">\u25bc Show last 5 games</div>'";
   J += "      +'<div class=\"details\">'";
@@ -970,7 +767,7 @@ body{background:#f3f4f6;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',
 <meta name="viewport" content="width=device-width,initial-scale=1"/>
 <title>First Half Predictor</title>
 <script>(function(){var p=new URLSearchParams(window.location.search);if(!p.has('tz')){p.set('tz',-new Date().getTimezoneOffset());window.location.search=p.toString();}})();<\/script>
-<style>${CSS}</style>
+<style>\${CSS}</style>
 </head>
 <body>
 <div class="hdr">
@@ -986,19 +783,18 @@ body{background:#f3f4f6;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',
   </div>
 </div>
 <div class="body">
-  ${rateLimited ? '<div style="background:#fef2f2;border:1px solid #fca5a5;border-radius:8px;padding:10px 14px;margin-bottom:14px;font-size:12px;color:#b91c1c;line-height:1.6"><strong>&#9888; API rate limit reached</strong> — showing cached data. Resets at ' + new Date(RATE_LIMITED_UNTIL).toLocaleTimeString('en-GB') + '. <a href="/cache-status" style="color:#b91c1c">View cache status</a></div>' : ''}
+  \${rateLimited ? '<div style="background:#fef2f2;border:1px solid #fca5a5;border-radius:8px;padding:10px 14px;margin-bottom:14px;font-size:12px;color:#b91c1c;line-height:1.6"><strong>&#9888; API rate limit reached</strong> \u2014 showing cached data. Resets at ' + new Date(RATE_LIMITED_UNTIL).toLocaleTimeString('en-GB') + '. <a href="/cache-status" style="color:#b91c1c">View cache status</a></div>' : ''}
   <div style="background:#fffbeb;border:1px solid #fde68a;border-radius:8px;padding:10px 14px;margin-bottom:14px;font-size:12px;color:#92400e;line-height:1.6">
-    <strong>How it works:</strong> 4 independent signals (A–D), each worth 1 point. Rank = signals fired.
-    Backtested on 24,203 matches · base rate 12.6% · Rank 4 = 73.2% FH&gt;2.5 &middot; 85.4% FH&gt;1.5.
+    <strong>How it works:</strong> 4 independent signals (A\u2013D), each worth 1 point. Rank = signals fired.
+    Backtested on 24,203 matches \u00b7 base rate 12.6% \u00b7 Rank 4 = 73.2% FH&gt;2.5 \u00b7 85.4% FH&gt;1.5.
   </div>
   <div id="mainView"></div>
 </div>
-<script>${J}<\/script>
+<script>\${J}<\/script>
 </body>
 </html>`;
 }
 
-// ─── STARTUP ─────────────────────────────────────────────────────────────────
 app.listen(PORT, () => {
   console.log("Server on port " + PORT);
   console.log("Memory: " + Math.round(process.memoryUsage().heapUsed/1024/1024) + "MB");
