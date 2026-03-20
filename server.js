@@ -601,7 +601,10 @@ body{background:#f3f4f6;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',
   J += "    var isOpen=openLeague===lg;";
   J += "    var pillCls='lpill'+(isOpen?' open':'');";
   J += "    var dotBg=isOpen?'#ff6b35':rankAccent(tr);";
-  J += "    var lgShort=esc(lg.split(' \u00b7 ').pop());";
+  J += "    var lgParts=lg.split(' \u00b7 ');";
+  J += "    var lgCountry=lgParts.length>1?lgParts[0]:'';";
+  J += "    var lgName=lgParts[lgParts.length-1];";
+  J += "    var lgShort=lgCountry?'<span style=\"opacity:.55;font-size:10px;margin-right:2px\">'+esc(lgCountry)+'</span>'+esc(lgName):esc(lgName);";
   J += "    var badge=en?'<span class=\"lpill-badge\">('+en+'\u2605)</span>':'<span class=\"lpill-badge\">'+ms.length+'</span>';";
   J += "    pills+='<button class=\"'+pillCls+'\" data-lg=\"'+esc(lg)+'\"><span class=\"lpill-dot\" style=\"background:'+dotBg+'\"></span>'+lgShort+badge+'</button>';";
   J += "  });";
