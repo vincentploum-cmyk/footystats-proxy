@@ -269,11 +269,17 @@ function extractStats(teamObj, role) {
 }
 
 // ─── BUILD LAST 5 ─────────────────────────────────────────────────────────────
+// Only includes matches within the last 35 days (5 weeks) of today.
+// This prevents stale form from months-old matches showing when cache is sparse.
+const LAST5_WINDOW_SECS = 35 * 24 * 60 * 60; // 35 days in seconds
+
 function buildLast5(teamId, cache) {
   if (!teamId || !cache[teamId]) return [];
+  const cutoff = Math.floor(Date.now() / 1000) - LAST5_WINDOW_SECS;
   // Deduplicate: same match appears twice in cache (once as home, once as away).
   const seen = new Set();
   const unique = cache[teamId].filter(m => {
+    if ((m.date_unix || 0) < cutoff) return false;          // outside 5-week window
     const key = (m.date_unix || 0) + "_" + (m.homeID || "") + "_" + (m.awayID || "");
     if (seen.has(key)) return false;
     seen.add(key);
@@ -378,12 +384,13 @@ app.get("/", async (req, res) => {
       }
     }
 
-    // Group by league, filter to known leagues
+    // Group by league — only include leagues present in LEAGUE_NAMES.
+    // If LEAGUE_NAMES is still empty (startup race), show nothing rather than
+    // processing every fixture from every league we have no stats for.
     const leagueFixtures = {};
-    const hasFilter = Object.keys(LEAGUE_NAMES).length > 0;
     for (const m of allFixtures) {
       const sid = parseInt(m.competition_id, 10);
-      if (!hasFilter || LEAGUE_NAMES[sid]) {
+      if (LEAGUE_NAMES[sid]) {
         if (!leagueFixtures[sid]) leagueFixtures[sid] = [];
         leagueFixtures[sid].push(m);
       }
