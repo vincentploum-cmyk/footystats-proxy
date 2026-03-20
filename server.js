@@ -62,14 +62,18 @@ const TTL_FIXTURES = 30 * 60 * 1000;   // 30 minutes (fixtures stable pre-game)
 const TTL_MATCHES  =  2 * 60 * 60 * 1000;   // 2 hours  (completed matches stable)
 const TTL_TEAMS    =  6 * 60 * 60 * 1000;   // 6 hours  (season stats update once/day)
 
-// Safe fetch — detects rate limit, returns null if hit
+// Safe fetch — detects rate limit, returns null if hit or timeout
+const FETCH_TIMEOUT_MS = 8000; // 8s per call — avoids hanging the whole page
+
 async function safeFetch(url) {
   if (Date.now() < RATE_LIMITED_UNTIL) {
     console.warn("Rate limited — skipping: " + url);
     return null;
   }
   try {
-    const data = await fetch(url).then(r => r.json());
+    const controller = new AbortController();
+    const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
+    const data = await fetch(url, { signal: controller.signal }).then(r => r.json()).finally(() => clearTimeout(timer));
     if (data && data.error && String(data.error).toLowerCase().includes("rate limit")) {
       const reset = data.metadata && data.metadata.request_limit_refresh_next
         ? data.metadata.request_limit_refresh_next * 1000
@@ -370,12 +374,34 @@ app.get("/api/*", async (req, res) => {
 
 // ─── MAIN ROUTE ──────────────────────────────────────────────────────────────
 app.get("/", async (req, res) => {
+  // Hard timeout — if the whole route takes >25s, send error rather than hang forever
+  const routeTimer = setTimeout(() => {
+    if (!res.headersSent) res.status(503).send("<pre>Timeout: API calls took too long. Try refreshing.</pre>");
+  }, 25000);
   try {
     const tzOffset  = parseInt(req.query.tz || "0", 10);
     const dates     = getDates(tzOffset);
     const fetchedAt = new Date().toISOString().slice(0, 16).replace("T", " ");
 
-    // Fetch fixtures for all 5 days in parallel — cached, max 1 API call per date per 10 min
+    // If league registry not loaded yet, try once more before proceeding.
+    // Avoids serving empty page on first hit after cold start.
+    if (Object.keys(LEAGUE_NAMES).length === 0) {
+      await fetchLeagueList();
+    }
+    // Still empty after retry → return a loading page with auto-refresh
+    if (Object.keys(LEAGUE_NAMES).length === 0) {
+      return res.send(`<!DOCTYPE html><html><head><meta charset="UTF-8"/>
+<meta http-equiv="refresh" content="5"/>
+<meta name="viewport" content="width=device-width,initial-scale=1"/>
+<title>First Half Predictor</title>
+<style>body{background:#f3f4f6;font-family:-apple-system,sans-serif;display:flex;align-items:center;justify-content:center;height:100vh;margin:0}
+.box{text-align:center;color:#6b7280}.spin{font-size:32px;animation:spin 1s linear infinite;display:inline-block}
+@keyframes spin{to{transform:rotate(360deg)}}</style></head>
+<body><div class="box"><div class="spin">&#9917;</div><p style="margin-top:12px;font-weight:600">Starting up&hellip;</p>
+<p style="font-size:13px;margin-top:6px">Refreshing in 5 seconds</p></div></body></html>`);
+    }
+
+    // Fetch fixtures for all 5 days in parallel — cached, max 1 API call per date per 30 min
     const allFixtures = [];
     const dayResults = await Promise.all(dates.map(d => fetchFixtures(d)));
     for (let i = 0; i < dates.length; i++) {
@@ -575,10 +601,12 @@ app.get("/", async (req, res) => {
     preds.sort((a, b) => b.rank - a.rank || b.prob25 - a.prob25);
 
     const rateLimited = Date.now() < RATE_LIMITED_UNTIL;
+    clearTimeout(routeTimer);
     res.send(buildHTML(preds, dates, rateLimited));
   } catch(e) {
+    clearTimeout(routeTimer);
     console.error(e);
-    res.status(500).send("<pre>Error: " + e.message + "\n" + e.stack + "</pre>");
+    if (!res.headersSent) res.status(500).send("<pre>Error: " + e.message + "\n" + e.stack + "</pre>");
   }
 });
 
@@ -727,10 +755,13 @@ body{background:#f3f4f6;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',
   J += "    var en=ms.filter(function(p){return p.eligible;}).length;";
   J += "    var dotCol=rankAccent(tr);";
   J += "    var isOpen=openLeagues[lg]||false;";
-  J += "    pills+='<button class=\"lpill'+(isOpen?' open':'')\" data-lg=\"'+esc(lg)+'\">'";
-  J += "      +'<span class=\"lpill-dot\" style=\"background:'+(isOpen?'#ff6b35':dotCol)+'\"></span>'";
-  J += "      +esc(lg.split(' \u00b7 ').pop())";   // show only league name, not country prefix
-  J += "      +(en?'<span class=\"lpill-badge\">('+en+'\u2605)</span>':'<span class=\"lpill-badge\">'+ms.length+'</span>')";
+  J += "    var pillCls='lpill'+(isOpen?' open':'')+'';";
+  J += "    var dotBg=isOpen?'#ff6b35':dotCol;";
+  J += "    var lgShort=esc(lg.split(' \u00b7 ').pop());";
+  J += "    var badge=en?'<span class=\"lpill-badge\">('+(en)+'\u2605)</span>':'<span class=\"lpill-badge\">'+ms.length+'</span>';";
+  J += "    pills+='<button class=\"'+pillCls+'\" data-lg=\"'+esc(lg)+'\">'";
+  J += "      +'<span class=\"lpill-dot\" style=\"background:'+dotBg+'\"></span>'";
+  J += "      +lgShort+badge";
   J += "    +'</button>';";
   J += "  });";
   J += "  pills+='</div>';";
