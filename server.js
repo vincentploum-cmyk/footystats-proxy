@@ -745,7 +745,6 @@ body{background:#f3f4f6;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',
   J += "    var hot=(g.fhFor+g.fhAgst)>2;";
   J += "    var rc=g.result==='W'?'fw2':g.result==='L'?'fl2':'fd2';";
   J += "    return '<tr><td>'+esc(g.date)+'</td>'";
-  J += "      +'<td style=\"max-width:90px;overflow:hidden;text-overflow:ellipsis\">'+esc(g.competition)+'</td>'";
   J += "      +'<td style=\"overflow:hidden;text-overflow:ellipsis\">'+esc(g.opp)+'</td>'";
   J += "      +'<td style=\"text-align:center;color:#9ca3af\">'+esc(g.venue)+'</td>'";
   J += "      +'<td style=\"text-align:center\" class=\"'+(hot?'fh-hot':'')+'\">'+g.fhFor+'-'+g.fhAgst+'</td>'";
@@ -754,13 +753,13 @@ body{background:#f3f4f6;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',
   J += "  }).join('');";
   J += "  var foot='';";
   J += "  if(avgFH!==null&&avgFH!==undefined){foot='<tfoot><tr>'";
-  J += "    +'<td colspan=\"4\" style=\"color:#6b7280\">Avg FH goals (last 5)</td>'";
+  J += "    +'<td colspan=\"3\" style=\"color:#6b7280\">Avg FH goals (last 5)</td>'";
   J += "    +'<td style=\"text-align:center;font-family:monospace;color:#1d4ed8;font-size:12px\">'+avgFH+'</td>'";
   J += "    +'<td colspan=\"2\" style=\"text-align:center;color:#9ca3af\">('+games.length+' games)</td>'";
   J += "    +'</tr></tfoot>';}";
   J += "  el.innerHTML='<div class=\"form-team-lbl\">'+esc(tname)+' \u2014 last 5 (all competitions)</div>'";
   J += "    +'<div class=\"tbl-scroll\"><table class=\"ftable\"><thead><tr>'";
-  J += "    +'<th style=\"width:14%\">Date</th><th style=\"width:22%\">Competition</th><th>Opponent</th>'";
+  J += "    +'<th style=\"width:16%\">Date</th><th>Opponent</th>'";
   J += "    +'<th style=\"width:8%;text-align:center\">H/A</th><th style=\"width:10%;text-align:center\">FH</th>'";
   J += "    +'<th style=\"width:10%;text-align:center\">FT</th><th style=\"width:8%;text-align:center\">Res</th>'";
   J += "    +'</tr></thead><tbody>'+rows+'</tbody>'+foot+'</table></div>'";
