@@ -822,7 +822,6 @@ body{background:#f3f4f6;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',
   J += "    +'<th style=\"width:8%;text-align:center\">H/A</th><th style=\"width:10%;text-align:center\">FH</th>'";
   J += "    +'<th style=\"width:10%;text-align:center\">FT</th><th style=\"width:8%;text-align:center\">Res</th>'";
   J += "    +'</tr></thead><tbody>'+rows+'</tbody>'+foot+'</table></div>'";
-  J += "    +'<div style=\"font-size:10px;color:#9ca3af;margin-top:4px\">All competitions \u00b7 orange FH = more than 2 first-half goals</div>';";
   J += "}";
 
   // renderCard
@@ -945,7 +944,7 @@ body{background:#f3f4f6;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',
   J += "      +'<div class=\"details\">'";
   J += "        +'<div class=\"form-wrap\">'";
   J += "          +'<div id=\"form-'+m.id+'-'+m.homeId+'\"><div style=\"font-size:11px;color:#9ca3af\">\u21bb Loading '+esc(m.home)+'...</div></div>'";
-  J += "          +'<div id=\"form-'+m.id+'-'+m.awayId+'\" style=\"margin-top:10px\"><div style=\"font-size:11px;color:#9ca3af\">\u21bb Loading '+esc(m.away)+'...</div></div>'";
+  J += "          +'<div id=\"form-'+m.id+'-'+m.awayId+'\" style=\"margin-top:6px\"><div style=\"font-size:11px;color:#9ca3af\">\u21bb Loading '+esc(m.away)+'...</div></div>'";
   J += "        +'</div>'";
   J += "      +'</div>'";
   J += "    :'')";
