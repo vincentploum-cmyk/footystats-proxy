@@ -15,11 +15,14 @@ if (!KEY) { console.error("Missing FOOTY_API_KEY"); process.exit(1); }
 
 // ─── LEAGUE REGISTRY ─────────────────────────────────────────────────────────
 let LEAGUE_NAMES = {};
+let LEAGUE_LIST_LOADING = false;   // prevents concurrent /league-list calls
 
 async function fetchLeagueList() {
+  if (LEAGUE_LIST_LOADING) return;  // already in flight — don't double-fetch
+  LEAGUE_LIST_LOADING = true;
   try {
     const data = await safeFetch(BASE + "/league-list?key=" + KEY);
-    if (!data) { console.warn("fetchLeagueList skipped — rate limited"); return; }
+    if (!data) { console.warn("fetchLeagueList skipped — rate limited"); LEAGUE_LIST_LOADING = false; return; }
     const list = data.data || [];
     console.log("League-list: " + list.length + " leagues found");
     const map = {};
@@ -40,6 +43,8 @@ async function fetchLeagueList() {
   } catch(e) {
     console.error("Failed to load league list: " + e.message);
     LEAGUE_NAMES = {};
+  } finally {
+    LEAGUE_LIST_LOADING = false;
   }
 }
 
@@ -383,10 +388,14 @@ app.get("/", async (req, res) => {
     const dates     = getDates(tzOffset);
     const fetchedAt = new Date().toISOString().slice(0, 16).replace("T", " ");
 
-    // If league registry not loaded yet, try once more before proceeding.
-    // Avoids serving empty page on first hit after cold start.
+    // If league registry not loaded yet, wait for the in-flight fetch or start one.
+    // The LEAGUE_LIST_LOADING flag prevents duplicate /league-list calls.
     if (Object.keys(LEAGUE_NAMES).length === 0) {
       await fetchLeagueList();
+      // If still loading (concurrent request already in flight), wait briefly
+      if (LEAGUE_LIST_LOADING) {
+        await new Promise(r => setTimeout(r, 3000));
+      }
     }
     // Still empty after retry → return a loading page with auto-refresh
     if (Object.keys(LEAGUE_NAMES).length === 0) {
