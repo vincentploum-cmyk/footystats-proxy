@@ -103,7 +103,7 @@ async function fetchLeagueMatches(sid) {
   if (LEAGUE_MATCHES_CACHE[sid] && (now - LEAGUE_MATCHES_CACHE[sid].ts) < TTL_MATCHES) {
     return LEAGUE_MATCHES_CACHE[sid].data;
   }
-  const data = await safeFetch(BASE + "/league-matches?season_id=" + sid + "&max_per_page=100&page=1&key=" + KEY);
+  const data = await safeFetch(BASE + "/league-matches?season_id=" + sid + "&max_per_page=150&page=1&sort=date_unix&order=desc&key=" + KEY);
   if (data) LEAGUE_MATCHES_CACHE[sid] = { data, ts: now };
   return data || LEAGUE_MATCHES_CACHE[sid]?.data || { data: [] };
 }
@@ -417,9 +417,18 @@ app.get("/", async (req, res) => {
       status: m.status, league: lg || "",
     });
 
+    const nowSecs = Math.floor(Date.now() / 1000);
     const addToLocalExtra = (matches, lg) => {
       for (const m of matches) {
-        if (m.status !== "complete") continue;
+        // Accept 'complete' matches, and also 'incomplete' matches that were
+        // clearly played: kick-off was in the past AND FT score is non-zero.
+        // Some providers (e.g. FootyStats for Women's Liga MX) never flip the
+        // status to 'complete' even after the match has been played.
+        const isPlayed = m.status === "complete" ||
+          (m.status === "incomplete" &&
+           (m.date_unix || 0) < nowSecs &&
+           (parseInt(m.homeGoalCount || 0, 10) + parseInt(m.awayGoalCount || 0, 10)) > 0);
+        if (!isPlayed) continue;
         const key = (m.date_unix||0) + "_" + (m.homeID||"") + "_" + (m.awayID||"");
         if (serverCacheKeys.has(key)) continue;
         const slim = slimM(m, lg);
@@ -728,10 +737,10 @@ body{background:#f3f4f6;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',
   J += "  ms.forEach(function(m){renderForm(m.id,m.homeId,m.home,m.hLast5,m.hAvgFH);renderForm(m.id,m.awayId,m.away,m.aLast5,m.aAvgFH);});";
   J += "}";
 
-  // renderForm
+  // renderForm — returns empty string (hidden) when no games in window
   J += "function renderForm(mid,tid,tname,games,avgFH){";
   J += "  var el=document.getElementById('form-'+mid+'-'+tid);if(!el)return;";
-  J += "  if(!games||!games.length){el.innerHTML='<p style=\"font-size:11px;color:#9ca3af\">No recent games found.</p>';return;}";
+  J += "  if(!games||!games.length){el.innerHTML='';return;}";
   J += "  var rows=games.map(function(g){";
   J += "    var hot=(g.fhFor+g.fhAgst)>2;";
   J += "    var rc=g.result==='W'?'fw2':g.result==='L'?'fl2':'fd2';";
@@ -872,13 +881,16 @@ body{background:#f3f4f6;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',
   J += "    +teamBox('Away',m.away,m.awayId,m.aLast5,m.snap?m.snap.away:null)";
   J += "    +'</div>'";
   J += "    +sigsH+ciH";
-  J += "    +'<div class=\"toggle-btn\">\u25bc Show last 5 games</div>'";
-  J += "    +'<div class=\"details\">'";
-  J += "      +'<div class=\"form-wrap\">'";
-  J += "        +'<div id=\"form-'+m.id+'-'+m.homeId+'\"><div style=\"font-size:11px;color:#9ca3af\">\u21bb Loading '+esc(m.home)+'...</div></div>'";
-  J += "        +'<div id=\"form-'+m.id+'-'+m.awayId+'\" style=\"margin-top:10px\"><div style=\"font-size:11px;color:#9ca3af\">\u21bb Loading '+esc(m.away)+'...</div></div>'";
+  // Only render toggle + form section when at least one team has recent data
+  J += "    +(m.hLast5&&m.hLast5.length||m.aLast5&&m.aLast5.length?";
+  J += "      '<div class=\"toggle-btn\">\u25bc Show last 5 games</div>'";
+  J += "      +'<div class=\"details\">'";
+  J += "        +'<div class=\"form-wrap\">'";
+  J += "          +'<div id=\"form-'+m.id+'-'+m.homeId+'\"><div style=\"font-size:11px;color:#9ca3af\">\u21bb Loading '+esc(m.home)+'...</div></div>'";
+  J += "          +'<div id=\"form-'+m.id+'-'+m.awayId+'\" style=\"margin-top:10px\"><div style=\"font-size:11px;color:#9ca3af\">\u21bb Loading '+esc(m.away)+'...</div></div>'";
+  J += "        +'</div>'";
   J += "      +'</div>'";
-  J += "    +'</div>'";
+  J += "    :'')";
   J += "  +'</div></div>';";
   J += "}";
 
