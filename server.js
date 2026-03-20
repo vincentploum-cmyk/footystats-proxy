@@ -586,8 +586,14 @@ body{background:#f3f4f6;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',
 .tab{padding:5px 11px;border-radius:20px;font-size:12px;font-weight:500;cursor:pointer;border:1px solid rgba(255,255,255,0.15);color:rgba(255,255,255,0.6);background:transparent;white-space:nowrap}
 .tab.active{background:#ff6b35;border-color:#ff6b35;color:#fff}
 .body{padding:12px 14px;max-width:860px;margin:0 auto}
-.league-row{background:#fff;border:1px solid #e5e7eb;border-radius:10px;padding:13px 15px;display:flex;align-items:center;justify-content:space-between;cursor:pointer;margin-bottom:8px;transition:box-shadow .15s}
-.league-row:hover{box-shadow:0 2px 8px rgba(0,0,0,.08)}
+.pill-bar{display:flex;gap:6px;flex-wrap:wrap;margin-bottom:14px}
+.lpill{display:inline-flex;align-items:center;gap:5px;padding:5px 11px;border-radius:20px;font-size:12px;font-weight:500;cursor:pointer;border:1.5px solid #e5e7eb;background:#fff;color:#374151;white-space:nowrap;transition:all .15s;user-select:none}
+.lpill:hover{border-color:#d1d5db;background:#f9fafb}
+.lpill.open{background:#0f1923;border-color:#0f1923;color:#fff}
+.lpill-dot{width:7px;height:7px;border-radius:50%;flex-shrink:0}
+.lpill-badge{font-size:10px;opacity:.7;margin-left:1px}
+.league-section{margin-bottom:16px}
+.league-section-hdr{font-size:11px;font-weight:600;color:#6b7280;text-transform:uppercase;letter-spacing:.7px;margin-bottom:8px;padding-bottom:6px;border-bottom:1px solid #e5e7eb}
 .card{background:#fff;border:1px solid #e5e7eb;border-radius:10px;overflow:hidden;margin-bottom:12px}
 .card-accent{height:4px}
 .card-inner{padding:14px}
@@ -647,7 +653,6 @@ body{background:#f3f4f6;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',
 .ftable tr:last-child td{border-bottom:none}
 .ftable tfoot td{background:#f9fafb;font-weight:600;font-size:10px;padding:5px;border-top:1px solid #e5e7eb}
 .fw2{color:#15803d;font-weight:700} .fl2{color:#b91c1c;font-weight:700} .fd2{color:#6b7280;font-weight:700}
-.fh-hot{color:#c2410c;font-weight:600}
 .back-btn{background:#f3f4f6;border:1px solid #e5e7eb;padding:6px 12px;border-radius:20px;font-size:12px;cursor:pointer;color:#374151;white-space:nowrap}
 @media(max-width:480px){
   .hdr-title{font-size:17px}.rn{font-size:20px}.team-name{font-size:12px}
@@ -664,7 +669,7 @@ body{background:#f3f4f6;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',
   J += "var DATES=" + JSON.stringify(dates) + ";";
   J += "var DAY_LABELS=['Today','Tomorrow','Day 3','Day 4','Day 5'];";
   J += "var activeDate=DATES[0]||null;";
-  J += "var activeLeague=null;";
+  J += "var openLeagues={};";
 
   J += "function esc(s){return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/\"/g,'&quot;');}";
   J += "function fmtDate(d){return new Date(d).toLocaleDateString('en-GB',{weekday:'long',day:'2-digit',month:'short'});}";
@@ -686,12 +691,12 @@ body{background:#f3f4f6;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',
   J += "  el.innerHTML=h;";
   J += "  el.querySelectorAll('[data-di]').forEach(function(btn){btn.addEventListener('click',function(){";
   J += "    var i=Number(btn.getAttribute('data-di'));";
-  J += "    activeDate=DATES[i];activeLeague=null;renderTabs();renderLeagueList();";
+  J += "    activeDate=DATES[i];openLeagues={};renderTabs();renderLeagueList();";
   J += "    document.getElementById('hdrTitle').textContent=fmtDate(new Date(DATES[i]+'T12:00:00'));";
   J += "  });});";
   J += "}";
 
-  // renderLeagueList
+  // renderLeagueList — pill bar + inline match sections
   J += "function renderLeagueList(){";
   J += "  var main=document.getElementById('mainView');";
   J += "  if(!activeDate){main.innerHTML='';return;}";
@@ -701,40 +706,49 @@ body{background:#f3f4f6;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',
   J += "    return Math.max.apply(null,b[1].map(function(p){return p.rank;}))-Math.max.apply(null,a[1].map(function(p){return p.rank;}));";
   J += "  });";
   J += "  if(!ll.length){main.innerHTML='<p style=\"color:#6b7280;text-align:center;padding:40px\">No matches found.</p>';return;}";
-  J += "  var h='<div style=\"font-size:12px;color:#6b7280;margin-bottom:12px\">'+dp.length+' matches across '+ll.length+' leagues</div>';";
+  // pill bar
+  J += "  var pills='<div class=\"pill-bar\">';";
   J += "  ll.forEach(function(e){";
   J += "    var lg=e[0],ms=e[1];";
   J += "    var tr=Math.max.apply(null,ms.map(function(p){return p.rank;}));";
   J += "    var en=ms.filter(function(p){return p.eligible;}).length;";
-  J += "    var col=lgLabelCol(tr);";
-  J += "    h+='<div class=\"league-row\" data-lg=\"'+esc(lg)+'\">'";
-  J += "      +'<div style=\"min-width:0;flex:1;margin-right:12px\">'";
-  J += "        +'<div style=\"font-size:14px;font-weight:500;color:#111827;white-space:nowrap;overflow:hidden;text-overflow:ellipsis\">'+esc(lg)+'</div>'";
-  J += "        +'<div style=\"font-size:11px;color:#6b7280;margin-top:2px\">'+ms.length+' match'+(ms.length>1?'es':'')+(en?' &middot; <span style=\"color:#15803d;font-weight:600\">'+en+' eligible</span>':'')+'</div>'";
-  J += "      +'</div>'";
-  J += "      +'<div style=\"text-align:right;flex-shrink:0\">'";
-  J += "        +'<div style=\"font-size:24px;font-weight:700;color:'+col+'\">'+tr+'/4</div>'";
-  J += "        +'<div style=\"font-size:10px;font-weight:600;color:'+col+'\">'+esc(lgLabel(tr))+'</div>'";
-  J += "      +'</div></div>';";
+  J += "    var dotCol=rankAccent(tr);";
+  J += "    var isOpen=openLeagues[lg]||false;";
+  J += "    pills+='<button class=\"lpill'+(isOpen?' open':'')\" data-lg=\"'+esc(lg)+'\">'";
+  J += "      +'<span class=\"lpill-dot\" style=\"background:'+(isOpen?'#ff6b35':dotCol)+'\"></span>'";
+  J += "      +esc(lg.split(' \u00b7 ').pop())";   // show only league name, not country prefix
+  J += "      +(en?'<span class=\"lpill-badge\">('+en+'\u2605)</span>':'<span class=\"lpill-badge\">'+ms.length+'</span>')";
+  J += "    +'</button>';";
   J += "  });";
-  J += "  main.innerHTML=h;";
-  J += "  main.querySelectorAll('[data-lg]').forEach(function(el){el.addEventListener('click',function(){activeLeague=el.getAttribute('data-lg');renderMatchList();});});";
-  J += "}";
-
-  // renderMatchList
-  J += "function renderMatchList(){";
-  J += "  var ms=ALL.filter(function(p){return p.matchDate===activeDate&&p.league===activeLeague;}).sort(function(a,b){return b.rank-a.rank||b.prob25-a.prob25;});";
-  J += "  var h='<div style=\"display:flex;align-items:center;gap:10px;margin-bottom:14px;flex-wrap:wrap\">'";
-  J += "    +'<button class=\"back-btn\" id=\"backBtn\">\u2190 Back</button>'";
-  J += "    +'<div style=\"font-size:15px;font-weight:700;color:#111827;min-width:0;overflow:hidden;text-overflow:ellipsis;white-space:nowrap\">'+esc(activeLeague)+'</div></div>';";
-  J += "  ms.forEach(function(m){h+=renderCard(m);});";
-  J += "  document.getElementById('mainView').innerHTML=h;";
-  J += "  document.getElementById('backBtn').addEventListener('click',function(){activeLeague=null;renderLeagueList();});";
+  J += "  pills+='</div>';";
+  // match sections for open leagues, sorted by kick-off time
+  J += "  var sections='';";
+  J += "  ll.forEach(function(e){";
+  J += "    var lg=e[0],ms=e[1];";
+  J += "    if(!openLeagues[lg])return;";
+  J += "    var sorted=ms.slice().sort(function(a,b){return (a.dt||0)-(b.dt||0);});";
+  J += "    sections+='<div class=\"league-section\" data-section=\"'+esc(lg)+'\">'";
+  J += "      +'<div class=\"league-section-hdr\">'+esc(lg)+'</div>';";
+  J += "    sorted.forEach(function(m){sections+=renderCard(m);});";
+  J += "    sections+='</div>';";
+  J += "  });";
+  J += "  main.innerHTML=pills+sections;";
+  // pill click toggles open/closed
+  J += "  main.querySelectorAll('.lpill').forEach(function(btn){btn.addEventListener('click',function(){";
+  J += "    var lg=btn.getAttribute('data-lg');";
+  J += "    openLeagues[lg]=!openLeagues[lg];";
+  J += "    renderLeagueList();";
+  J += "  });});";
+  // wire up toggle-btn and form for any newly rendered cards
   J += "  document.querySelectorAll('.toggle-btn').forEach(function(btn){btn.addEventListener('click',function(){";
   J += "    var d=btn.nextElementSibling;var o=d.classList.toggle('open');";
   J += "    btn.innerHTML=o?'\u25b2 Hide last 5 games':'\u25bc Show last 5 games';";
   J += "  });});";
-  J += "  ms.forEach(function(m){renderForm(m.id,m.homeId,m.home,m.hLast5,m.hAvgFH);renderForm(m.id,m.awayId,m.away,m.aLast5,m.aAvgFH);});";
+  J += "  ll.forEach(function(e){";
+  J += "    var lg=e[0],ms=e[1];";
+  J += "    if(!openLeagues[lg])return;";
+  J += "    ms.forEach(function(m){renderForm(m.id,m.homeId,m.home,m.hLast5,m.hAvgFH);renderForm(m.id,m.awayId,m.away,m.aLast5,m.aAvgFH);});";
+  J += "  });";
   J += "}";
 
   // renderForm — returns empty string (hidden) when no games in window
@@ -742,12 +756,13 @@ body{background:#f3f4f6;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',
   J += "  var el=document.getElementById('form-'+mid+'-'+tid);if(!el)return;";
   J += "  if(!games||!games.length){el.innerHTML='';return;}";
   J += "  var rows=games.map(function(g){";
-  J += "    var hot=(g.fhFor+g.fhAgst)>2;";
+  J += "    var fhTotal=g.fhFor+g.fhAgst;";
+  J += "    var fhStyle=fhTotal>2?'color:#15803d;font-weight:600':fhTotal===2?'color:#1d4ed8;font-weight:600':'color:#111827';";
   J += "    var rc=g.result==='W'?'fw2':g.result==='L'?'fl2':'fd2';";
   J += "    return '<tr><td>'+esc(g.date)+'</td>'";
   J += "      +'<td style=\"overflow:hidden;text-overflow:ellipsis\">'+esc(g.opp)+'</td>'";
   J += "      +'<td style=\"text-align:center;color:#9ca3af\">'+esc(g.venue)+'</td>'";
-  J += "      +'<td style=\"text-align:center\" class=\"'+(hot?'fh-hot':'')+'\">'+g.fhFor+'-'+g.fhAgst+'</td>'";
+  J += "      +'<td style=\"text-align:center;'+fhStyle+'\">'+g.fhFor+'-'+g.fhAgst+'</td>'";
   J += "      +'<td style=\"text-align:center;color:#9ca3af\">'+g.ftFor+'-'+g.ftAgst+'</td>'";
   J += "      +'<td style=\"text-align:center\" class=\"'+rc+'\">'+g.result+'</td></tr>';";
   J += "  }).join('');";
