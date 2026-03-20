@@ -83,7 +83,7 @@ async function fetchFixtures(date) {
 async function fetchLeagueMatches(sid) {
   const now = Date.now();
   if (LEAGUE_MATCHES_CACHE[sid] && (now - LEAGUE_MATCHES_CACHE[sid].ts) < TTL_MATCHES) return LEAGUE_MATCHES_CACHE[sid].data;
-  const data = await safeFetch(BASE + "/league-matches?season_id=" + sid + "&max_per_page=150&page=1&sort=date_unix&order=desc&key=" + KEY);
+  const data = await safeFetch(BASE + "/league-matches?season_id=" + sid + "&max_per_page=300&page=1&sort=date_unix&order=desc&key=" + KEY);
   if (data) LEAGUE_MATCHES_CACHE[sid] = { data, ts: now };
   return data || LEAGUE_MATCHES_CACHE[sid]?.data || { data: [] };
 }
