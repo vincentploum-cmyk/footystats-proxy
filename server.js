@@ -451,20 +451,17 @@ app.get("/preds", async (req, res) => {
   }
 });
 
-// ─── MAIN ROUTE — single request, all data inline ────────────────────────────
-app.get("/", async (req, res) => {
-  const routeTimer = setTimeout(() => {
-    if (!res.headersSent) res.status(503).send("<pre>Timeout. Try refreshing.</pre>");
-  }, 25000);
+// ─── MAIN ROUTE — serves shell instantly, /preds fetches data async ──────────
+app.get("/", (req, res) => {
   try {
     const tzOffset = parseInt(req.query.tz || "0", 10);
-    const { preds, dates } = await computePreds(tzOffset);
-    clearTimeout(routeTimer);
-    res.send(buildHTML(preds, dates, Date.now() < RATE_LIMITED_UNTIL, tzOffset));
+    const dates    = getDates(tzOffset);
+    // Kick off background league list fetch if needed — no blocking
+    if (Object.keys(LEAGUE_NAMES).length === 0 && !LEAGUE_LIST_LOADING) fetchLeagueList();
+    res.send(buildHTML([], dates, Date.now() < RATE_LIMITED_UNTIL, tzOffset));
   } catch(e) {
-    clearTimeout(routeTimer);
     console.error(e);
-    if (!res.headersSent) res.status(500).send("<pre>Error: " + e.message + "\n" + e.stack + "</pre>");
+    if (!res.headersSent) res.status(500).send("<pre>Error: " + e.message + "</pre>");
   }
 });
 
