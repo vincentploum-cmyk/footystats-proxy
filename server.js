@@ -83,7 +83,7 @@ async function fetchFixtures(date) {
 async function fetchLeagueMatches(sid) {
   const now = Date.now();
   if (LEAGUE_MATCHES_CACHE[sid] && (now - LEAGUE_MATCHES_CACHE[sid].ts) < TTL_MATCHES) return LEAGUE_MATCHES_CACHE[sid].data;
-  const data = await safeFetch(BASE + "/league-matches?season_id=" + sid + "&max_per_page=300&page=1&sort=date_unix&order=desc&key=" + KEY);
+  const data = await safeFetch(BASE + "/league-matches?season_id=" + sid + "&max_per_page=150&page=1&sort=date_unix&order=desc&key=" + KEY);
   if (data) LEAGUE_MATCHES_CACHE[sid] = { data, ts: now };
   return data || LEAGUE_MATCHES_CACHE[sid]?.data || { data: [] };
 }
@@ -439,7 +439,7 @@ async function computePreds(tzOffset) {
   return { preds, dates };
 }
 
-// ─── /preds JSON ENDPOINT ────────────────────────────────────────────────────
+// ─── /preds JSON ENDPOINT — kept for potential future use ───────────────────
 app.get("/preds", async (req, res) => {
   try {
     const tzOffset = parseInt(req.query.tz || "0", 10);
@@ -451,30 +451,16 @@ app.get("/preds", async (req, res) => {
   }
 });
 
-// ─── MAIN ROUTE — serves shell instantly, client fetches /preds async ────────
+// ─── MAIN ROUTE — single request, all data inline ────────────────────────────
 app.get("/", async (req, res) => {
   const routeTimer = setTimeout(() => {
     if (!res.headersSent) res.status(503).send("<pre>Timeout. Try refreshing.</pre>");
   }, 25000);
   try {
     const tzOffset = parseInt(req.query.tz || "0", 10);
-    const dates    = getDates(tzOffset);
-
-    // Kick off background league list fetch if needed — don't wait
-    if (Object.keys(LEAGUE_NAMES).length === 0 && !LEAGUE_LIST_LOADING) fetchLeagueList();
-
-    // Fetch just fixtures for today in parallel — fast, cached 30min
-    // This is all we need to render the shell immediately
-    const dayResults = await Promise.all(dates.map(d => fetchFixtures(d)));
-    const shellFixtures = [];
-    for (let i = 0; i < dates.length; i++) {
-      for (const m of (dayResults[i].data || [])) {
-        shellFixtures.push({ date: dates[i], home: m.home_name || "", away: m.away_name || "", dt: (m.date_unix||0)*1000 });
-      }
-    }
-
+    const { preds, dates } = await computePreds(tzOffset);
     clearTimeout(routeTimer);
-    res.send(buildHTML(shellFixtures, dates, Date.now() < RATE_LIMITED_UNTIL, tzOffset));
+    res.send(buildHTML(preds, dates, Date.now() < RATE_LIMITED_UNTIL, tzOffset));
   } catch(e) {
     clearTimeout(routeTimer);
     console.error(e);
@@ -482,9 +468,9 @@ app.get("/", async (req, res) => {
   }
 });
 
-function buildHTML(shellFixtures, dates, rateLimited, tzOffset) {
-  // predsJSON starts empty — populated by /preds fetch after load
-  const predsJSON = "[]";
+function buildHTML(preds, dates, rateLimited, tzOffset) {
+  const predsJSON = JSON.stringify(preds)
+    .replace(/</g,"\\u003c").replace(/>/g,"\\u003e").replace(/&/g,"\\u0026");
 
   const CSS = `
 *{box-sizing:border-box;margin:0;padding:0}
@@ -585,10 +571,8 @@ body{background:#f3f4f6;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',
 }`.trim();
 
   let J = "";
-  J += "var ALL=[];";
-  J += "var LOADED=false;";
+  J += "var ALL=" + predsJSON + ";";
   J += "var DATES=" + JSON.stringify(dates) + ";";
-  J += "var TZ=" + JSON.stringify(tzOffset) + ";";
   J += "var DAY_LABELS=['Today','Tomorrow','Day 3','Day 4','Day 5'];";
   J += "var activeDate=DATES[0]||null;";
   J += "var openLeague=null;";
@@ -804,18 +788,7 @@ body{background:#f3f4f6;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',
   J += "}";
 
   J += "if(DATES.length)document.getElementById('hdrTitle').textContent=fmtDate(new Date(DATES[0]+'T12:00:00'));";
-  // Render empty shell immediately, then fetch /preds in background
   J += "renderTabs();renderLeagueList();";
-  J += "function loadPreds(){";
-  J += "  var url='/preds?tz='+TZ;";
-  J += "  var main=document.getElementById('mainView');";
-  J += "  if(main&&!LOADED)main.innerHTML='<div style=\"padding:40px;text-align:center;color:#9ca3af;font-size:13px\">⏳ Loading predictions…</div>';";
-  J += "  fetch(url).then(function(r){return r.json();}).then(function(d){";
-  J += "    if(d.ok&&d.preds){ALL=d.preds;LOADED=true;renderTabs();renderLeagueList();}";
-  J += "    else setTimeout(loadPreds,3000);";
-  J += "  }).catch(function(){setTimeout(loadPreds,3000);});";
-  J += "}";
-  J += "loadPreds();";
 
   return `<!DOCTYPE html>
 <html lang="en">
