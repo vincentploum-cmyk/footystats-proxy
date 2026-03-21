@@ -568,8 +568,9 @@ body{background:#f3f4f6;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',
 }`.trim();
 
   let J = "";
-  J += "var ALL=" + predsJSON + ";";
+  J += "var ALL=[];";
   J += "var DATES=" + JSON.stringify(dates) + ";";
+  J += "var TZ=" + JSON.stringify(tzOffset) + ";";
   J += "var DAY_LABELS=['Today','Tomorrow','Day 3','Day 4','Day 5'];";
   J += "var activeDate=DATES[0]||null;";
   J += "var openLeague=null;";
@@ -785,6 +786,14 @@ body{background:#f3f4f6;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',
 
   J += "if(DATES.length)document.getElementById('hdrTitle').textContent=fmtDate(new Date(DATES[0]+'T12:00:00'));";
   J += "renderTabs();renderLeagueList();";
+  J += "(function loadPreds(){";
+  J += "  var main=document.getElementById('mainView');";
+  J += "  if(ALL.length===0&&main)main.innerHTML='<p style=\"color:#6b7280;text-align:center;padding:40px;font-size:13px\">\u23f3 Loading predictions\u2026</p>';";
+  J += "  fetch('/preds?tz='+TZ).then(function(r){return r.json();}).then(function(d){";
+  J += "    if(d.ok&&d.preds&&d.preds.length){ALL=d.preds;renderTabs();renderLeagueList();}";
+  J += "    else setTimeout(loadPreds,3000);";
+  J += "  }).catch(function(){setTimeout(loadPreds,4000);});";
+  J += "})();";
 
   return `<!DOCTYPE html>
 <html lang="en">
