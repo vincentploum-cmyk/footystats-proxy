@@ -194,6 +194,8 @@ function extractStats(teamObj, role) {
     conced_fh: safe(pick("concededAVGHT" + sfx, "concededAVGHT_overall")),
     t1_pct:    safe(pick("seasonOver25PercentageHT" + sfx, "seasonOver25PercentageHT_overall")),
     cn010_avg: safe((s["goals_conceded_min_0_to_10" + sfx] || 0) / mpR),
+    // Shots on target per game (role-specific, fallback to overall)
+    sot_avg:   safe((s["shotsOnTarget" + sfx] || s["shotsOnTarget_overall"] || 0) / mpR),
     mp:        safe(s.seasonMatchesPlayed_overall || 0),
     mpRole:    mpR,
   };
@@ -416,8 +418,8 @@ async function computePreds(tzOffset) {
           matchDate, status: fix.status || "upcoming", missingStats: missing,
           snap: snap ? {
             fetchedAt: snap.fetchedAt,
-            home: { name: snap.home.name, scored_fh: snap.home.scored_fh, conced_fh: snap.home.conced_fh, t1_pct: snap.home.t1_pct, cn010_avg: snap.home.cn010_avg },
-            away: { name: snap.away.name, scored_fh: snap.away.scored_fh, conced_fh: snap.away.conced_fh, t1_pct: snap.away.t1_pct, cn010_avg: snap.away.cn010_avg },
+            home: { name: snap.home.name, scored_fh: snap.home.scored_fh, conced_fh: snap.home.conced_fh, t1_pct: snap.home.t1_pct, cn010_avg: snap.home.cn010_avg, sot_avg: snap.home.sot_avg },
+            away: { name: snap.away.name, scored_fh: snap.away.scored_fh, conced_fh: snap.away.conced_fh, t1_pct: snap.away.t1_pct, cn010_avg: snap.away.cn010_avg, sot_avg: snap.away.sot_avg },
           } : null,
           rank:     result ? result.rank     : 0,
           label:    result ? result.label    : "Low",
@@ -534,21 +536,28 @@ body{background:#f3f4f6;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',
 .fd{display:inline-flex;align-items:center;justify-content:center;width:17px;height:17px;border-radius:4px;font-size:9px;font-weight:700;background:#f3f4f6;color:#6b7280;border:1px solid #e5e7eb}
 .fl{display:inline-flex;align-items:center;justify-content:center;width:17px;height:17px;border-radius:4px;font-size:9px;font-weight:700;background:#fee2e2;color:#b91c1c}
 .stat-grid{display:grid;grid-template-columns:1fr 1fr;gap:4px}
-.chip{background:#fff;border:1px solid #e5e7eb;border-radius:6px;padding:5px 6px}
-.chip.on{background:#f0fdf4;border-color:#a5d6a7}
+.chip{background:#fff;border:0.5px solid #e5e7eb;border-radius:6px;padding:5px 6px}
 .chip-lbl{font-size:7px;color:#9ca3af;text-transform:uppercase;letter-spacing:.3px;margin-bottom:2px}
-.chip.on .chip-lbl{color:#166534}
 .chip-val{font-size:13px;font-weight:700;color:#111827}
-.chip.on .chip-val{color:#15803d}
 .chip-thr{font-size:8px;color:#9ca3af;margin-top:1px}
-.chip.on .chip-thr{color:#15803d}
+.chip.g-light{background:#e8f5e9;border-color:#a5d6a7}
+.chip.g-light .chip-lbl{color:#388e3c}.chip.g-light .chip-val{color:#2e7d32}.chip.g-light .chip-thr{color:#388e3c}
+.chip.g-bright{background:#1b5e20;border-color:#1b5e20}
+.chip.g-bright .chip-lbl{color:#a5d6a7}.chip.g-bright .chip-val{color:#a5d6a7}.chip.g-bright .chip-thr{color:#a5d6a7}
+.chip.r-light{background:#fef2f2;border-color:#fca5a5}
+.chip.r-light .chip-lbl{color:#b91c1c}.chip.r-light .chip-val{color:#991b1b}.chip.r-light .chip-thr{color:#b91c1c}
+.chip.r-bright{background:#b71c1c;border-color:#b71c1c}
+.chip.r-bright .chip-lbl{color:#ef9a9a}.chip.r-bright .chip-val{color:#fff}.chip.r-bright .chip-thr{color:#ef9a9a}
 .signals{display:flex;gap:4px;flex-wrap:wrap;margin-bottom:10px}
 .sig{display:flex;align-items:center;gap:4px;font-size:10px;padding:3px 8px;border-radius:20px;font-weight:500;border:1px solid}
 .sig-y{background:#f0fdf4;color:#15803d;border-color:#a5d6a7}
 .sig-n{background:#fef2f2;color:#b91c1c;border-color:#fca5a5}
 .sig-dot{width:5px;height:5px;border-radius:50%;flex-shrink:0}
 .sig-y .sig-dot{background:#16a34a} .sig-n .sig-dot{background:#dc2626}
-.ci-bar{background:#eff6ff;border:1px solid #bfdbfe;border-radius:8px;padding:7px 10px;font-size:11px;color:#1e40af;font-family:monospace;margin-bottom:12px}
+.ci-bar{border-radius:8px;padding:9px 12px;font-size:11px;font-family:monospace;margin-bottom:12px;display:flex;align-items:center;justify-content:space-between;flex-wrap:wrap;gap:6px}
+.ci-cold{background:#f9fafb;border:0.5px solid #e5e7eb;color:#374151}
+.ci-light{background:#e8f5e9;border:1px solid #a5d6a7;color:#2e7d32}
+.ci-bright{background:#1b5e20;border:1.5px solid #388e3c;color:#a5d6a7}
 .result-box{border-radius:10px;overflow:hidden;margin-bottom:12px;display:flex;flex-wrap:wrap;border:1px solid #e5e7eb}
 .res-cell{padding:9px 12px;text-align:center;flex:1;min-width:70px}
 .toggle-btn{font-size:12px;color:#6b7280;cursor:pointer;padding-top:11px;display:flex;align-items:center;gap:5px;border-top:1px solid #f3f4f6;margin-top:4px}
@@ -590,7 +599,7 @@ body{background:#f3f4f6;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',
   J += "function rankCls(r){return r===4?'r4':r===3?'r3':r===2?'r2':r===1?'r1':'r0';}";
   J += "function lgLabel(r){return r===4?'Fire \ud83d\udd25':r===3?'Prime \u26a1':r===2?'Watch \ud83d\udc40':r===1?'Signal \ud83d\udce1':'Low';}";
   J += "function fLetter(r){return r==='W'?'<span class=\"fw\">W</span>':r==='L'?'<span class=\"fl\">L</span>':'<span class=\"fd\">D</span>';}";
-  J += "function mkChip(lbl,val,thr,on){return '<div class=\"chip'+(on?' on':'')+'\">'+'<div class=\"chip-lbl\">'+esc(lbl)+'</div><div class=\"chip-val\">'+esc(val)+'</div><div class=\"chip-thr\">'+esc(thr)+'</div></div>';}";
+  J += "function mkChip(lbl,val,thr,state){var cls='chip'+(state?' '+state:'');return '<div class=\"'+cls+'\">'+'<div class=\"chip-lbl\">'+esc(lbl)+'</div><div class=\"chip-val\">'+esc(val)+'</div><div class=\"chip-thr\">'+esc(thr)+'</div></div>';}";
 
   J += "function renderTabs(){";
   J += "  var el=document.getElementById('dayTabs');var h='';";
@@ -613,7 +622,7 @@ body{background:#f3f4f6;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',
   J += "  if(!activeDate){main.innerHTML='';return;}";
   J += "  var dp=ALL.filter(function(p){return p.matchDate===activeDate;});";
   J += "  var lmap={};dp.forEach(function(p){if(!lmap[p.league])lmap[p.league]=[];lmap[p.league].push(p);});";
-  J += "  var ll=Object.entries(lmap).sort(function(a,b){return Math.max.apply(null,b[1].map(function(p){return p.rank;}))-Math.max.apply(null,a[1].map(function(p){return p.rank;}));});";
+  J += "  var ll=Object.entries(lmap).sort(function(a,b){return a[0].localeCompare(b[0]);});";
   J += "  if(!ll.length){main.innerHTML='<p style=\"color:#6b7280;text-align:center;padding:40px\">No matches found.</p>';return;}";
   J += "  var pills='<div class=\"pill-bar\">';";
   J += "  ll.forEach(function(e){";
@@ -732,12 +741,16 @@ body{background:#f3f4f6;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',
   J += "    var chips='';";
   J += "    if(sn){";
   J += "      var sfx=role==='Home'?'(home)':'(away)';";
-  J += "      chips+=mkChip('FH Scored '+sfx,sn.scored_fh.toFixed(2),'\u2265 1.50 \u2192 sig D',sn.scored_fh>=1.5);";
-  J += "      chips+=mkChip('FH Conceded '+sfx,sn.conced_fh.toFixed(2),'used in CI (A)',false);";
-  J += "      chips+=mkChip('FH>2.5 hist '+sfx,sn.t1_pct.toFixed(0)+'%','\u2265 20% \u2192 sig B',sn.t1_pct>=20);";
-  J += "      chips+=mkChip('Early conceded',sn.cn010_avg.toFixed(2),'\u2265 0.25 \u2192 sig C',sn.cn010_avg>=0.25);";
+  J += "      var scState=sn.scored_fh>=1.5?'g-bright':sn.scored_fh>=1.05?'g-light':'';" ;
+  J += "      chips+=mkChip('FH Scored '+sfx,sn.scored_fh.toFixed(2),'\u2265 1.50 \u2192 sig D',scState);";
+  J += "      var coState=sn.conced_fh>=0.6?'r-light':'';" ;
+  J += "      chips+=mkChip('FH Conceded '+sfx,sn.conced_fh.toFixed(2),'CI only',coState);";
+  J += "      var t1State=sn.t1_pct>=20?'g-bright':sn.t1_pct>=14?'g-light':'';" ;
+  J += "      chips+=mkChip('FH>2.5 hist '+sfx,sn.t1_pct.toFixed(0)+'%','\u2265 20% \u2192 sig B',t1State);";
+  J += "      var cnState=sn.cn010_avg>=0.25?'r-bright':sn.cn010_avg>=0.175?'r-light':'';" ;
+  J += "      chips+=mkChip('Early conceded',sn.cn010_avg.toFixed(2),'\u2265 0.25 \u2192 sig C',cnState);";
   J += "    }";
-  J += "    return '<div class=\"team-box\"><div class=\"team-role\">'+esc(role)+'</div><div class=\"team-name\">'+esc(name)+'</div>'+fs+'<div class=\"stat-grid\">'+chips+'</div></div>';";
+  J += "      if(sn.sot_avg>0){var sotState=sn.sot_avg>=4?'g-bright':sn.sot_avg>=2.5?'g-light':'';chips+=mkChip('Shots on target '+sfx,(sn.sot_avg).toFixed(1)+'/g','per game',sotState);}";
   J += "  }";
   J += "  var sigsH='<div class=\"signals\">';";
   J += "  ['A','B','C','D'].forEach(function(k){";
@@ -750,8 +763,14 @@ body{background:#f3f4f6;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',
   J += "  sigsH+='</div>';";
   J += "  var ciH='';";
   J += "  if(m.snap){";
-  J += "    var h=m.snap.home,a=m.snap.away,ciMet=m.ci>=3.2;";
-  J += "    ciH='<div class=\"ci-bar\">CI = '+h.scored_fh.toFixed(2)+' + '+a.scored_fh.toFixed(2)+' + '+h.conced_fh.toFixed(2)+' + '+a.conced_fh.toFixed(2)+' = <strong style=\"color:'+(ciMet?'#15803d':'#374151')+'\">'+m.ci+'</strong> \u00b7 needs \u2265 3.20 '+(ciMet?'\u2713':'\u2717')+'</div>';";
+  J += "    var h=m.snap.home,a=m.snap.away;";
+  J += "    var ciCls=m.ci>=3.2?'ci-bar ci-bright':m.ci>=2.8?'ci-bar ci-light':'ci-bar ci-cold';";
+  J += "    var ciValCol=m.ci>=3.2?'#69f0ae':m.ci>=2.8?'#2e7d32':'#111827';";
+  J += "    var ciCheck=m.ci>=3.2?'\u2713':m.ci>=2.8?'\u25d1':'\u2717';";
+  J += "    ciH='<div class=\"'+ciCls+'\">'";
+  J += "      +'<span>'+h.scored_fh.toFixed(2)+' + '+a.scored_fh.toFixed(2)+' + '+h.conced_fh.toFixed(2)+' + '+a.conced_fh.toFixed(2)+'</span>'";
+  J += "      +'<span style=\"font-size:18px;font-weight:700;color:'+ciValCol+'\">'+m.ci+' '+ciCheck+'</span>'";
+  J += "    +'</div>';";
   J += "  }";
   J += "  var mw=m.missingStats?'<span style=\"background:#fef3c7;color:#92400e;font-size:10px;padding:2px 6px;border-radius:4px;font-weight:600;margin-left:6px\">\u26a0 no stats</span>':'';";
   J += "  return '<div class=\"card\">'";
