@@ -751,6 +751,8 @@ body{background:#f3f4f6;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',
   J += "      chips+=mkChip('Early conceded',sn.cn010_avg.toFixed(2),'\u2265 0.25 \u2192 sig C',cnState);";
   J += "    }";
   J += "      if(sn.sot_avg>0){var sotState=sn.sot_avg>=4?'g-bright':sn.sot_avg>=2.5?'g-light':'';chips+=mkChip('Shots on target '+sfx,(sn.sot_avg).toFixed(1)+'/g','per game',sotState);}";
+  J += "    }";
+  J += "    return '<div class=\"team-box\"><div class=\"team-role\">'+esc(role)+'</div><div class=\"team-name\">'+esc(name)+'</div>'+fs+'<div class=\"stat-grid\">'+chips+'</div></div>';";
   J += "  }";
   J += "  var sigsH='<div class=\"signals\">';";
   J += "  ['A','B','C','D'].forEach(function(k){";
