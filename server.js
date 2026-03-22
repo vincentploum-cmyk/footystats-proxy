@@ -626,7 +626,7 @@ body{background:#f3f4f6;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',
   J += "  ll.forEach(function(e){";
   J += "    var lg=e[0],ms=e[1];";
   J += "    if(openLeague!==lg)return;";
-  J += "    var sorted=ms.slice().sort(function(a,b){return (b.rank-a.rank)||((a.dt||0)-(b.dt||0));});";
+  J += "    var sorted=ms.slice().sort(function(a,b){var ciA=a.ci||0,ciB=b.ci||0;var t1A=a.snap?(a.snap.home.t1_pct||0)+(a.snap.away.t1_pct||0):0;var t1B=b.snap?(b.snap.home.t1_pct||0)+(b.snap.away.t1_pct||0):0;if(ciB!==ciA)return ciB-ciA;return t1B-t1A;});";
   J += "    sections+='<div class=\"league-section\"><div class=\"league-section-hdr\">'+esc(lg)+'</div>';";
   J += "    sorted.forEach(function(m){sections+=renderCard(m);});";
   J += "    sections+='</div>';";
