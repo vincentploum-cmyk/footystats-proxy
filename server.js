@@ -151,28 +151,29 @@ function unixToLocalDate(unix, tzOffset) {
   return y + "-" + m + "-" + day;
 }
 
-const PROB25_BY_RANK = { 4: 73.2, 3: 44.7, 2: 29.6, 1: 12.8, 0: 11.5 };
-const PROB15_BY_RANK = { 4: 85.4, 3: 69.6, 2: 61.2, 1: 38.2, 0: 32.9 };
+const PROB25_BY_RANK = { 4: 87.5, 3: 62.0, 2: 40.3, 1: 29.6, 0: 10.0 };
+const PROB15_BY_RANK = { 4: 100.0, 3: 75.4, 2: 66.8, 1: 61.1, 0: 31.4 };
 const RANK_LABELS = { 4: "Fire", 3: "Prime", 2: "Watch", 1: "Signal", 0: "Low" };
 
 function computeSignals(snap) {
   const h = snap.home, a = snap.away;
-  const ci = safe(h.scored_fh + a.scored_fh + h.conced_fh + a.conced_fh);
-  const sigA = ci >= 3.2;
-  const sigB = h.t1_pct >= 20 && a.t1_pct >= 20;
-  const sigC = h.cn010_avg >= 0.25 || a.cn010_avg >= 0.25;
-  const sigD = h.scored_fh >= 1.5 || a.scored_fh >= 1.5;
+  const ci    = safe(h.scored_fh + a.scored_fh + h.conced_fh + a.conced_fh);
+  const defCi = safe(h.conced_fh + a.conced_fh);
+  const sigA = ci    >= 3.2;
+  const sigB = h.t1_pct >= 25 && a.t1_pct >= 25;
+  const sigC = defCi >= 2.25;
+  const sigD = a.scored_fh >= 1.25;
   const rank = [sigA, sigB, sigC, sigD].filter(Boolean).length;
   return {
     rank, label: RANK_LABELS[rank] || "Low",
-    prob25: PROB25_BY_RANK[rank] ?? 11.5,
-    prob15: PROB15_BY_RANK[rank] ?? 32.9,
-    ci: +ci.toFixed(2), eligible: rank >= 3,
+    prob25: PROB25_BY_RANK[rank] ?? 10.0,
+    prob15: PROB15_BY_RANK[rank] ?? 31.4,
+    ci: +ci.toFixed(2), defCi: +defCi.toFixed(2), eligible: rank >= 3,
     signals: {
-      A: { met: sigA, label: "Combined Intensity",    value: ci.toFixed(2),                                              threshold: ">= 3.20" },
-      B: { met: sigB, label: "Both Teams FH History", value: h.t1_pct.toFixed(0) + "%/" + a.t1_pct.toFixed(0) + "%",   threshold: "both >= 20%" },
-      C: { met: sigC, label: "Early Goals",           value: h.cn010_avg.toFixed(2) + "/" + a.cn010_avg.toFixed(2),     threshold: "either >= 0.25" },
-      D: { met: sigD, label: "Elite FH Scorer",       value: h.scored_fh.toFixed(2) + "/" + a.scored_fh.toFixed(2),    threshold: "either >= 1.50" },
+      A: { met: sigA, label: "Combined Intensity",  value: ci.toFixed(2),                                                  threshold: ">= 3.20" },
+      B: { met: sigB, label: "FH History Both",     value: h.t1_pct.toFixed(0) + "%/" + a.t1_pct.toFixed(0) + "%",        threshold: "both >= 25%" },
+      C: { met: sigC, label: "Leaky Defences",      value: h.conced_fh.toFixed(2) + "+" + a.conced_fh.toFixed(2) + "=" + defCi.toFixed(2), threshold: ">= 2.25" },
+      D: { met: sigD, label: "Away FH Attack",      value: a.scored_fh.toFixed(2),                                         threshold: ">= 1.25" },
     },
   };
 }
@@ -423,10 +424,11 @@ async function computePreds(tzOffset) {
           } : null,
           rank:     result ? result.rank     : 0,
           label:    result ? result.label    : "Low",
-          prob25:   result ? result.prob25   : 11.5,
-          prob15:   result ? result.prob15   : 32.9,
+          prob25:   result ? result.prob25   : 10.0,
+          prob15:   result ? result.prob15   : 31.4,
           eligible: result ? result.eligible : false,
           ci:       result ? result.ci       : 0,
+          defCi:    result ? result.defCi    : 0,
           signals:  result ? result.signals  : {},
           hLast5, aLast5, hAvgFH, aAvgFH,
           matchResult: isComplete ? { fhH, fhA, ftH, ftA, hit25: (fhH+fhA)>2, hit15: (fhH+fhA)>1 } : null,
@@ -626,7 +628,7 @@ body{background:#f3f4f6;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',
   J += "  ll.forEach(function(e){";
   J += "    var lg=e[0],ms=e[1];";
   J += "    if(openLeague!==lg)return;";
-  J += "    var sorted=ms.slice().sort(function(a,b){var ciA=a.ci||0,ciB=b.ci||0;var t1A=a.snap?(a.snap.home.t1_pct||0)+(a.snap.away.t1_pct||0):0;var t1B=b.snap?(b.snap.home.t1_pct||0)+(b.snap.away.t1_pct||0):0;if(ciB!==ciA)return ciB-ciA;return t1B-t1A;});";
+  J += "    var sorted=ms.slice().sort(function(a,b){return (b.rank-a.rank)||((a.dt||0)-(b.dt||0));});";
   J += "    sections+='<div class=\"league-section\"><div class=\"league-section-hdr\">'+esc(lg)+'</div>';";
   J += "    sorted.forEach(function(m){sections+=renderCard(m);});";
   J += "    sections+='</div>';";
@@ -723,14 +725,14 @@ body{background:#f3f4f6;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',
   J += "    var chips='';";
   J += "    if(sn){";
   J += "      var sfx=role==='Home'?'(home)':'(away)';";
-  J += "      var scState=sn.scored_fh>=1.5?'g-bright':sn.scored_fh>=1.05?'g-light':'';" ;
-  J += "      chips+=mkChip('FH Scored '+sfx,sn.scored_fh.toFixed(2),'\u2265 1.50 \u2192 sig D',scState);";
-  J += "      var coState=sn.conced_fh>=0.6?'r-light':'';" ;
-  J += "      chips+=mkChip('FH Conceded '+sfx,sn.conced_fh.toFixed(2),'CI only',coState);";
-  J += "      var t1State=sn.t1_pct>=20?'g-bright':sn.t1_pct>=14?'g-light':'';" ;
-  J += "      chips+=mkChip('FH>2.5 hist '+sfx,sn.t1_pct.toFixed(0)+'%','\u2265 20% \u2192 sig B',t1State);";
-  J += "      var cnState=sn.cn010_avg>=0.25?'r-bright':sn.cn010_avg>=0.175?'r-light':'';" ;
-  J += "      chips+=mkChip('Early conceded',sn.cn010_avg.toFixed(2),'\u2265 0.25 \u2192 sig C',cnState);";
+  J += "      var scState=sn.scored_fh>=1.5?'g-bright':sn.scored_fh>=1.0?'g-light':'';" ;
+  J += "      chips+=mkChip('FH Scored '+sfx,sn.scored_fh.toFixed(2),'away \u2265 1.25 \u2192 sig D',scState);";
+  J += "      var coState=sn.conced_fh>=1.1?'r-bright':sn.conced_fh>=0.7?'r-light':'';" ;
+  J += "      chips+=mkChip('FH Conceded '+sfx,sn.conced_fh.toFixed(2),'\u2265 2.25 combined \u2192 sig C',coState);";
+  J += "      var t1State=sn.t1_pct>=25?'g-bright':sn.t1_pct>=15?'g-light':'';" ;
+  J += "      chips+=mkChip('FH>2.5 hist '+sfx,sn.t1_pct.toFixed(0)+'%','\u2265 25% \u2192 sig B',t1State);";
+  J += "      var cnState=sn.cn010_avg>=0.25?'r-light':'';" ;
+  J += "      chips+=mkChip('Early conceded',sn.cn010_avg.toFixed(2),'info only',cnState);";
   J += "      if(sn.sot_avg>0){var sotState=sn.sot_avg>=4?'g-bright':sn.sot_avg>=2.5?'g-light':'';chips+=mkChip('Shots on target '+sfx,(sn.sot_avg).toFixed(1)+'/g','per game',sotState);}";
   J += "    }";
   J += "    return '<div class=\"team-box\"><div class=\"team-role\">'+esc(role)+'</div><div class=\"team-name\">'+esc(name)+'</div>'+fs+'<div class=\"stat-grid\">'+chips+'</div></div>';";
@@ -747,12 +749,19 @@ body{background:#f3f4f6;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',
   J += "  var ciH='';";
   J += "  if(m.snap){";
   J += "    var h=m.snap.home,a=m.snap.away;";
+  J += "    var defCiVal=m.defCi||0;";
   J += "    var ciCls=m.ci>=3.2?'ci-bar ci-bright':m.ci>=2.8?'ci-bar ci-light':'ci-bar ci-cold';";
   J += "    var ciValCol=m.ci>=3.2?'#69f0ae':m.ci>=2.8?'#2e7d32':'#111827';";
   J += "    var ciCheck=m.ci>=3.2?'\u2713':m.ci>=2.8?'\u25d1':'\u2717';";
+  J += "    var defCiCol=defCiVal>=2.25?'#69f0ae':defCiVal>=1.5?'#a5d6a7':'inherit';";
   J += "    ciH='<div class=\"'+ciCls+'\">'";
   J += "      +'<span>'+h.scored_fh.toFixed(2)+' + '+a.scored_fh.toFixed(2)+' + '+h.conced_fh.toFixed(2)+' + '+a.conced_fh.toFixed(2)+'</span>'";
   J += "      +'<span style=\"font-size:18px;font-weight:700;color:'+ciValCol+'\">'+m.ci+' '+ciCheck+'</span>'";
+  J += "    +'</div>'";
+  J += "    +'<div style=\"font-size:10px;font-family:monospace;padding:4px 12px 8px;color:#6b7280\">'";
+  J += "      +'DefCI: <span style=\"font-weight:700;color:'+defCiCol+'\">'+defCiVal.toFixed(2)+'</span>'";
+  J += "      +' (conceded sum \u2265 2.25 \u2192 sig C) \u00b7 Away scored: <span style=\"font-weight:700;color:'+(a.scored_fh>=1.25?'#2e7d32':'#6b7280')+'\">'+a.scored_fh.toFixed(2)+'</span>'";
+  J += "      +' (\u2265 1.25 \u2192 sig D)'";
   J += "    +'</div>';";
   J += "  }";
   J += "  var mw=m.missingStats?'<span style=\"background:#fef3c7;color:#92400e;font-size:10px;padding:2px 6px;border-radius:4px;font-weight:600;margin-left:6px\">\u26a0 no stats</span>':'';";
@@ -820,8 +829,9 @@ body{background:#f3f4f6;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',
 <div class="body">
   ${rateLimited ? '<div style="background:#fef2f2;border:1px solid #fca5a5;border-radius:8px;padding:10px 14px;margin-bottom:14px;font-size:12px;color:#b91c1c;line-height:1.6"><strong>&#9888; API rate limit reached</strong> \u2014 showing cached data. Resets at ' + new Date(RATE_LIMITED_UNTIL).toLocaleTimeString('en-GB') + '. <a href="/cache-status" style="color:#b91c1c">View cache status</a></div>' : ''}
   <div style="background:#fffbeb;border:1px solid #fde68a;border-radius:8px;padding:10px 14px;margin-bottom:14px;font-size:12px;color:#92400e;line-height:1.6">
-    <strong>How it works:</strong> 4 independent signals (A\u2013D), each worth 1 point. Rank = signals fired.
-    Backtested on 24,203 matches \u00b7 base rate 12.6% \u00b7 Rank 4 = 73.2% FH&gt;2.5 \u00b7 85.4% FH&gt;1.5.
+    <strong>How it works:</strong> 4 stats-only signals (A&ndash;D), each worth 1 point. Rank = signals fired.
+    A: CI&ge;3.2 &middot; B: Both teams FH&gt;2.5 history&ge;25% &middot; C: Defence CI&ge;2.25 &middot; D: Away FH scored&ge;1.25.
+    Backtested on 22,967 matches &middot; base rate 12.8% &middot; Rank 4 = 87.5% FH&gt;2.5 &middot; Rank 3 = 62.0% FH&gt;2.5.
   </div>
   <div id="mainView"></div>
 </div>
