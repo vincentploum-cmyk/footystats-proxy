@@ -1,11 +1,47 @@
 require("dotenv").config();
 
-const express = require("express");
-const cors    = require("cors");
-const fetch   = require("node-fetch");
+const express    = require("express");
+const cors       = require("cors");
+const helmet     = require("helmet");
+const rateLimit  = require("express-rate-limit");
+const fetch      = require("node-fetch");
 
 const app  = express();
-app.use(cors());
+
+// Security headers (relaxed CSP for inline scripts/styles used by the SPA)
+app.use(helmet({
+  contentSecurityPolicy: {
+    directives: {
+      defaultSrc: ["'self'"],
+      scriptSrc:  ["'self'", "'unsafe-inline'"],
+      styleSrc:   ["'self'", "'unsafe-inline'"],
+      imgSrc:     ["'self'", "data:"],
+      connectSrc: ["'self'"],
+    },
+  },
+}));
+
+// CORS: restrict to allowed origins (set ALLOWED_ORIGINS env var, comma-separated)
+const allowedOrigins = process.env.ALLOWED_ORIGINS
+  ? process.env.ALLOWED_ORIGINS.split(",").map(o => o.trim())
+  : [];
+app.use(cors(allowedOrigins.length > 0
+  ? { origin: (origin, cb) => {
+      if (!origin || allowedOrigins.includes(origin)) cb(null, true);
+      else cb(new Error("CORS not allowed"));
+    }}
+  : undefined // fallback to open CORS if no origins configured (dev mode)
+));
+
+// Rate limiting
+const limiter = rateLimit({
+  windowMs: 15 * 60 * 1000, // 15 minutes
+  max: 100,                  // 100 requests per window per IP
+  standardHeaders: true,
+  legacyHeaders: false,
+  message: { error: "Too many requests, please try again later" },
+});
+app.use(limiter);
 
 const KEY  = process.env.FOOTY_API_KEY;
 const BASE = "https://api.football-data-api.com";
@@ -49,6 +85,17 @@ const TEAM_STATS_CACHE     = {};
 let   SERVER_MATCH_CACHE   = {};
 let   RATE_LIMITED_UNTIL   = 0;
 
+const MAX_FIXTURE_CACHE_ENTRIES = 30;
+const MAX_LEAGUE_CACHE_ENTRIES  = 200;
+const MAX_TEAM_CACHE_ENTRIES    = 200;
+
+function evictOldest(cache, max) {
+  const keys = Object.keys(cache);
+  if (keys.length <= max) return;
+  keys.sort((a, b) => (cache[a].ts || 0) - (cache[b].ts || 0));
+  for (let i = 0; i < keys.length - max; i++) delete cache[keys[i]];
+}
+
 const TTL_FIXTURES = 30 * 60 * 1000;
 const TTL_MATCHES  =  2 * 60 * 60 * 1000;
 const TTL_TEAMS    =  6 * 60 * 60 * 1000;
@@ -76,7 +123,7 @@ async function fetchFixtures(date) {
   const now = Date.now();
   if (FIXTURE_CACHE[date] && (now - FIXTURE_CACHE[date].ts) < TTL_FIXTURES) return FIXTURE_CACHE[date].data;
   const data = await safeFetch(BASE + "/todays-matches?date=" + date + "&key=" + KEY);
-  if (data) FIXTURE_CACHE[date] = { data, ts: now };
+  if (data) { FIXTURE_CACHE[date] = { data, ts: now }; evictOldest(FIXTURE_CACHE, MAX_FIXTURE_CACHE_ENTRIES); }
   return data || FIXTURE_CACHE[date]?.data || { data: [] };
 }
 
@@ -84,7 +131,7 @@ async function fetchLeagueMatches(sid) {
   const now = Date.now();
   if (LEAGUE_MATCHES_CACHE[sid] && (now - LEAGUE_MATCHES_CACHE[sid].ts) < TTL_MATCHES) return LEAGUE_MATCHES_CACHE[sid].data;
   const data = await safeFetch(BASE + "/league-matches?season_id=" + sid + "&max_per_page=150&page=1&sort=date_unix&order=desc&key=" + KEY);
-  if (data) LEAGUE_MATCHES_CACHE[sid] = { data, ts: now };
+  if (data) { LEAGUE_MATCHES_CACHE[sid] = { data, ts: now }; evictOldest(LEAGUE_MATCHES_CACHE, MAX_LEAGUE_CACHE_ENTRIES); }
   return data || LEAGUE_MATCHES_CACHE[sid]?.data || { data: [] };
 }
 
@@ -92,7 +139,7 @@ async function fetchTeamStats(sid) {
   const now = Date.now();
   if (TEAM_STATS_CACHE[sid] && (now - TEAM_STATS_CACHE[sid].ts) < TTL_TEAMS) return TEAM_STATS_CACHE[sid].data;
   const data = await safeFetch(BASE + "/league-teams?season_id=" + sid + "&include=stats&key=" + KEY);
-  if (data) TEAM_STATS_CACHE[sid] = { data, ts: now };
+  if (data) { TEAM_STATS_CACHE[sid] = { data, ts: now }; evictOldest(TEAM_STATS_CACHE, MAX_TEAM_CACHE_ENTRIES); }
   return data || TEAM_STATS_CACHE[sid]?.data || { data: [] };
 }
 
@@ -122,8 +169,19 @@ function rebuildServerMatchCache() {
 }
 
 const PREV_SEASON = { 16504:13973, 16544:11321, 16571:15746, 16614:14086, 16615:14116, 16036:13703 };
-const ftch = url => fetch(url).then(r => r.json());
+const ftch = async (url) => {
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), FETCH_TIMEOUT_MS);
+  try { return await fetch(url, { signal: controller.signal }).then(r => r.json()); }
+  finally { clearTimeout(timer); }
+};
 const safe = v   => (isNaN(v) || !isFinite(v)) ? 0 : Number(v);
+
+function parseTzOffset(raw) {
+  const val = parseInt(raw || "0", 10);
+  if (isNaN(val) || val < -720 || val > 840) return 0;
+  return val;
+}
 
 function getDates(tzOffset) {
   const now = new Date();
@@ -255,7 +313,7 @@ app.get("/cache-status", (req, res) => {
 
 app.get("/debug", async (req, res) => {
   try {
-    const tzOffset = parseInt(req.query.tz || "0", 10);
+    const tzOffset = parseTzOffset(req.query.tz);
     const dates = getDates(tzOffset);
     const raw = await fetchFixtures(dates[0]);
     const fixtures = raw.data || [];
@@ -265,16 +323,10 @@ app.get("/debug", async (req, res) => {
       totalFixtures: fixtures.length,
       cachedTeams: Object.keys(SERVER_MATCH_CACHE).length,
     });
-  } catch(e) { res.status(500).json({ error: e.message }); }
+  } catch(e) { console.error("Debug error:", e); res.status(500).json({ error: "Internal server error" }); }
 });
 
-app.get("/api/*", async (req, res) => {
-  try {
-    const path = req.path.replace("/api", "");
-    const qs = new URLSearchParams({ ...req.query, key: KEY }).toString();
-    res.json(await ftch(BASE + path + "?" + qs));
-  } catch(e) { res.status(500).json({ error: e.message }); }
-});
+// /api/* open proxy removed — was a critical SSRF and API key exposure vulnerability
 
 // ─── HELPERS ─────────────────────────────────────────────────────────────────
 // FIX 3: isPlayedMatch — used for both addToLocalExtra AND completed filtering
@@ -298,7 +350,7 @@ async function computePreds(tzOffset) {
     const dayResults = await Promise.all(dates.map(d => fetchFixtures(d)));
     for (let i = 0; i < dates.length; i++) {
       for (const m of (dayResults[i].data || [])) {
-        allFixtures.push(Object.assign({}, m, { _date: dates[i] }));
+        allFixtures.push({ ...JSON.parse(JSON.stringify(m)), _date: dates[i] });
       }
     }
 
@@ -444,26 +496,26 @@ async function computePreds(tzOffset) {
 // ─── /preds JSON ENDPOINT — kept for potential future use ───────────────────
 app.get("/preds", async (req, res) => {
   try {
-    const tzOffset = parseInt(req.query.tz || "0", 10);
+    const tzOffset = parseTzOffset(req.query.tz);
     const { preds } = await computePreds(tzOffset);
     res.json({ ok: true, preds, rateLimited: Date.now() < RATE_LIMITED_UNTIL });
   } catch(e) {
-    console.error(e);
-    res.status(500).json({ ok: false, error: e.message });
+    console.error("Preds error:", e);
+    res.status(500).json({ ok: false, error: "Internal server error" });
   }
 });
 
 // ─── MAIN ROUTE — serves shell instantly, /preds fetches data async ──────────
 app.get("/", (req, res) => {
   try {
-    const tzOffset = parseInt(req.query.tz || "0", 10);
+    const tzOffset = parseTzOffset(req.query.tz);
     const dates    = getDates(tzOffset);
     // Kick off background league list fetch if needed — no blocking
     if (Object.keys(LEAGUE_NAMES).length === 0 && !LEAGUE_LIST_LOADING) fetchLeagueList();
     res.send(buildHTML([], dates, Date.now() < RATE_LIMITED_UNTIL, tzOffset));
   } catch(e) {
-    console.error(e);
-    if (!res.headersSent) res.status(500).send("<pre>Error: " + e.message + "</pre>");
+    console.error("Main route error:", e);
+    if (!res.headersSent) res.status(500).send("<pre>Internal server error</pre>");
   }
 });
 
@@ -851,4 +903,4 @@ app.listen(PORT, () => {
   }).catch(e => console.error("League list failed:", e.message));
 });
 
-process.on("uncaughtException", e => console.error("Uncaught:", e.message));
+process.on("uncaughtException", e => { console.error("Uncaught:", e.stack || e.message); process.exit(1); });
