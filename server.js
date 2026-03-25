@@ -903,4 +903,4 @@ app.listen(PORT, () => {
   }).catch(e => console.error("League list failed:", e.message));
 });
 
-process.on("uncaughtException", e => { console.error("Uncaught:", e.stack || e.message); process.exit(1); });
+process.on("uncaughtException", e => console.error("Uncaught:", e.stack || e.message));
