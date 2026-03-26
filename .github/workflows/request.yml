@@ -9,4 +9,4 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Ping Render
-        run: curl https://footystats-proxy.onrender.com
+        run: curl https://footystats-proxy.onrender.com/cache-status
