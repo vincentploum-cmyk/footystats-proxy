@@ -561,7 +561,7 @@ body{background:#f3f4f6;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',
   .hdr-title{font-size:17px}.rn{font-size:20px}.team-name{font-size:12px}
   .sig{font-size:9px;padding:2px 6px}.ci-bar{font-size:10px}
   .ftable{font-size:10px}.ftable th,.ftable td{padding:3px 3px}
-  .col-ft{display:none}
+
 }
 @media(min-width:640px){
   .hdr{padding:14px 20px}.body{padding:16px 20px}.card-inner{padding:16px}
