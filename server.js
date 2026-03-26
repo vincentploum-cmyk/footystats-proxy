@@ -437,7 +437,7 @@ async function computePreds(tzOffset) {
     }
 
     rebuildServerMatchCache();
-    preds.sort((a, b) => b.rank - a.rank || b.prob25 - a.prob25);
+    preds.sort((a, b) => b.ci - a.ci || b.rank - a.rank);
   return { preds, dates };
 }
 
@@ -560,8 +560,7 @@ body{background:#f3f4f6;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',
 @media(max-width:480px){
   .hdr-title{font-size:17px}.rn{font-size:20px}.team-name{font-size:12px}
   .sig{font-size:9px;padding:2px 6px}.ci-bar{font-size:10px}
-  .ftable{font-size:10px}.ftable th,.ftable td{padding:3px 3px}
-  .col-ft{display:none}
+  .ftable{font-size:9px;table-layout:fixed;width:100%}.ftable th,.ftable td{padding:2px 2px;overflow:hidden;text-overflow:ellipsis}
 }
 @media(min-width:640px){
   .hdr{padding:14px 20px}.body{padding:16px 20px}.card-inner{padding:16px}
@@ -628,7 +627,7 @@ body{background:#f3f4f6;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',
   J += "  ll.forEach(function(e){";
   J += "    var lg=e[0],ms=e[1];";
   J += "    if(openLeague!==lg)return;";
-  J += "    var sorted=ms.slice().sort(function(a,b){return (b.rank-a.rank)||((a.dt||0)-(b.dt||0));});";
+  J += "    var sorted=ms.slice().sort(function(a,b){return (b.ci-a.ci)||((a.dt||0)-(b.dt||0));});";
   J += "    sections+='<div class=\"league-section\"><div class=\"league-section-hdr\">'+esc(lg)+'</div>';";
   J += "    sorted.forEach(function(m){sections+=renderCard(m);});";
   J += "    sections+='</div>';";
@@ -661,7 +660,7 @@ body{background:#f3f4f6;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',
   J += "      +'<td style=\"overflow:hidden;text-overflow:ellipsis;max-width:100px\">'+esc(g.opp)+'</td>'";
   J += "      +'<td style=\"text-align:center;color:#9ca3af\">'+esc(g.venue)+'</td>'";
   J += "      +'<td style=\"text-align:center;'+fhStyle+'\">'+g.fhFor+'-'+g.fhAgst+'</td>'";
-  J += "      +'<td class=\"col-ft\" style=\"text-align:center;color:#9ca3af\">'+g.ftFor+'-'+g.ftAgst+'</td>'";
+  J += "      +'<td style=\"text-align:center;color:#9ca3af\">'+g.ftFor+'-'+g.ftAgst+'</td>'";
   J += "      +'<td style=\"text-align:center\" class=\"'+rc+'\">'+g.result+'</td>'";
   J += "    +'</tr>';";
   J += "  }).join('');";
@@ -673,11 +672,11 @@ body{background:#f3f4f6;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',
   J += "    +'</tr></tfoot>';}";
   J += "  el.innerHTML='<div class=\"form-team-lbl\">'+esc(tname)+' \u2014 last 5</div>'";
   J += "    +'<div class=\"tbl-scroll\"><table class=\"ftable\"><thead><tr>'";
-  J += "    +'<th style=\"width:13%\">Date</th><th>Opponent</th>'";
-  J += "    +'<th style=\"width:9%;text-align:center\">H/A</th>'";
-  J += "    +'<th style=\"width:11%;text-align:center\">FH</th>'";
-  J += "    +'<th class=\"col-ft\" style=\"width:11%;text-align:center\">FT</th>'";
-  J += "    +'<th style=\"width:9%;text-align:center\">Res</th>'";
+  J += "    +'<th style=\"width:14%\">Date</th><th style=\"width:36%\">Opponent</th>'";
+  J += "    +'<th style=\"width:10%;text-align:center\">H/A</th>'";
+  J += "    +'<th style=\"width:12%;text-align:center\">FH</th>'";
+  J += "    +'<th style=\"width:12%;text-align:center\">FT</th>'";
+  J += "    +'<th style=\"width:10%;text-align:center\">Res</th>'";
   J += "    +'</tr></thead><tbody>'+rows+'</tbody>'+foot+'</table></div>';";
   J += "}";
 
