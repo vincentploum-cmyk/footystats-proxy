@@ -411,22 +411,39 @@ async function computePreds(tzOffset) {
         const awayId   = fix.awayID || fix.away_id;
         const homeTeam = teamMap[homeId];
         const awayTeam = teamMap[awayId];
-        const missing  = !homeTeam || !awayTeam;
         const matchDate = fix.date_unix ? unixToLocalDate(fix.date_unix, tzOffset) : fix._date;
-
-        let snap = null, result = null;
-        if (!missing) {
-          const hStats = extractStats(homeTeam, "home");
-          const aStats = extractStats(awayTeam, "away");
-          snap   = { fetchedAt, home: hStats, away: aStats };
-          result = computeSignals(snap);
-        }
 
         const mergedCache = (tid) => (SERVER_MATCH_CACHE[tid] || []).concat(localExtra[tid] || []);
         const hLast5 = buildLast5(homeId, { [homeId]: mergedCache(homeId), [awayId]: mergedCache(awayId) });
         const aLast5 = buildLast5(awayId, { [homeId]: mergedCache(homeId), [awayId]: mergedCache(awayId) });
         const hAvgFH = hLast5.length ? +(hLast5.reduce((s, g) => s + g.fhFor + g.fhAgst, 0) / hLast5.length).toFixed(2) : null;
         const aAvgFH = aLast5.length ? +(aLast5.reduce((s, g) => s + g.fhFor + g.fhAgst, 0) / aLast5.length).toFixed(2) : null;
+
+        let snap = null, result = null;
+        const missing = !homeTeam || !awayTeam;
+        if (!missing) {
+          const hStats = extractStats(homeTeam, "home");
+          const aStats = extractStats(awayTeam, "away");
+          snap   = { fetchedAt, home: hStats, away: aStats };
+          result = computeSignals(snap);
+        } else if (hLast5.length >= 1 && aLast5.length >= 1) {
+          // Synthetic stats from match history when API stats are missing
+          const hHome = hLast5.filter(g => g.venue === "H");
+          const aAway = aLast5.filter(g => g.venue === "A");
+          const hGames = hHome.length >= 2 ? hHome : hLast5;
+          const aGames = aAway.length >= 2 ? aAway : aLast5;
+          const avg = (arr, fn) => arr.reduce((s, g) => s + fn(g), 0) / arr.length;
+          const hScored  = +avg(hGames, g => g.fhFor).toFixed(2);
+          const hConced  = +avg(hGames, g => g.fhAgst).toFixed(2);
+          const aScored  = +avg(aGames, g => g.fhFor).toFixed(2);
+          const aConced  = +avg(aGames, g => g.fhAgst).toFixed(2);
+          const hT1pct   = +(hGames.filter(g => g.fhFor + g.fhAgst > 2).length / hGames.length * 100).toFixed(0);
+          const aT1pct   = +(aGames.filter(g => g.fhFor + g.fhAgst > 2).length / aGames.length * 100).toFixed(0);
+          const hStats = { name: fix.home_name || "", scored_fh: hScored, conced_fh: hConced, t1_pct: hT1pct, cn010_avg: 0, sot_avg: 0, mp: hGames.length, mpRole: hGames.length };
+          const aStats = { name: fix.away_name || "", scored_fh: aScored, conced_fh: aConced, t1_pct: aT1pct, cn010_avg: 0, sot_avg: 0, mp: aGames.length, mpRole: aGames.length };
+          snap   = { fetchedAt: fetchedAt + " (from history)", home: hStats, away: aStats };
+          result = computeSignals(snap);
+        }
 
         const isComplete = fix.status === "complete";
         const fhH = parseInt(fix.ht_goals_team_a || 0, 10);
@@ -439,7 +456,7 @@ async function computePreds(tzOffset) {
           league: leagueName, leagueSid: parseInt(sid, 10),
           home: fix.home_name || "", away: fix.away_name || "",
           dt: (fix.date_unix || 0) * 1000,
-          matchDate, status: fix.status || "upcoming", missingStats: missing,
+          matchDate, status: fix.status || "upcoming", missingStats: missing && !result,
           snap: snap ? {
             fetchedAt: snap.fetchedAt,
             home: { name: snap.home.name, scored_fh: snap.home.scored_fh, conced_fh: snap.home.conced_fh, t1_pct: snap.home.t1_pct, cn010_avg: snap.home.cn010_avg, sot_avg: snap.home.sot_avg },
