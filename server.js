@@ -205,10 +205,33 @@ function extractStats(teamObj, role) {
 const LAST5_WINDOW_SECS = 35 * 24 * 60 * 60;
 
 function buildLast5(teamId, cache) {
-  if (!teamId || !cache[teamId]) return [];
+  if (!teamId) return [];
+  // Merge passed-in cache with a full scan of LEAGUE_MATCHES_CACHE for this team
+  let entries = (cache[teamId] || []).slice();
+  const passedKeys = new Set(entries.map(m => (m.date_unix||0)+"_"+(m.homeID||"")+"_"+(m.awayID||"")));
+  for (const entry of Object.values(LEAGUE_MATCHES_CACHE)) {
+    for (const m of (entry.data.data || [])) {
+      if (m.status !== "complete") continue;
+      if (m.homeID !== teamId && m.awayID !== teamId) continue;
+      const key = (m.date_unix||0)+"_"+(m.homeID||"")+"_"+(m.awayID||"");
+      if (passedKeys.has(key)) continue;
+      passedKeys.add(key);
+      entries.push({
+        homeID: m.homeID, awayID: m.awayID,
+        home_name: m.home_name||"", away_name: m.away_name||"",
+        date_unix: m.date_unix||0,
+        ht_goals_team_a: parseInt(m.ht_goals_team_a||0,10),
+        ht_goals_team_b: parseInt(m.ht_goals_team_b||0,10),
+        homeGoalCount: parseInt(m.homeGoalCount||0,10),
+        awayGoalCount: parseInt(m.awayGoalCount||0,10),
+        status: m.status,
+      });
+    }
+  }
+  if (!entries.length) return [];
   const cutoff = Math.floor(Date.now() / 1000) - LAST5_WINDOW_SECS;
   const seen = new Set();
-  const unique = cache[teamId].filter(m => {
+  const unique = entries.filter(m => {
     if ((m.date_unix || 0) < cutoff) return false;
     const key = (m.date_unix || 0) + "_" + (m.homeID || "") + "_" + (m.awayID || "");
     if (seen.has(key)) return false;
