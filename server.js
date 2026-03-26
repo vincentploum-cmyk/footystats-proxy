@@ -560,8 +560,7 @@ body{background:#f3f4f6;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',
 @media(max-width:480px){
   .hdr-title{font-size:17px}.rn{font-size:20px}.team-name{font-size:12px}
   .sig{font-size:9px;padding:2px 6px}.ci-bar{font-size:10px}
-  .ftable{font-size:10px}.ftable th,.ftable td{padding:3px 3px}
-
+  .ftable{font-size:9px;table-layout:fixed;width:100%}.ftable th,.ftable td{padding:2px 2px;overflow:hidden;text-overflow:ellipsis}
 }
 @media(min-width:640px){
   .hdr{padding:14px 20px}.body{padding:16px 20px}.card-inner{padding:16px}
@@ -673,11 +672,11 @@ body{background:#f3f4f6;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',
   J += "    +'</tr></tfoot>';}";
   J += "  el.innerHTML='<div class=\"form-team-lbl\">'+esc(tname)+' \u2014 last 5</div>'";
   J += "    +'<div class=\"tbl-scroll\"><table class=\"ftable\"><thead><tr>'";
-  J += "    +'<th style=\"width:13%\">Date</th><th style=\"width:30%\">Opponent</th>'";
-  J += "    +'<th style=\"width:9%;text-align:center\">H/A</th>'";
-  J += "    +'<th style=\"width:11%;text-align:center\">FH</th>'";
-  J += "    +'<th class=\"col-ft\" style=\"width:11%;text-align:center\">FT</th>'";
-  J += "    +'<th style=\"width:9%;text-align:center\">Res</th>'";
+  J += "    +'<th style=\"width:15%\">Date</th><th>Opponent</th>'";
+  J += "    +'<th style=\"width:8%;text-align:center\">H/A</th>'";
+  J += "    +'<th style=\"width:10%;text-align:center\">FH</th>'";
+  J += "    +'<th class=\"col-ft\" style=\"width:10%;text-align:center\">FT</th>'";
+  J += "    +'<th style=\"width:8%;text-align:center\">Res</th>'";
   J += "    +'</tr></thead><tbody>'+rows+'</tbody>'+foot+'</table></div>';";
   J += "}";
 
