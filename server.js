@@ -673,7 +673,7 @@ body{background:#f3f4f6;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',
   J += "    +'</tr></tfoot>';}";
   J += "  el.innerHTML='<div class=\"form-team-lbl\">'+esc(tname)+' \u2014 last 5</div>'";
   J += "    +'<div class=\"tbl-scroll\"><table class=\"ftable\"><thead><tr>'";
-  J += "    +'<th style=\"width:13%\">Date</th><th>Opponent</th>'";
+  J += "    +'<th style=\"width:13%\">Date</th><th style=\"width:30%\">Opponent</th>'";
   J += "    +'<th style=\"width:9%;text-align:center\">H/A</th>'";
   J += "    +'<th style=\"width:11%;text-align:center\">FH</th>'";
   J += "    +'<th class=\"col-ft\" style=\"width:11%;text-align:center\">FT</th>'";
