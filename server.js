@@ -309,6 +309,29 @@ app.get("/debug", async (req, res) => {
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
+app.get("/debug-team/:teamId", (req, res) => {
+  const tid = parseInt(req.params.teamId, 10);
+  const nowSecs = Math.floor(Date.now() / 1000);
+  // Check SERVER_MATCH_CACHE
+  const smcEntries = (SERVER_MATCH_CACHE[tid] || []).length;
+  // Scan LEAGUE_MATCHES_CACHE
+  const lmcMatches = [];
+  for (const [sid, entry] of Object.entries(LEAGUE_MATCHES_CACHE)) {
+    for (const m of (entry.data.data || [])) {
+      if (m.homeID !== tid && m.awayID !== tid) continue;
+      lmcMatches.push({
+        sid, status: m.status, date_unix: m.date_unix,
+        home: m.home_name, away: m.away_name,
+        homeID: m.homeID, awayID: m.awayID,
+        ht_a: m.ht_goals_team_a, ht_b: m.ht_goals_team_b,
+        ftH: m.homeGoalCount, ftA: m.awayGoalCount,
+        isPlayed: isPlayedMatch(m, nowSecs),
+      });
+    }
+  }
+  res.json({ teamId: tid, serverMatchCache: smcEntries, leagueMatchesCache: lmcMatches.slice(0, 20) });
+});
+
 app.get("/api/*", async (req, res) => {
   try {
     const path = req.path.replace("/api", "");
