@@ -204,14 +204,23 @@ function extractStats(teamObj, role) {
 
 const LAST5_WINDOW_SECS = 35 * 24 * 60 * 60;
 
+// FIX 3: isPlayedMatch — used for both addToLocalExtra AND completed filtering
+// so that incomplete-but-played matches (e.g. Liga MX Femenil) are included
+const isPlayedMatch = (m, nowSecs) =>
+  m.status === "complete" ||
+  (m.status === "incomplete" &&
+   (m.date_unix || 0) < nowSecs &&
+   (parseInt(m.homeGoalCount || 0, 10) + parseInt(m.awayGoalCount || 0, 10)) > 0);
+
 function buildLast5(teamId, cache) {
   if (!teamId) return [];
   // Merge passed-in cache with a full scan of LEAGUE_MATCHES_CACHE for this team
   let entries = (cache[teamId] || []).slice();
   const passedKeys = new Set(entries.map(m => (m.date_unix||0)+"_"+(m.homeID||"")+"_"+(m.awayID||"")));
+  const nowSecs = Math.floor(Date.now() / 1000);
   for (const entry of Object.values(LEAGUE_MATCHES_CACHE)) {
     for (const m of (entry.data.data || [])) {
-      if (m.status !== "complete") continue;
+      if (!isPlayedMatch(m, nowSecs)) continue;
       if (m.homeID !== teamId && m.awayID !== teamId) continue;
       const key = (m.date_unix||0)+"_"+(m.homeID||"")+"_"+(m.awayID||"");
       if (passedKeys.has(key)) continue;
@@ -299,14 +308,6 @@ app.get("/api/*", async (req, res) => {
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
-// ─── HELPERS ─────────────────────────────────────────────────────────────────
-// FIX 3: isPlayedMatch — used for both addToLocalExtra AND completed filtering
-// so that incomplete-but-played matches (e.g. Liga MX Femenil) are included
-const isPlayedMatch = (m, nowSecs) =>
-  m.status === "complete" ||
-  (m.status === "incomplete" &&
-   (m.date_unix || 0) < nowSecs &&
-   (parseInt(m.homeGoalCount || 0, 10) + parseInt(m.awayGoalCount || 0, 10)) > 0);
 
 // ─── SHARED PREDS COMPUTATION ────────────────────────────────────────────────
 async function computePreds(tzOffset) {
