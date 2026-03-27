@@ -241,7 +241,6 @@ function buildLast5(teamId, cache) {
   if (!entries.length) return [];
   const now = Math.floor(Date.now() / 1000);
   const cutoff = now - LAST5_WINDOW_SECS;
-  const cutoffWide = now - 120 * 24 * 60 * 60; // 120 days fallback
   const seen = new Set();
   const dedup = (m) => {
     const key = (m.date_unix || 0) + "_" + (m.homeID || "") + "_" + (m.awayID || "");
@@ -251,10 +250,10 @@ function buildLast5(teamId, cache) {
   };
   // Try 35-day window first
   let unique = entries.filter(m => (m.date_unix || 0) >= cutoff && dedup(m));
-  // If fewer than 3, widen to 120 days
+  // If fewer than 3, drop the time window entirely — just take the most recent
   if (unique.length < 3) {
     seen.clear();
-    unique = entries.filter(m => (m.date_unix || 0) >= cutoffWide && dedup(m));
+    unique = entries.filter(m => dedup(m));
   }
   return unique
     .sort((a, b) => (b.date_unix || 0) - (a.date_unix || 0))
