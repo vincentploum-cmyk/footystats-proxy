@@ -207,11 +207,11 @@ const LAST5_WINDOW_SECS = 35 * 24 * 60 * 60;
 
 // FIX 3: isPlayedMatch — used for both addToLocalExtra AND completed filtering
 // so that incomplete-but-played matches (e.g. Liga MX Femenil) are included
+// A past match with status "incomplete" is treated as played (covers 0-0 results too)
 const isPlayedMatch = (m, nowSecs) =>
   m.status === "complete" ||
   (m.status === "incomplete" &&
-   (m.date_unix || 0) < nowSecs &&
-   (parseInt(m.homeGoalCount || 0, 10) + parseInt(m.awayGoalCount || 0, 10)) > 0);
+   (m.date_unix || 0) < nowSecs - 7200);
 
 function buildLast5(teamId, cache) {
   if (!teamId) return [];
