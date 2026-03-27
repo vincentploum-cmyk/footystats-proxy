@@ -101,7 +101,8 @@ function rebuildServerMatchCache() {
   let total = 0;
   for (const [sid, entry] of Object.entries(LEAGUE_MATCHES_CACHE)) {
     const leagueName = LEAGUE_NAMES[parseInt(sid, 10)] || "League " + sid;
-    for (const m of (entry.data.data || []).filter(m => m.status === "complete")) {
+    const nowSecs = Math.floor(Date.now() / 1000);
+    for (const m of (entry.data.data || []).filter(m => isPlayedMatch(m, nowSecs))) {
       const slim = {
         homeID: m.homeID, awayID: m.awayID,
         home_name: m.home_name || "", away_name: m.away_name || "",
@@ -238,15 +239,23 @@ function buildLast5(teamId, cache) {
     }
   }
   if (!entries.length) return [];
-  const cutoff = Math.floor(Date.now() / 1000) - LAST5_WINDOW_SECS;
+  const now = Math.floor(Date.now() / 1000);
+  const cutoff = now - LAST5_WINDOW_SECS;
+  const cutoffWide = now - 120 * 24 * 60 * 60; // 120 days fallback
   const seen = new Set();
-  const unique = entries.filter(m => {
-    if ((m.date_unix || 0) < cutoff) return false;
+  const dedup = (m) => {
     const key = (m.date_unix || 0) + "_" + (m.homeID || "") + "_" + (m.awayID || "");
     if (seen.has(key)) return false;
     seen.add(key);
     return true;
-  });
+  };
+  // Try 35-day window first
+  let unique = entries.filter(m => (m.date_unix || 0) >= cutoff && dedup(m));
+  // If fewer than 3, widen to 120 days
+  if (unique.length < 3) {
+    seen.clear();
+    unique = entries.filter(m => (m.date_unix || 0) >= cutoffWide && dedup(m));
+  }
   return unique
     .sort((a, b) => (b.date_unix || 0) - (a.date_unix || 0))
     .slice(0, 5)
