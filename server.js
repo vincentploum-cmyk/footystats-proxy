@@ -269,14 +269,14 @@ function buildLast5(teamId, cache) {
     .slice(0, 5)
     .map(m => {
       const isHome = m.homeID === teamId;
-      const ftFor  = isHome ? m.homeGoalCount   : m.awayGoalCount;
-      const ftAgst = isHome ? m.awayGoalCount   : m.homeGoalCount;
-      const fhFor  = isHome ? m.ht_goals_team_a : m.ht_goals_team_b;
-      const fhAgst = isHome ? m.ht_goals_team_b : m.ht_goals_team_a;
-      const result = ftFor > ftAgst ? "W" : ftFor < ftAgst ? "L" : "D";
+      const teamFt = isHome ? m.homeGoalCount : m.awayGoalCount;
+      const oppFt  = isHome ? m.awayGoalCount : m.homeGoalCount;
+      const result = teamFt > oppFt ? "W" : teamFt < oppFt ? "L" : "D";
       const date   = m.date_unix ? new Date(m.date_unix * 1000).toISOString().slice(0, 10) : "";
+      // Always display as home-away order
       return { date, venue: isHome ? "H" : "A", opp: isHome ? m.away_name : m.home_name,
-               fhFor, fhAgst, ftFor, ftAgst, result };
+               fhFor: m.ht_goals_team_a, fhAgst: m.ht_goals_team_b,
+               ftFor: m.homeGoalCount, ftAgst: m.awayGoalCount, result };
     });
 }
 
