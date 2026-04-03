@@ -84,20 +84,13 @@ async function fetchFixtures(date) {
 async function fetchLeagueMatches(sid) {
   const now = Date.now();
   if (LEAGUE_MATCHES_CACHE[sid] && (now - LEAGUE_MATCHES_CACHE[sid].ts) < TTL_MATCHES) return LEAGUE_MATCHES_CACHE[sid].data;
-  // Fetch up to 3 pages to cover full seasons (e.g. La Liga has ~380 matches)
-  const page1 = await safeFetch(BASE + "/league-matches?season_id=" + sid + "&max_per_page=150&page=1&sort=date_unix&order=desc&key=" + KEY);
+  const page1 = await safeFetch(BASE + "/league-matches?season_id=" + sid + "&max_per_page=300&page=1&sort=date_unix&order=desc&key=" + KEY);
   if (!page1) return LEAGUE_MATCHES_CACHE[sid]?.data || { data: [] };
   let allMatches = page1.data || [];
-  // If page 1 is full, fetch more pages
-  if (allMatches.length >= 150) {
-    const page2 = await safeFetch(BASE + "/league-matches?season_id=" + sid + "&max_per_page=150&page=2&sort=date_unix&order=desc&key=" + KEY);
-    if (page2 && page2.data && page2.data.length) {
-      allMatches = allMatches.concat(page2.data);
-      if (page2.data.length >= 150) {
-        const page3 = await safeFetch(BASE + "/league-matches?season_id=" + sid + "&max_per_page=150&page=3&sort=date_unix&order=desc&key=" + KEY);
-        if (page3 && page3.data && page3.data.length) allMatches = allMatches.concat(page3.data);
-      }
-    }
+  // Fetch page 2 only for large seasons (e.g. La Liga ~380 matches)
+  if (allMatches.length >= 300) {
+    const page2 = await safeFetch(BASE + "/league-matches?season_id=" + sid + "&max_per_page=300&page=2&sort=date_unix&order=desc&key=" + KEY);
+    if (page2 && page2.data && page2.data.length) allMatches = allMatches.concat(page2.data);
   }
   const data = { ...page1, data: allMatches };
   LEAGUE_MATCHES_CACHE[sid] = { data, ts: now };
