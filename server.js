@@ -84,9 +84,17 @@ async function fetchFixtures(date) {
 async function fetchLeagueMatches(sid) {
   const now = Date.now();
   if (LEAGUE_MATCHES_CACHE[sid] && (now - LEAGUE_MATCHES_CACHE[sid].ts) < TTL_MATCHES) return LEAGUE_MATCHES_CACHE[sid].data;
-  const data = await safeFetch(BASE + "/league-matches?season_id=" + sid + "&max_per_page=150&page=1&sort=date_unix&order=desc&key=" + KEY);
-  if (data) LEAGUE_MATCHES_CACHE[sid] = { data, ts: now };
-  return data || LEAGUE_MATCHES_CACHE[sid]?.data || { data: [] };
+  const page1 = await safeFetch(BASE + "/league-matches?season_id=" + sid + "&max_per_page=300&page=1&sort=date_unix&order=desc&key=" + KEY);
+  if (!page1) return LEAGUE_MATCHES_CACHE[sid]?.data || { data: [] };
+  let allMatches = page1.data || [];
+  // Fetch page 2 only for large seasons (e.g. La Liga ~380 matches)
+  if (allMatches.length >= 300) {
+    const page2 = await safeFetch(BASE + "/league-matches?season_id=" + sid + "&max_per_page=300&page=2&sort=date_unix&order=desc&key=" + KEY);
+    if (page2 && page2.data && page2.data.length) allMatches = allMatches.concat(page2.data);
+  }
+  const data = { ...page1, data: allMatches };
+  LEAGUE_MATCHES_CACHE[sid] = { data, ts: now };
+  return data;
 }
 
 async function fetchTeamStats(sid) {
