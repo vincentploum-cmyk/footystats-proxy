@@ -477,11 +477,14 @@ async function computePreds(tzOffset) {
           result = computeSignals(snap);
         }
 
-        const isComplete = fix.status === "complete";
+        const isComplete = fix.status === "complete" || (fix.status === "incomplete" && isPlayedMatch(fix, nowSecs));
         const fhH = parseInt(fix.ht_goals_team_a || 0, 10);
         const fhA = parseInt(fix.ht_goals_team_b || 0, 10);
         const ftH = parseInt(fix.homeGoalCount   || 0, 10);
         const ftA = parseInt(fix.awayGoalCount   || 0, 10);
+
+        // Freeze CI to actual FH goals once match is completed
+        const frozenCi = isComplete ? +(fhH + fhA).toFixed(2) : null;
 
         preds.push({
           id: fix.id, homeId, awayId,
@@ -499,7 +502,7 @@ async function computePreds(tzOffset) {
           prob25:   result ? result.prob25   : 10.0,
           prob15:   result ? result.prob15   : 31.4,
           eligible: result ? result.eligible : false,
-          ci:       result ? result.ci       : 0,
+          ci:       frozenCi !== null ? frozenCi : (result ? result.ci : 0),
           defCi:    result ? result.defCi    : 0,
           signals:  result ? result.signals  : {},
           hLast5, aLast5, hAvgFH, aAvgFH,
