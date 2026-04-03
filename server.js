@@ -47,6 +47,7 @@ const FIXTURE_CACHE        = {};
 const LEAGUE_MATCHES_CACHE = {};
 const TEAM_STATS_CACHE     = {};
 let   SERVER_MATCH_CACHE   = {};
+const CI_SNAPSHOT_CACHE    = {};  // matchId → { ci, defCi, rank, label, prob25, prob15, eligible, signals, snap }
 let   RATE_LIMITED_UNTIL   = 0;
 
 const TTL_FIXTURES = 30 * 60 * 1000;
@@ -241,7 +242,6 @@ function buildLast5(teamId, cache) {
   if (!entries.length) return [];
   const now = Math.floor(Date.now() / 1000);
   const cutoff = now - LAST5_WINDOW_SECS;
-  const cutoffWide = now - 120 * 24 * 60 * 60; // 120 days fallback
   const seen = new Set();
   const dedup = (m) => {
     const key = (m.date_unix || 0) + "_" + (m.homeID || "") + "_" + (m.awayID || "");
@@ -251,10 +251,10 @@ function buildLast5(teamId, cache) {
   };
   // Try 35-day window first
   let unique = entries.filter(m => (m.date_unix || 0) >= cutoff && dedup(m));
-  // If fewer than 3, widen to 120 days
+  // If fewer than 3, drop the time window entirely — just take the most recent
   if (unique.length < 3) {
     seen.clear();
-    unique = entries.filter(m => (m.date_unix || 0) >= cutoffWide && dedup(m));
+    unique = entries.filter(m => dedup(m));
   }
   return unique
     .sort((a, b) => (b.date_unix || 0) - (a.date_unix || 0))
@@ -478,31 +478,48 @@ async function computePreds(tzOffset) {
           result = computeSignals(snap);
         }
 
-        const isComplete = fix.status === "complete";
+        const isComplete = fix.status === "complete" || (fix.status === "incomplete" && isPlayedMatch(fix, nowSecs));
         const fhH = parseInt(fix.ht_goals_team_a || 0, 10);
         const fhA = parseInt(fix.ht_goals_team_b || 0, 10);
         const ftH = parseInt(fix.homeGoalCount   || 0, 10);
         const ftA = parseInt(fix.awayGoalCount   || 0, 10);
 
+        // Snapshot pre-match prediction values before match completes
+        const matchId = fix.id;
+        if (result && !isComplete && !CI_SNAPSHOT_CACHE[matchId]) {
+          CI_SNAPSHOT_CACHE[matchId] = {
+            ci: result.ci, defCi: result.defCi, rank: result.rank,
+            label: result.label, prob25: result.prob25, prob15: result.prob15,
+            eligible: result.eligible, signals: result.signals,
+            snap: snap ? {
+              fetchedAt: snap.fetchedAt,
+              home: { name: snap.home.name, scored_fh: snap.home.scored_fh, conced_fh: snap.home.conced_fh, t1_pct: snap.home.t1_pct, cn010_avg: snap.home.cn010_avg, sot_avg: snap.home.sot_avg },
+              away: { name: snap.away.name, scored_fh: snap.away.scored_fh, conced_fh: snap.away.conced_fh, t1_pct: snap.away.t1_pct, cn010_avg: snap.away.cn010_avg, sot_avg: snap.away.sot_avg },
+            } : null,
+          };
+        }
+        // Use frozen snapshot if match is complete and we have one
+        const frozen = isComplete ? CI_SNAPSHOT_CACHE[matchId] : null;
+
         preds.push({
-          id: fix.id, homeId, awayId,
+          id: matchId, homeId, awayId,
           league: leagueName, leagueSid: parseInt(sid, 10),
           home: fix.home_name || "", away: fix.away_name || "",
           dt: (fix.date_unix || 0) * 1000,
           matchDate, status: fix.status || "upcoming", missingStats: missing && !result,
-          snap: snap ? {
+          snap: frozen ? frozen.snap : (snap ? {
             fetchedAt: snap.fetchedAt,
             home: { name: snap.home.name, scored_fh: snap.home.scored_fh, conced_fh: snap.home.conced_fh, t1_pct: snap.home.t1_pct, cn010_avg: snap.home.cn010_avg, sot_avg: snap.home.sot_avg },
             away: { name: snap.away.name, scored_fh: snap.away.scored_fh, conced_fh: snap.away.conced_fh, t1_pct: snap.away.t1_pct, cn010_avg: snap.away.cn010_avg, sot_avg: snap.away.sot_avg },
-          } : null,
-          rank:     result ? result.rank     : 0,
-          label:    result ? result.label    : "Low",
-          prob25:   result ? result.prob25   : 10.0,
-          prob15:   result ? result.prob15   : 31.4,
-          eligible: result ? result.eligible : false,
-          ci:       result ? result.ci       : 0,
-          defCi:    result ? result.defCi    : 0,
-          signals:  result ? result.signals  : {},
+          } : null),
+          rank:     frozen ? frozen.rank     : (result ? result.rank     : 0),
+          label:    frozen ? frozen.label    : (result ? result.label    : "Low"),
+          prob25:   frozen ? frozen.prob25   : (result ? result.prob25   : 10.0),
+          prob15:   frozen ? frozen.prob15   : (result ? result.prob15   : 31.4),
+          eligible: frozen ? frozen.eligible : (result ? result.eligible : false),
+          ci:       frozen ? frozen.ci       : (result ? result.ci       : 0),
+          defCi:    frozen ? frozen.defCi    : (result ? result.defCi    : 0),
+          signals:  frozen ? frozen.signals  : (result ? result.signals  : {}),
           hLast5, aLast5, hAvgFH, aAvgFH,
           matchResult: isComplete ? { fhH, fhA, ftH, ftA, hit25: (fhH+fhA)>2, hit15: (fhH+fhA)>1 } : null,
         });
