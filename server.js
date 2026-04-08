@@ -898,16 +898,32 @@ body{background:#f3f4f6;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',
   J += "}";
 
   // ─── renderBestBets ─────────────────────────────────────────────────────────
-  J += "function buildParlays(matches,probKey,n){";
-  J += "  var sorted=matches.slice().sort(function(a,b){return b[probKey]-a[probKey];});";
-  J += "  return sorted.slice(0,n);";
-  J += "}";
-
   J += "function parlayProb(legs,probKey){";
   J += "  var p=1;legs.forEach(function(l){p*=l[probKey]/100;});";
   J += "  return +(p*100).toFixed(1);";
   J += "}";
 
+  // Render a compact match row for leaderboards
+  J += "function renderBBRow(m,probKey,goalLabel,idx){";
+  J += "  var rc=rankCls(m.rank);";
+  J += "  var dt=m.dt?new Date(m.dt).toLocaleDateString('en-GB',{weekday:'short',day:'2-digit',month:'short'}):'';";
+  J += "  var sigs='';if(m.signals){['A','B','C','D'].forEach(function(k){if(m.signals[k]&&m.signals[k].met)sigs+=k+' ';});}";
+  J += "  var h='<div style=\"display:flex;align-items:center;gap:10px;padding:10px 12px;border-bottom:1px solid #f3f4f6\">';";
+  J += "  h+='<div style=\"font-size:18px;font-weight:800;color:#d1d5db;width:24px;text-align:center\">'+(idx+1)+'</div>';";
+  J += "  h+='<div style=\"flex:1;min-width:0\">';";
+  J += "  h+='<div style=\"font-weight:600;font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis\">'+esc(m.home)+' vs '+esc(m.away)+'</div>';";
+  J += "  h+='<div style=\"font-size:10px;color:#9ca3af\">'+esc(m.league)+' \u00b7 '+esc(dt)+'</div>';";
+  J += "  h+='</div>';";
+  J += "  h+='<div style=\"display:flex;gap:4px;align-items:center;flex-shrink:0\">';";
+  J += "  if(sigs)h+='<span style=\"background:#fef9c3;color:#92400e;padding:1px 6px;border-radius:10px;font-size:9px;font-weight:600\">'+sigs.trim()+'</span>';";
+  J += "  h+='<span style=\"background:#eff6ff;color:#1d4ed8;padding:1px 6px;border-radius:10px;font-size:9px\">CI '+m.ci+'</span>';";
+  J += "  h+='<span class=\"rn '+rc+'\" style=\"font-size:12px;padding:2px 6px\">'+m.rank+'/4</span>';";
+  J += "  h+='<span style=\"background:#1b5e20;color:#fff;padding:2px 8px;border-radius:12px;font-size:11px;font-weight:700\">'+m[probKey]+'%</span>';";
+  J += "  h+='</div></div>';";
+  J += "  return h;";
+  J += "}";
+
+  // Render a parlay card
   J += "function renderParlayCard(title,legs,probKey,goalLabel){";
   J += "  var combo=parlayProb(legs,probKey);";
   J += "  var h='<div style=\"background:#fff;border:1px solid #e5e7eb;border-radius:12px;padding:16px;margin-bottom:16px\">';";
@@ -915,45 +931,87 @@ body{background:#f3f4f6;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',
   J += "  h+='<div style=\"font-weight:700;font-size:15px;color:#111827\">'+esc(title)+'</div>';";
   J += "  h+='<div style=\"background:#1b5e20;color:#fff;padding:4px 12px;border-radius:20px;font-size:12px;font-weight:700\">'+combo+'% combo</div>';";
   J += "  h+='</div>';";
-  J += "  legs.forEach(function(m){";
-  J += "    var dt=m.dt?new Date(m.dt).toLocaleDateString('en-GB',{weekday:'short',day:'2-digit',month:'short'}):'';";
-  J += "    var rc=rankCls(m.rank);";
-  J += "    h+='<div style=\"border:1px solid #f3f4f6;border-radius:8px;padding:10px 12px;margin-bottom:8px;background:#fafafa\">';";
-  J += "    h+='<div style=\"display:flex;justify-content:space-between;align-items:center;margin-bottom:4px\">';";
-  J += "    h+='<div style=\"font-weight:600;font-size:13px\">'+esc(m.home)+' vs '+esc(m.away)+'</div>';";
-  J += "    h+='<span class=\"rn '+rc+'\" style=\"font-size:14px;padding:2px 8px\">'+m.rank+'/4</span>';";
-  J += "    h+='</div>';";
-  J += "    h+='<div style=\"font-size:11px;color:#6b7280;margin-bottom:6px\">'+esc(m.league)+' \u00b7 '+esc(dt)+'</div>';";
-  J += "    h+='<div style=\"display:flex;gap:8px;flex-wrap:wrap;font-size:11px\">';";
-  J += "    h+='<span style=\"background:#f0fdf4;color:#15803d;padding:2px 8px;border-radius:12px;font-weight:600\">FH '+esc(goalLabel)+': '+m[probKey]+'%</span>';";
-  J += "    h+='<span style=\"background:#eff6ff;color:#1d4ed8;padding:2px 8px;border-radius:12px\">CI: '+m.ci+'</span>';";
-  J += "    var sigs='';if(m.signals){['A','B','C','D'].forEach(function(k){if(m.signals[k]&&m.signals[k].met)sigs+=k+' ';});}";
-  J += "    if(sigs)h+='<span style=\"background:#fef9c3;color:#92400e;padding:2px 8px;border-radius:12px\">Signals: '+sigs.trim()+'</span>';";
-  J += "    h+='</div></div>';";
-  J += "  });";
+  J += "  legs.forEach(function(m,i){h+=renderBBRow(m,probKey,goalLabel,i);});";
   J += "  h+='</div>';";
+  J += "  return h;";
+  J += "}";
+
+  // Render a section card (top 7, value picks, best per day)
+  J += "function renderBBSection(title,color,borderColor,matches,probKey,goalLabel){";
+  J += "  var h='<div style=\"margin-bottom:24px\">';";
+  J += "  h+='<div style=\"font-size:16px;font-weight:700;color:'+color+';margin-bottom:10px;padding-bottom:6px;border-bottom:2px solid '+borderColor+'\">'+title+'</div>';";
+  J += "  h+='<div style=\"background:#fff;border:1px solid #e5e7eb;border-radius:12px;overflow:hidden\">';";
+  J += "  matches.forEach(function(m,i){h+=renderBBRow(m,probKey,goalLabel,i);});";
+  J += "  h+='</div></div>';";
   J += "  return h;";
   J += "}";
 
   J += "function renderBestBets(){";
   J += "  var main=document.getElementById('mainView');";
-  J += "  var upcoming=ALL.filter(function(p){return p.status!=='complete'&&p.rank>=1;});";
+  J += "  var upcoming=ALL.filter(function(p){return p.status!=='complete'&&!p.missingStats;});";
   J += "  if(!upcoming.length){main.innerHTML='<p style=\"color:#6b7280;text-align:center;padding:40px\">No qualifying matches found.</p>';return;}";
   J += "  var h='';";
-  // Over 1.5 FH section
-  J += "  var s15=upcoming.slice().sort(function(a,b){return b.prob15-a.prob15;});";
-  J += "  h+='<div style=\"margin-bottom:24px\"><div style=\"font-size:18px;font-weight:700;color:#1d4ed8;margin-bottom:12px;padding-bottom:8px;border-bottom:2px solid #bfdbfe\">\u26bd FH Over 1.5 Goals \u2014 Parlays</div>';";
-  J += "  if(s15.length>=2)h+=renderParlayCard('2-Leg Parlay (Over 1.5)',s15.slice(0,2),'prob15','> 1.5');";
-  J += "  if(s15.length>=3)h+=renderParlayCard('3-Leg Parlay (Over 1.5)',s15.slice(0,3),'prob15','> 1.5');";
-  J += "  if(s15.length>=4)h+=renderParlayCard('4-Leg Parlay (Over 1.5)',s15.slice(0,4),'prob15','> 1.5');";
+
+  // Top 7 Over 1.5
+  J += "  var s15=upcoming.slice().sort(function(a,b){return b.prob15-a.prob15||b.ci-a.ci;});";
+  J += "  h+=renderBBSection('\u26bd Top 7 \u2014 FH Over 1.5 Goals','#1d4ed8','#bfdbfe',s15.slice(0,7),'prob15','> 1.5');";
+
+  // Top 7 Over 2.5
+  J += "  var s25=upcoming.slice().sort(function(a,b){return b.prob25-a.prob25||b.ci-a.ci;});";
+  J += "  h+=renderBBSection('\ud83d\udd25 Top 7 \u2014 FH Over 2.5 Goals','#15803d','#a5d6a7',s25.slice(0,7),'prob25','> 2.5');";
+
+  // Top 5 Value Picks — high CI but low rank (close to more signals firing)
+  J += "  var value=upcoming.filter(function(p){return p.rank>=1&&p.rank<=2&&p.ci>=2.8;}).sort(function(a,b){return b.ci-a.ci;});";
+  J += "  if(value.length){";
+  J += "    h+='<div style=\"margin-bottom:24px\">';";
+  J += "    h+='<div style=\"font-size:16px;font-weight:700;color:#92400e;margin-bottom:10px;padding-bottom:6px;border-bottom:2px solid #fde68a\">\ud83d\udca1 Top 5 Value Picks \u2014 High CI, Signals Developing</div>';";
+  J += "    h+='<div style=\"background:#fffbeb;border:1px solid #fde68a;border-radius:8px;padding:8px 12px;margin-bottom:10px;font-size:11px;color:#92400e\">These matches have high Combined Intensity (CI \u2265 2.8) but only 1\u20132 signals fired. The underlying stats suggest goal potential that the full signal set hasn\\'t captured yet.</div>';";
+  J += "    h+='<div style=\"background:#fff;border:1px solid #e5e7eb;border-radius:12px;overflow:hidden\">';";
+  J += "    value.slice(0,5).forEach(function(m,i){h+=renderBBRow(m,'prob15','value',i);});";
+  J += "    h+='</div></div>';";
+  J += "  }";
+
+  // Best match per day
+  J += "  h+='<div style=\"margin-bottom:24px\">';";
+  J += "  h+='<div style=\"font-size:16px;font-weight:700;color:#7c3aed;margin-bottom:10px;padding-bottom:6px;border-bottom:2px solid #c4b5fd\">\ud83c\udfc6 Best Match Per Day</div>';";
+  J += "  DATES.forEach(function(d,di){";
+  J += "    var dayMatches=upcoming.filter(function(p){return p.matchDate===d;}).sort(function(a,b){return b.rank-a.rank||b.ci-a.ci;});";
+  J += "    if(!dayMatches.length)return;";
+  J += "    var best=dayMatches[0];var rc=rankCls(best.rank);";
+  J += "    var dt=best.dt?new Date(best.dt).toLocaleDateString('en-GB',{weekday:'short',day:'2-digit',month:'short'}):'';";
+  J += "    var sigs='';if(best.signals){['A','B','C','D'].forEach(function(k){if(best.signals[k]&&best.signals[k].met)sigs+=k+' ';});}";
+  J += "    h+='<div style=\"background:#fff;border:1px solid #e5e7eb;border-radius:12px;padding:12px 14px;margin-bottom:10px\">';";
+  J += "    h+='<div style=\"font-size:11px;color:#7c3aed;font-weight:700;text-transform:uppercase;letter-spacing:.5px;margin-bottom:6px\">'+(DAY_LABELS[di]||d)+' \u2014 '+esc(dt)+'</div>';";
+  J += "    h+='<div style=\"display:flex;justify-content:space-between;align-items:center;margin-bottom:4px\">';";
+  J += "    h+='<div style=\"font-weight:700;font-size:14px\">'+esc(best.home)+' vs '+esc(best.away)+'</div>';";
+  J += "    h+='<span class=\"rn '+rc+'\" style=\"font-size:14px;padding:2px 8px\">'+best.rank+'/4</span>';";
+  J += "    h+='</div>';";
+  J += "    h+='<div style=\"font-size:11px;color:#6b7280;margin-bottom:6px\">'+esc(best.league)+'</div>';";
+  J += "    h+='<div style=\"display:flex;gap:6px;flex-wrap:wrap;font-size:11px\">';";
+  J += "    h+='<span style=\"background:#eff6ff;color:#1d4ed8;padding:2px 8px;border-radius:12px\">CI: '+best.ci+'</span>';";
+  J += "    h+='<span style=\"background:#f0fdf4;color:#15803d;padding:2px 8px;border-radius:12px\">FH>1.5: '+best.prob15+'%</span>';";
+  J += "    h+='<span style=\"background:#f0fdf4;color:#15803d;padding:2px 8px;border-radius:12px\">FH>2.5: '+best.prob25+'%</span>';";
+  J += "    if(sigs)h+='<span style=\"background:#fef9c3;color:#92400e;padding:2px 8px;border-radius:12px\">Signals: '+sigs.trim()+'</span>';";
+  J += "    h+='</div></div>';";
+  J += "  });";
   J += "  h+='</div>';";
-  // Over 2.5 FH section
-  J += "  var s25=upcoming.slice().sort(function(a,b){return b.prob25-a.prob25;});";
-  J += "  h+='<div><div style=\"font-size:18px;font-weight:700;color:#15803d;margin-bottom:12px;padding-bottom:8px;border-bottom:2px solid #a5d6a7\">\ud83d\udd25 FH Over 2.5 Goals \u2014 Parlays</div>';";
-  J += "  if(s25.length>=2)h+=renderParlayCard('2-Leg Parlay (Over 2.5)',s25.slice(0,2),'prob25','> 2.5');";
-  J += "  if(s25.length>=3)h+=renderParlayCard('3-Leg Parlay (Over 2.5)',s25.slice(0,3),'prob25','> 2.5');";
-  J += "  if(s25.length>=4)h+=renderParlayCard('4-Leg Parlay (Over 2.5)',s25.slice(0,4),'prob25','> 2.5');";
+
+  // Parlays — Over 1.5
+  J += "  var p15=upcoming.filter(function(p){return p.rank>=1;}).sort(function(a,b){return b.prob15-a.prob15;});";
+  J += "  h+='<div style=\"margin-bottom:24px\"><div style=\"font-size:16px;font-weight:700;color:#1d4ed8;margin-bottom:10px;padding-bottom:6px;border-bottom:2px solid #bfdbfe\">\u26bd Parlays \u2014 FH Over 1.5 Goals</div>';";
+  J += "  if(p15.length>=2)h+=renderParlayCard('2-Leg Parlay',p15.slice(0,2),'prob15','> 1.5');";
+  J += "  if(p15.length>=3)h+=renderParlayCard('3-Leg Parlay',p15.slice(0,3),'prob15','> 1.5');";
+  J += "  if(p15.length>=4)h+=renderParlayCard('4-Leg Parlay',p15.slice(0,4),'prob15','> 1.5');";
   J += "  h+='</div>';";
+
+  // Parlays — Over 2.5
+  J += "  var p25=upcoming.filter(function(p){return p.rank>=1;}).sort(function(a,b){return b.prob25-a.prob25;});";
+  J += "  h+='<div><div style=\"font-size:16px;font-weight:700;color:#15803d;margin-bottom:10px;padding-bottom:6px;border-bottom:2px solid #a5d6a7\">\ud83d\udd25 Parlays \u2014 FH Over 2.5 Goals</div>';";
+  J += "  if(p25.length>=2)h+=renderParlayCard('2-Leg Parlay',p25.slice(0,2),'prob25','> 2.5');";
+  J += "  if(p25.length>=3)h+=renderParlayCard('3-Leg Parlay',p25.slice(0,3),'prob25','> 2.5');";
+  J += "  if(p25.length>=4)h+=renderParlayCard('4-Leg Parlay',p25.slice(0,4),'prob25','> 2.5');";
+  J += "  h+='</div>';";
+
   J += "  main.innerHTML=h;";
   J += "}";
 
