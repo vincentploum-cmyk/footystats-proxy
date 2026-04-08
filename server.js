@@ -672,6 +672,7 @@ body{background:#f3f4f6;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',
   J += "var TZ=" + JSON.stringify(tzOffset) + ";";
   J += "var DAY_LABELS=['Today','Tomorrow','Day 3','Day 4','Day 5'];";
   J += "var activeDate=DATES[0]||null;";
+  J += "var activeView='days';";
   J += "var openLeague=null;";
 
   J += "function esc(s){return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/\"/g,'&quot;');}";
@@ -687,14 +688,20 @@ body{background:#f3f4f6;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',
   J += "  for(var i=0;i<DATES.length;i++){";
   J += "    var d=DATES[i];";
   J += "    var cnt=ALL.filter(function(p){return p.matchDate===d;}).length;";
-  J += "    h+='<button class=\"tab'+(d===activeDate?' active':'')+'\" data-di=\"'+i+'\">'+esc(DAY_LABELS[i]||d)+' <span style=\"font-size:10px;opacity:.7\">('+cnt+')</span></button>';";
+  J += "    h+='<button class=\"tab'+(activeView==='days'&&d===activeDate?' active':'')+'\" data-di=\"'+i+'\">'+esc(DAY_LABELS[i]||d)+' <span style=\"font-size:10px;opacity:.7\">('+cnt+')</span></button>';";
   J += "  }";
+  J += "  h+='<button class=\"tab'+(activeView==='bestbets'?' active':'')+'\" data-view=\"bestbets\" style=\"background:'+(activeView==='bestbets'?'#ff6b35':'#1b5e20')+';color:#fff;font-weight:700\">\ud83c\udfaf Best Bets</button>';";
   J += "  el.innerHTML=h;";
   J += "  el.querySelectorAll('[data-di]').forEach(function(btn){btn.addEventListener('click',function(){";
   J += "    var i=Number(btn.getAttribute('data-di'));";
-  J += "    activeDate=DATES[i];openLeague=null;renderTabs();renderLeagueList();";
+  J += "    activeView='days';activeDate=DATES[i];openLeague=null;renderTabs();renderLeagueList();";
   J += "    document.getElementById('hdrTitle').textContent=fmtDate(new Date(DATES[i]+'T12:00:00'));";
   J += "  });});";
+  J += "  var bbBtn=el.querySelector('[data-view=\"bestbets\"]');";
+  J += "  if(bbBtn)bbBtn.addEventListener('click',function(){";
+  J += "    activeView='bestbets';activeDate=null;renderTabs();renderBestBets();";
+  J += "    document.getElementById('hdrTitle').textContent='Best Bets \u2014 Parlays';";
+  J += "  });";
   J += "}";
 
   // renderLeagueList — accordion: only one league open at a time
@@ -888,6 +895,66 @@ body{background:#f3f4f6;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',
   J += "      +'</div>'";
   J += "    :'')";
   J += "  +'</div></div>';";
+  J += "}";
+
+  // ─── renderBestBets ─────────────────────────────────────────────────────────
+  J += "function buildParlays(matches,probKey,n){";
+  J += "  var sorted=matches.slice().sort(function(a,b){return b[probKey]-a[probKey];});";
+  J += "  return sorted.slice(0,n);";
+  J += "}";
+
+  J += "function parlayProb(legs,probKey){";
+  J += "  var p=1;legs.forEach(function(l){p*=l[probKey]/100;});";
+  J += "  return +(p*100).toFixed(1);";
+  J += "}";
+
+  J += "function renderParlayCard(title,legs,probKey,goalLabel){";
+  J += "  var combo=parlayProb(legs,probKey);";
+  J += "  var h='<div style=\"background:#fff;border:1px solid #e5e7eb;border-radius:12px;padding:16px;margin-bottom:16px\">';";
+  J += "  h+='<div style=\"display:flex;justify-content:space-between;align-items:center;margin-bottom:12px\">';";
+  J += "  h+='<div style=\"font-weight:700;font-size:15px;color:#111827\">'+esc(title)+'</div>';";
+  J += "  h+='<div style=\"background:#1b5e20;color:#fff;padding:4px 12px;border-radius:20px;font-size:12px;font-weight:700\">'+combo+'% combo</div>';";
+  J += "  h+='</div>';";
+  J += "  legs.forEach(function(m){";
+  J += "    var dt=m.dt?new Date(m.dt).toLocaleDateString('en-GB',{weekday:'short',day:'2-digit',month:'short'}):'';";
+  J += "    var rc=rankCls(m.rank);";
+  J += "    h+='<div style=\"border:1px solid #f3f4f6;border-radius:8px;padding:10px 12px;margin-bottom:8px;background:#fafafa\">';";
+  J += "    h+='<div style=\"display:flex;justify-content:space-between;align-items:center;margin-bottom:4px\">';";
+  J += "    h+='<div style=\"font-weight:600;font-size:13px\">'+esc(m.home)+' vs '+esc(m.away)+'</div>';";
+  J += "    h+='<span class=\"rn '+rc+'\" style=\"font-size:14px;padding:2px 8px\">'+m.rank+'/4</span>';";
+  J += "    h+='</div>';";
+  J += "    h+='<div style=\"font-size:11px;color:#6b7280;margin-bottom:6px\">'+esc(m.league)+' \u00b7 '+esc(dt)+'</div>';";
+  J += "    h+='<div style=\"display:flex;gap:8px;flex-wrap:wrap;font-size:11px\">';";
+  J += "    h+='<span style=\"background:#f0fdf4;color:#15803d;padding:2px 8px;border-radius:12px;font-weight:600\">FH '+esc(goalLabel)+': '+m[probKey]+'%</span>';";
+  J += "    h+='<span style=\"background:#eff6ff;color:#1d4ed8;padding:2px 8px;border-radius:12px\">CI: '+m.ci+'</span>';";
+  J += "    var sigs='';if(m.signals){['A','B','C','D'].forEach(function(k){if(m.signals[k]&&m.signals[k].met)sigs+=k+' ';});}";
+  J += "    if(sigs)h+='<span style=\"background:#fef9c3;color:#92400e;padding:2px 8px;border-radius:12px\">Signals: '+sigs.trim()+'</span>';";
+  J += "    h+='</div></div>';";
+  J += "  });";
+  J += "  h+='</div>';";
+  J += "  return h;";
+  J += "}";
+
+  J += "function renderBestBets(){";
+  J += "  var main=document.getElementById('mainView');";
+  J += "  var upcoming=ALL.filter(function(p){return p.status!=='complete'&&p.rank>=1;});";
+  J += "  if(!upcoming.length){main.innerHTML='<p style=\"color:#6b7280;text-align:center;padding:40px\">No qualifying matches found.</p>';return;}";
+  J += "  var h='';";
+  // Over 1.5 FH section
+  J += "  var s15=upcoming.slice().sort(function(a,b){return b.prob15-a.prob15;});";
+  J += "  h+='<div style=\"margin-bottom:24px\"><div style=\"font-size:18px;font-weight:700;color:#1d4ed8;margin-bottom:12px;padding-bottom:8px;border-bottom:2px solid #bfdbfe\">\u26bd FH Over 1.5 Goals \u2014 Parlays</div>';";
+  J += "  if(s15.length>=2)h+=renderParlayCard('2-Leg Parlay (Over 1.5)',s15.slice(0,2),'prob15','> 1.5');";
+  J += "  if(s15.length>=3)h+=renderParlayCard('3-Leg Parlay (Over 1.5)',s15.slice(0,3),'prob15','> 1.5');";
+  J += "  if(s15.length>=4)h+=renderParlayCard('4-Leg Parlay (Over 1.5)',s15.slice(0,4),'prob15','> 1.5');";
+  J += "  h+='</div>';";
+  // Over 2.5 FH section
+  J += "  var s25=upcoming.slice().sort(function(a,b){return b.prob25-a.prob25;});";
+  J += "  h+='<div><div style=\"font-size:18px;font-weight:700;color:#15803d;margin-bottom:12px;padding-bottom:8px;border-bottom:2px solid #a5d6a7\">\ud83d\udd25 FH Over 2.5 Goals \u2014 Parlays</div>';";
+  J += "  if(s25.length>=2)h+=renderParlayCard('2-Leg Parlay (Over 2.5)',s25.slice(0,2),'prob25','> 2.5');";
+  J += "  if(s25.length>=3)h+=renderParlayCard('3-Leg Parlay (Over 2.5)',s25.slice(0,3),'prob25','> 2.5');";
+  J += "  if(s25.length>=4)h+=renderParlayCard('4-Leg Parlay (Over 2.5)',s25.slice(0,4),'prob25','> 2.5');";
+  J += "  h+='</div>';";
+  J += "  main.innerHTML=h;";
   J += "}";
 
   J += "if(DATES.length)document.getElementById('hdrTitle').textContent=fmtDate(new Date(DATES[0]+'T12:00:00'));";
