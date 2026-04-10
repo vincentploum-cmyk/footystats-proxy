@@ -948,7 +948,7 @@ body{background:#f3f4f6;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',
 
   J += "function renderBestBets(){";
   J += "  var main=document.getElementById('mainView');";
-  J += "  var bbDates=DATES.slice(0,3);";
+  J += "  var bbDates=DATES.slice(0,4);";
   J += "  var upcoming=ALL.filter(function(p){return p.status!=='complete'&&!p.missingStats&&bbDates.indexOf(p.matchDate)>=0;});";
   J += "  if(!upcoming.length){main.innerHTML='<p style=\"color:#6b7280;text-align:center;padding:40px\">No qualifying matches found.</p>';return;}";
   J += "  var h='';";
