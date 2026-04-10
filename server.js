@@ -948,8 +948,8 @@ body{background:#f3f4f6;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',
 
   J += "function renderBestBets(){";
   J += "  var main=document.getElementById('mainView');";
-  J += "  var bbDates=DATES.slice(0,4);";
-  J += "  var upcoming=ALL.filter(function(p){return p.status!=='complete'&&!p.missingStats&&bbDates.indexOf(p.matchDate)>=0;});";
+  J += "  var now=Date.now();";
+  J += "  var upcoming=ALL.filter(function(p){return p.status!=='complete'&&!p.missingStats&&p.dt>now;}).slice();";
   J += "  if(!upcoming.length){main.innerHTML='<p style=\"color:#6b7280;text-align:center;padding:40px\">No qualifying matches found.</p>';return;}";
   J += "  var h='';";
 
@@ -975,7 +975,7 @@ body{background:#f3f4f6;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',
   // Best match per day
   J += "  h+='<div style=\"margin-bottom:24px\">';";
   J += "  h+='<div style=\"font-size:16px;font-weight:700;color:#7c3aed;margin-bottom:10px;padding-bottom:6px;border-bottom:2px solid #c4b5fd\">\ud83c\udfc6 Best Match Per Day</div>';";
-  J += "  bbDates.forEach(function(d,di){";
+  J += "  DATES.slice(0,4).forEach(function(d,di){";
   J += "    var dayMatches=upcoming.filter(function(p){return p.matchDate===d;}).sort(function(a,b){return b.rank-a.rank||b.ci-a.ci;});";
   J += "    if(!dayMatches.length)return;";
   J += "    var best=dayMatches[0];var rc=rankCls(best.rank);";
