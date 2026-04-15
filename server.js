@@ -732,7 +732,7 @@ body{background:#f3f4f6;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',
   J += "  ll.forEach(function(e){";
   J += "    var lg=e[0],ms=e[1];";
   J += "    if(openLeague!==lg)return;";
-  J += "    var sorted=ms.slice().sort(function(a,b){return (b.ci-a.ci)||((a.dt||0)-(b.dt||0));});";
+  J += "    var sorted=ms.slice().sort(function(a,b){return (b.rank-a.rank)||(b.ci-a.ci)||((a.dt||0)-(b.dt||0));});";
   J += "    sections+='<div class=\"league-section\"><div class=\"league-section-hdr\">'+esc(lg)+'</div>';";
   J += "    sorted.forEach(function(m){sections+=renderCard(m);});";
   J += "    sections+='</div>';";
