@@ -161,8 +161,8 @@ function unixToLocalDate(unix, tzOffset) {
   return y + "-" + m + "-" + day;
 }
 
-const PROB25_BY_RANK = { 4: 87.5, 3: 62.0, 2: 40.3, 1: 29.6, 0: 10.0 };
-const PROB15_BY_RANK = { 4: 100.0, 3: 75.4, 2: 66.8, 1: 61.1, 0: 31.4 };
+const PROB25_BY_RANK = { 4: 87.5, 3: 60.6, 2: 36.6, 1: 23.1, 0: 11.5 };
+const PROB15_BY_RANK = { 4: 96.9, 3: 75.0, 2: 64.2, 1: 56.5, 0: 33.0 };
 const RANK_LABELS = { 4: "Fire", 3: "Prime", 2: "Watch", 1: "Signal", 0: "Low" };
 
 function computeSignals(snap) {
@@ -173,7 +173,8 @@ function computeSignals(snap) {
   const sigB = h.t1_pct >= 25 && a.t1_pct >= 25;
   const sigC = defCi >= 2.25;
   const sigD = a.scored_fh >= 1.25;
-  const rank = [sigA, sigB, sigC, sigD].filter(Boolean).length;
+  const rawRank = [sigA, sigB, sigC, sigD].filter(Boolean).length;
+  const rank = (rawRank >= 3 && !sigC) ? 2 : rawRank;
   return {
     rank, label: RANK_LABELS[rank] || "Low",
     prob25: PROB25_BY_RANK[rank] ?? 10.0,
@@ -1055,7 +1056,7 @@ body{background:#f3f4f6;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',
   <div style="background:#fffbeb;border:1px solid #fde68a;border-radius:8px;padding:10px 14px;margin-bottom:14px;font-size:12px;color:#92400e;line-height:1.6">
     <strong>How it works:</strong> 4 stats-only signals (A&ndash;D), each worth 1 point. Rank = signals fired.
     A: CI&ge;3.2 &middot; B: Both teams FH&gt;2.5 history&ge;25% &middot; C: Defence CI&ge;2.25 &middot; D: Away FH scored&ge;1.25.
-    Backtested on 22,967 matches &middot; base rate 12.8% &middot; Rank 4 = 87.5% FH&gt;2.5 &middot; Rank 3 = 62.0% FH&gt;2.5.
+    Backtested on 22,967 matches &middot; base rate 12.8% &middot; Rank 4 = 87.5% FH&gt;2.5 &middot; Rank 3 = 60.6% FH&gt;2.5 (sig C required for rank 3+).
   </div>
   <div id="mainView"></div>
 </div>
