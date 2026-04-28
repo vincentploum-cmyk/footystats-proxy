@@ -10,8 +10,59 @@ app.use(cors());
 const KEY  = process.env.FOOTY_API_KEY;
 const BASE = "https://api.football-data-api.com";
 const PORT = process.env.PORT || 3001;
+const SUPABASE_URL = process.env.SUPABASE_URL || "";
+const SUPABASE_KEY = process.env.SUPABASE_ANON_KEY || "";
 
 if (!KEY) { console.error("Missing FOOTY_API_KEY"); process.exit(1); }
+
+// ─── SUPABASE HELPERS ─────────────────────────────────────────────────────────
+async function supaInsert(table, rows) {
+  if (!SUPABASE_URL || !SUPABASE_KEY || !rows.length) return;
+  try {
+    const res = await fetch(SUPABASE_URL + "/rest/v1/" + table, {
+      method: "POST",
+      headers: {
+        "apikey": SUPABASE_KEY,
+        "Authorization": "Bearer " + SUPABASE_KEY,
+        "Content-Type": "application/json",
+        "Prefer": "resolution=merge-duplicates",
+      },
+      body: JSON.stringify(rows),
+    });
+    if (!res.ok) console.warn("Supabase " + table + " insert: " + res.status);
+  } catch (e) { console.warn("Supabase " + table + " error: " + e.message); }
+}
+
+async function savePredictions(preds) {
+  const upcoming = preds.filter(p => p.status !== "complete" && !p.missingStats && p.snap);
+  if (!upcoming.length) return;
+  const rows = upcoming.map(p => ({
+    id: p.id, home_id: p.homeId, away_id: p.awayId,
+    home: p.home, away: p.away, league: p.league, league_sid: p.leagueSid,
+    match_date: p.matchDate, kickoff: p.dt ? new Date(p.dt).toISOString() : null,
+    ci: p.ci, def_ci: p.defCi, rank: p.rank, label: p.label,
+    prob15: p.prob15, prob25: p.prob25,
+    sig_a: p.signals?.A?.met || false, sig_b: p.signals?.B?.met || false,
+    sig_c: p.signals?.C?.met || false, sig_d: p.signals?.D?.met || false,
+    h_scored_fh: p.snap?.home?.scored_fh, h_conced_fh: p.snap?.home?.conced_fh,
+    h_t1_pct: p.snap?.home?.t1_pct, a_scored_fh: p.snap?.away?.scored_fh,
+    a_conced_fh: p.snap?.away?.conced_fh, a_t1_pct: p.snap?.away?.t1_pct,
+  }));
+  await supaInsert("predictions", rows);
+}
+
+async function saveOutcomes(preds) {
+  const completed = preds.filter(p => p.matchResult);
+  if (!completed.length) return;
+  const rows = completed.map(p => ({
+    id: p.id,
+    fh_home: p.matchResult.fhH, fh_away: p.matchResult.fhA,
+    ft_home: p.matchResult.ftH, ft_away: p.matchResult.ftA,
+    fh_total: p.matchResult.fhH + p.matchResult.fhA,
+    hit_15: p.matchResult.hit15, hit_25: p.matchResult.hit25,
+  }));
+  await supaInsert("outcomes", rows);
+}
 
 let LEAGUE_NAMES = {};
 let LEAGUE_LIST_LOADING = false;
@@ -349,6 +400,44 @@ app.get("/api/*", async (req, res) => {
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
+// ─── AUDIT ENDPOINT — model performance from Supabase ─────────────────────────
+app.get("/audit", async (req, res) => {
+  if (!SUPABASE_URL || !SUPABASE_KEY) return res.json({ error: "Supabase not configured" });
+  try {
+    const r = await fetch(
+      SUPABASE_URL + "/rest/v1/predictions?select=id,home,away,league,match_date,rank,label,ci,prob15,prob25,sig_a,sig_b,sig_c,sig_d,outcomes(fh_home,fh_away,ft_home,ft_away,fh_total,hit_15,hit_25)",
+      { headers: { "apikey": SUPABASE_KEY, "Authorization": "Bearer " + SUPABASE_KEY } }
+    );
+    const data = await r.json();
+    const withOutcome = data.filter(d => d.outcomes && d.outcomes.length);
+    const total = withOutcome.length;
+    if (!total) return res.json({ message: "No completed matches yet", predictions: data.length });
+
+    const byRank = {};
+    for (const m of withOutcome) {
+      const o = m.outcomes[0];
+      const rk = m.rank;
+      if (!byRank[rk]) byRank[rk] = { n: 0, hit15: 0, hit25: 0, matches: [] };
+      byRank[rk].n++;
+      if (o.hit_15) byRank[rk].hit15++;
+      if (o.hit_25) byRank[rk].hit25++;
+      byRank[rk].matches.push({
+        home: m.home, away: m.away, league: m.league, date: m.match_date,
+        rank: rk, ci: m.ci, fh: o.fh_home + "-" + o.fh_away, ft: o.ft_home + "-" + o.ft_away,
+        hit15: o.hit_15, hit25: o.hit_25,
+      });
+    }
+
+    const summary = Object.entries(byRank).sort((a,b) => b[0]-a[0]).map(([rk, d]) => ({
+      rank: +rk, n: d.n,
+      hit15: d.hit15, pct15: +(d.hit15/d.n*100).toFixed(1),
+      hit25: d.hit25, pct25: +(d.hit25/d.n*100).toFixed(1),
+    }));
+
+    res.json({ total, summary, byRank });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
 
 // ─── SHARED PREDS COMPUTATION ────────────────────────────────────────────────
 async function computePreds(tzOffset) {
@@ -546,6 +635,8 @@ app.get("/preds", async (req, res) => {
     const tzOffset = parseInt(req.query.tz || "0", 10);
     const { preds } = await computePreds(tzOffset);
     res.json({ ok: true, preds, rateLimited: Date.now() < RATE_LIMITED_UNTIL });
+    savePredictions(preds).catch(e => console.warn("savePredictions:", e.message));
+    saveOutcomes(preds).catch(e => console.warn("saveOutcomes:", e.message));
   } catch(e) {
     console.error(e);
     res.status(500).json({ ok: false, error: e.message });
