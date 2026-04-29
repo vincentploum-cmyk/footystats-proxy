@@ -1234,9 +1234,13 @@ body{background:#f3f4f6;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',
   J += "function lgLabel(r){return r===4?'Fire \ud83d\udd25':r===3?'Prime \u26a1':r===2?'Watch \ud83d\udc40':r===1?'Signal \ud83d\udce1':'Low';}";
   J += "function fLetter(r){return r==='W'?'<span class=\"fw\">W</span>':r==='L'?'<span class=\"fl\">L</span>':'<span class=\"fd\">D</span>';}";
   J += "function mkChip(lbl,val,thr,state){var cls='chip'+(state?' '+state:'');return '<div class=\"'+cls+'\">'+'<div class=\"chip-lbl\">'+esc(lbl)+'</div><div class=\"chip-val\">'+esc(val)+'</div><div class=\"chip-thr\">'+esc(thr)+'</div></div>';}";
-  // betPill: green "BET" badge when signal B (both teams' FH>2.5 history) fires.
-  // Empirically: combos with B fire hit FH>2.5 at 52-87%, vs <=29% without B.
-  J += "function betPill(sigs){return (sigs&&sigs.B&&sigs.B.met)?'<div style=\"display:inline-block;background:#15803d;color:#fff;font-size:11px;font-weight:700;padding:3px 9px;border-radius:6px;letter-spacing:.5px;margin-right:6px\">🎯 BET</div>':'';}";
+  // betPill: empirical bet markers from 22k-match analysis.
+  //   🔥  = combo contains B (FH>2.5 hit rate 52-87%)
+  //   🎯 BET = combo contains A or B (FH>1.5 hit rate 59-100%)
+  J += "function betPill(sigs){if(!sigs)return '';var aF=sigs.A&&sigs.A.met,bF=sigs.B&&sigs.B.met,h='';";
+  J += "  if(bF)h+='<div style=\"display:inline-block;background:#dc2626;color:#fff;font-size:11px;font-weight:700;padding:3px 9px;border-radius:6px;margin-right:4px\" title=\"Strong FH>2.5 candidate (signal B fires, 52-87% historical hit rate)\">🔥</div>';";
+  J += "  if(aF||bF)h+='<div style=\"display:inline-block;background:#15803d;color:#fff;font-size:11px;font-weight:700;padding:3px 9px;border-radius:6px;letter-spacing:.5px;margin-right:6px\" title=\"Strong FH>1.5 candidate (signal A or B fires, 59%+ hit rate)\">🎯 BET</div>';";
+  J += "  return h;}";
 
   J += "function renderTabs(){";
   J += "  var el=document.getElementById('dayTabs');var h='';";
