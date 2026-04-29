@@ -68,6 +68,48 @@ create policy league_prob_tables_anon_rw on league_prob_tables
   using (true)
   with check (true);
 
+-- Phase 3: per-league signal-combination probability table.
+-- sig_combo is a 4-char string of '0'/'1' for signals A,B,C,D.
+create table if not exists league_combo_probs (
+  competition_id  integer not null,
+  sig_combo       text    not null,
+  n               integer not null,
+  prob25          numeric(6,2) not null,
+  prob15          numeric(6,2) not null,
+  updated_at      timestamptz not null default now(),
+  primary key (competition_id, sig_combo)
+);
+
+alter table league_combo_probs enable row level security;
+drop policy if exists league_combo_probs_anon_rw on league_combo_probs;
+create policy league_combo_probs_anon_rw on league_combo_probs
+  for all to anon
+  using (true) with check (true);
+
+create or replace function public.compute_league_combo_buckets()
+returns table (
+  competition_id integer,
+  sig_combo      text,
+  n              integer,
+  prob25         numeric(6,2),
+  prob15         numeric(6,2)
+) language sql stable as $$
+  select
+    competition_id,
+    (case when (signals->'A'->>'met')::boolean then '1' else '0' end ||
+     case when (signals->'B'->>'met')::boolean then '1' else '0' end ||
+     case when (signals->'C'->>'met')::boolean then '1' else '0' end ||
+     case when (signals->'D'->>'met')::boolean then '1' else '0' end) as sig_combo,
+    count(*)::int                                                     as n,
+    round(avg((hit_25)::int)::numeric * 100, 2)                       as prob25,
+    round(avg((hit_15)::int)::numeric * 100, 2)                       as prob15
+  from match_results
+  where competition_id is not null and signals is not null
+  group by competition_id, sig_combo;
+$$;
+
+grant execute on function public.compute_league_combo_buckets() to anon;
+
 -- Phase 2 recalibration RPC: returns per-(competition_id, rank) hit rates
 -- computed from match_results. Server calls this, then upserts the rows
 -- into league_prob_tables.
