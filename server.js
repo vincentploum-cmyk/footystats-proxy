@@ -773,7 +773,7 @@ app.get("/history", async (req, res) => {
     for (let off = 0; ; off += PAGE) {
       const { data, error } = await supabase
         .from("match_results")
-        .select("match_id, competition_id, league_name, home_name, away_name, date_unix, ht_home, ht_away, ft_home, ft_away, fh_total, hit_15, hit_25, rank, ci, def_ci, prob25, prob15, signals")
+        .select("match_id, competition_id, league_name, home_name, away_name, date_unix, ht_home, ht_away, ft_home, ft_away, fh_total, hit_15, hit_25, rank, ci, def_ci, prob25, prob15, signals, snap")
         .gte("date_unix", cutoffSec)
         .order("date_unix", { ascending: false })
         .range(off, off + PAGE - 1);
