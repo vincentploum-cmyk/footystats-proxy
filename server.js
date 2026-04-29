@@ -1254,13 +1254,18 @@ body{background:#f3f4f6;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',
   J += "function lgLabel(r){return r===4?'Fire \ud83d\udd25':r===3?'Prime \u26a1':r===2?'Watch \ud83d\udc40':r===1?'Signal \ud83d\udce1':'Low';}";
   J += "function fLetter(r){return r==='W'?'<span class=\"fw\">W</span>':r==='L'?'<span class=\"fl\">L</span>':'<span class=\"fd\">D</span>';}";
   J += "function mkChip(lbl,val,thr,state){var cls='chip'+(state?' '+state:'');return '<div class=\"'+cls+'\">'+'<div class=\"chip-lbl\">'+esc(lbl)+'</div><div class=\"chip-val\">'+esc(val)+'</div><div class=\"chip-thr\">'+esc(thr)+'</div></div>';}";
-  // betPill: drives off the predicted probability so it benefits from
-  // per-league overrides automatically.
+  // betPill: drives off predicted probability AND a soft Sig B for the FH>1.5 pill.
   //   🔥  = prob25 ≥ 50 (strong FH>2.5 candidate)
-  //   🎯 BET = prob15 ≥ 60 (strong FH>1.5 candidate)
-  J += "function betPill(m){if(!m)return '';var p25=m.prob25||0,p15=m.prob15||0,h='';";
+  //   🎯 BET = prob15 ≥ 60 OR (min(T1) ≥ 15 AND max(T1) ≥ 25)
+  // The soft Sig B catches asymmetric-T1 matches the model rates as rank 0/1
+  // but empirically hit FH>1.5 at 48-53% (e.g. T1 18% vs 30%).
+  J += "function betPill(m){if(!m)return '';";
+  J += "  var p25=m.prob25||0,p15=m.prob15||0;";
+  J += "  var sn=m.snap||{},hT=sn.home&&Number(sn.home.t1_pct)||0,aT=sn.away&&Number(sn.away.t1_pct)||0;";
+  J += "  var bSoft=Math.min(hT,aT)>=15&&Math.max(hT,aT)>=25;";
+  J += "  var h='';";
   J += "  if(p25>=50)h+='<div style=\"display:inline-block;background:#dc2626;color:#fff;font-size:11px;font-weight:700;padding:3px 9px;border-radius:6px;margin-right:4px\" title=\"Strong FH>2.5 candidate (≥ 50%)\">🔥</div>';";
-  J += "  if(p15>=60)h+='<div style=\"display:inline-block;background:#15803d;color:#fff;font-size:11px;font-weight:700;padding:3px 9px;border-radius:6px;letter-spacing:.5px;margin-right:6px\" title=\"Strong FH>1.5 candidate (≥ 60%)\">🎯 BET</div>';";
+  J += "  if(p15>=60||bSoft)h+='<div style=\"display:inline-block;background:#15803d;color:#fff;font-size:11px;font-weight:700;padding:3px 9px;border-radius:6px;letter-spacing:.5px;margin-right:6px\" title=\"Strong FH>1.5 candidate (prob ≥ 60% or T1 min/max ≥ 15/25)\">🎯 BET</div>';";
   J += "  return h;}";
 
   J += "function renderTabs(){";
@@ -1315,7 +1320,7 @@ body{background:#f3f4f6;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',
   J += "    var sigStr=['A','B','C','D'].map(function(k){return sigs[k]&&sigs[k].met?k:'\u00b7';}).join('');";
   J += "    h+='<div class=\"hist-row\" data-mid=\"'+m.match_id+'\" style=\"cursor:pointer;background:#fff;border:1px solid #e5e7eb;border-radius:8px;padding:10px 12px;display:flex;gap:10px;align-items:center;font-size:12px;margin-bottom:6px\">';";
   J += "    h+='<div style=\"width:22px;height:22px;border-radius:50%;background:'+rankColor+';color:#fff;display:flex;align-items:center;justify-content:center;font-weight:700;font-size:12px;flex-shrink:0\">'+m.rank+'</div>';";
-  J += "    h+=betPill({prob25:Number(m.prob25)||0,prob15:Number(m.prob15)||0});";
+  J += "    h+=betPill({prob25:Number(m.prob25)||0,prob15:Number(m.prob15)||0,snap:m.snap});";
   J += "    h+='<div style=\"flex:1;min-width:0\"><div style=\"font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis\">'+esc(m.home_name||'')+' \u2013 '+esc(m.away_name||'')+'</div>';";
   J += "    h+='<div style=\"color:#6b7280;font-size:11px\">'+esc(m.league_name||'\u2014')+' \u00b7 '+dStr+'</div></div>';";
   J += "    h+='<div style=\"text-align:right;flex-shrink:0;font-family:ui-monospace,monospace;color:#374151\">'+sigStr+' \u00b7 CI '+(m.ci||0)+' \u00b7 '+(m.prob25||0)+'%</div>';";
