@@ -1421,17 +1421,17 @@ body{background:#f3f4f6;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',
   J += "      var ftT=(m.ft_home||0)+(m.ft_away||0);";
   J += "      var ov15=fhT>1?'<span style=\"color:#15803d\">✓1.5</span>':'<span style=\"color:#9ca3af\">·1.5</span>';";
   J += "      var ov25=fhT>2?'<span style=\"color:#dc2626\">✓2.5</span>':'<span style=\"color:#9ca3af\">·2.5</span>';";
-  J += "      return '<tr><td style=\"padding:3px 6px;color:#6b7280;font-size:10px\">'+ds+'</td>'";
-  J += "        +'<td style=\"padding:3px 6px;font-size:11px\">'+esc(m.home_name||'')+' v '+esc(m.away_name||'')+'</td>'";
-  J += "        +'<td style=\"padding:3px 6px;font-weight:700;font-size:11px;text-align:center\">'+(m.ht_home||0)+'-'+(m.ht_away||0)+'</td>'";
-  J += "        +'<td style=\"padding:3px 6px;color:#6b7280;font-size:11px;text-align:center\">'+(m.ft_home||0)+'-'+(m.ft_away||0)+'</td>'";
-  J += "        +'<td style=\"padding:3px 6px;font-size:10px;text-align:right\">'+ov15+' '+ov25+'</td></tr>';";
+  J += "      return '<tr><td style=\"padding:3px 6px;color:#6b7280;font-size:10px;white-space:nowrap\">'+ds+'</td>'";
+  J += "        +'<td style=\"padding:3px 6px;font-size:11px;line-height:1.3\">'+esc(m.home_name||'')+' <span style=\"color:#9ca3af\">v</span> '+esc(m.away_name||'')+'</td>'";
+  J += "        +'<td style=\"padding:3px 6px;font-weight:700;font-size:12px;text-align:center;white-space:nowrap\">'+(m.ht_home||0)+'-'+(m.ht_away||0)+'</td>'";
+  J += "        +'<td style=\"padding:3px 6px;color:#6b7280;font-size:11px;text-align:center;white-space:nowrap\">'+(m.ft_home||0)+'-'+(m.ft_away||0)+'</td>'";
+  J += "        +'<td style=\"padding:3px 6px;font-size:10px;text-align:right;white-space:nowrap\">'+ov15+' '+ov25+'</td></tr>';";
   J += "    }).join('');";
   J += "    var nMatches=d.matches.length;";
   J += "    var hits15=d.matches.filter(function(m){return ((m.ht_home||0)+(m.ht_away||0))>1;}).length;";
   J += "    var hits25=d.matches.filter(function(m){return ((m.ht_home||0)+(m.ht_away||0))>2;}).length;";
   J += "    el.innerHTML='<div style=\"font-size:11px;font-weight:600;color:#374151;margin-bottom:4px\">H2H — last '+nMatches+' meetings · FH&gt;1.5 '+hits15+'/'+nMatches+' · FH&gt;2.5 '+hits25+'/'+nMatches+'</div>'";
-  J += "      +'<table style=\"width:100%;border-collapse:collapse\"><thead><tr style=\"color:#9ca3af;font-size:10px;text-align:left\"><th style=\"padding:3px 6px\">Date</th><th style=\"padding:3px 6px\">Match</th><th style=\"padding:3px 6px;text-align:center\">HT</th><th style=\"padding:3px 6px;text-align:center\">FT</th><th style=\"padding:3px 6px;text-align:right\">FH O/U</th></tr></thead><tbody>'+rows+'</tbody></table>';";
+  J += "      +'<table style=\"width:100%;border-collapse:collapse;table-layout:auto\"><thead><tr style=\"color:#9ca3af;font-size:10px;text-align:left\"><th style=\"padding:3px 6px;white-space:nowrap\">Date</th><th style=\"padding:3px 6px\">Match</th><th style=\"padding:3px 6px;text-align:center;white-space:nowrap\">HT</th><th style=\"padding:3px 6px;text-align:center;white-space:nowrap\">FT</th><th style=\"padding:3px 6px;text-align:right;white-space:nowrap\">FH O/U</th></tr></thead><tbody>'+rows+'</tbody></table>';";
   J += "  }).catch(function(e){el.innerHTML='<div style=\"font-size:11px;color:#b91c1c\">H2H load failed</div>';});";
   J += "}";
 
