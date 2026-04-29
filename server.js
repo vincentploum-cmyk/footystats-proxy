@@ -13,6 +13,78 @@ const PORT = process.env.PORT || 3001;
 
 if (!KEY) { console.error("Missing FOOTY_API_KEY"); process.exit(1); }
 
+// ─── SUPABASE CLIENT ─────────────────────────────────────────────────────────
+// Optional. When SUPABASE_URL + SUPABASE_ANON_KEY (or SUPABASE_SERVICE_ROLE_KEY)
+// are set, completed matches are persisted to the match_results table on each
+// /preds call. Apply supabase/schema.sql in the Supabase SQL editor first.
+const SUPABASE_URL = process.env.SUPABASE_URL || "";
+const SUPABASE_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_ANON_KEY || "";
+let supabase = null;
+if (SUPABASE_URL && SUPABASE_KEY) {
+  try {
+    const { createClient } = require("@supabase/supabase-js");
+    supabase = createClient(SUPABASE_URL, SUPABASE_KEY, { auth: { persistSession: false } });
+    console.log("Supabase enabled (" + SUPABASE_URL.replace(/^https?:\/\//, "").split(".")[0] + ")");
+  } catch (e) {
+    console.error("Supabase init failed: " + e.message);
+    supabase = null;
+  }
+} else {
+  console.log("Supabase disabled (set SUPABASE_URL + SUPABASE_ANON_KEY to enable)");
+}
+const SUPABASE_PERSISTED_IDS = new Set();
+let SUPABASE_LAST_PERSIST = { at: 0, attempted: 0, written: 0, error: null };
+
+async function persistCompletedPreds(preds) {
+  if (!supabase || !Array.isArray(preds) || preds.length === 0) return;
+  const rows = [];
+  for (const p of preds) {
+    if (!p || !p.id || !p.matchResult) continue;
+    if (SUPABASE_PERSISTED_IDS.has(p.id)) continue;
+    rows.push({
+      match_id: p.id,
+      competition_id: p.leagueSid || null,
+      league_name: p.league || null,
+      home_id: p.homeId || null,
+      away_id: p.awayId || null,
+      home_name: p.home || null,
+      away_name: p.away || null,
+      date_unix: p.dt ? Math.floor(p.dt / 1000) : null,
+      ht_home: p.matchResult.fhH,
+      ht_away: p.matchResult.fhA,
+      ft_home: p.matchResult.ftH,
+      ft_away: p.matchResult.ftA,
+      fh_total: (p.matchResult.fhH || 0) + (p.matchResult.fhA || 0),
+      hit_15: !!p.matchResult.hit15,
+      hit_25: !!p.matchResult.hit25,
+      rank: p.rank || 0,
+      ci: p.ci || 0,
+      def_ci: p.defCi || 0,
+      prob25: p.prob25 || 0,
+      prob15: p.prob15 || 0,
+      signals: p.signals || {},
+      snap: p.snap || null,
+    });
+  }
+  if (rows.length === 0) return;
+  try {
+    const { error } = await supabase
+      .from("match_results")
+      .upsert(rows, { onConflict: "match_id" });
+    if (error) {
+      SUPABASE_LAST_PERSIST = { at: Date.now(), attempted: rows.length, written: 0, error: error.message };
+      console.error("Supabase upsert failed: " + error.message);
+      return;
+    }
+    for (const r of rows) SUPABASE_PERSISTED_IDS.add(r.match_id);
+    SUPABASE_LAST_PERSIST = { at: Date.now(), attempted: rows.length, written: rows.length, error: null };
+    console.log("Supabase: persisted " + rows.length + " completed match" + (rows.length === 1 ? "" : "es"));
+  } catch (e) {
+    SUPABASE_LAST_PERSIST = { at: Date.now(), attempted: rows.length, written: 0, error: e.message };
+    console.error("Supabase exception: " + e.message);
+  }
+}
+
 let LEAGUE_NAMES = {};
 let LEAGUE_LIST_LOADING = false;
 
@@ -281,6 +353,18 @@ function buildLast5(teamId, cache) {
     });
 }
 
+app.get("/supabase-status", (req, res) => {
+  res.json({
+    enabled: !!supabase,
+    url: SUPABASE_URL ? SUPABASE_URL.replace(/^(https?:\/\/[^.]+).*/, "$1...") : null,
+    keyType: process.env.SUPABASE_SERVICE_ROLE_KEY ? "service_role" : (process.env.SUPABASE_ANON_KEY ? "anon" : null),
+    persistedThisSession: SUPABASE_PERSISTED_IDS.size,
+    lastPersist: SUPABASE_LAST_PERSIST.at
+      ? { at: new Date(SUPABASE_LAST_PERSIST.at).toISOString(), attempted: SUPABASE_LAST_PERSIST.attempted, written: SUPABASE_LAST_PERSIST.written, error: SUPABASE_LAST_PERSIST.error }
+      : null,
+  });
+});
+
 app.get("/cache-status", (req, res) => {
   const now = Date.now();
   res.json({
@@ -545,6 +629,8 @@ app.get("/preds", async (req, res) => {
   try {
     const tzOffset = parseInt(req.query.tz || "0", 10);
     const { preds } = await computePreds(tzOffset);
+    // Fire-and-forget persistence of completed matches to Supabase (no-op if disabled)
+    persistCompletedPreds(preds).catch(e => console.error("persist error:", e.message));
     res.json({ ok: true, preds, rateLimited: Date.now() < RATE_LIMITED_UNTIL });
   } catch(e) {
     console.error(e);
