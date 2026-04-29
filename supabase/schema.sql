@@ -65,3 +65,27 @@ create policy league_prob_tables_anon_read on league_prob_tables
   for select
   to anon
   using (true);
+
+-- Phase 2 recalibration RPC: returns per-(competition_id, rank) hit rates
+-- computed from match_results. Server calls this, then upserts the rows
+-- into league_prob_tables.
+create or replace function public.compute_league_prob_buckets()
+returns table (
+  competition_id integer,
+  rank           smallint,
+  n              integer,
+  prob25         numeric(6,2),
+  prob15         numeric(6,2)
+) language sql stable as $$
+  select
+    competition_id,
+    rank,
+    count(*)::int                                                   as n,
+    round(avg((hit_25)::int)::numeric * 100, 2)                     as prob25,
+    round(avg((hit_15)::int)::numeric * 100, 2)                     as prob15
+  from match_results
+  where competition_id is not null and rank is not null
+  group by competition_id, rank;
+$$;
+
+grant execute on function public.compute_league_prob_buckets() to anon;
