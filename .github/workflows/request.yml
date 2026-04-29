@@ -2,7 +2,10 @@ name: Keep Alive
 
 on:
   schedule:
-    - cron: '*/20 * * * *'
+    # Every 10 min. Render free tier spins down after 15 min of inactivity,
+    # and GitHub Actions cron is "best effort" (can be delayed several minutes
+    # under load), so we run more frequently than the spin-down threshold.
+    - cron: '*/10 * * * *'
 
 jobs:
   request:
@@ -10,5 +13,4 @@ jobs:
     steps:
       - name: Ping Render
         run: |
-          curl -s https://footystats-proxy.onrender.com/cache-status
-          curl -s https://footystats-proxy.onrender.com/preds?tz=0
+          curl -fsS --max-time 30 https://footystats-proxy.onrender.com/cache-status > /dev/null || true
