@@ -1308,23 +1308,34 @@ body{background:#f3f4f6;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',
   J += "  var h='<div style=\"max-width:920px;margin:0 auto\">';";
   J += "  if(!d.matches||!d.matches.length){h+='<p style=\"color:#6b7280;text-align:center;padding:40px\">No completed matches in the last '+d.days+' days yet.</p>';h+='</div>';main.innerHTML=h;return;}";
   J += "  h+='<div style=\"font-size:12px;color:#6b7280;margin-bottom:8px\">'+d.matches.length+' matches \u2014 last '+d.days+' days, newest first</div>';";
-  J += "  h+='<div style=\"display:flex;flex-direction:column;gap:6px\">';";
+  // Convert each history row into the same shape as a /preds match, then reuse renderCard.
   J += "  d.matches.forEach(function(m){";
-  J += "    var dStr=m.date_unix?new Date(m.date_unix*1000).toISOString().slice(0,10):'';";
-  J += "    var rankColor=['#6b7280','#0891b2','#7c3aed','#d97706','#dc2626'][m.rank]||'#6b7280';";
-  J += "    var sigs=m.signals||{};";
-  J += "    var sigStr=['A','B','C','D'].map(function(k){return sigs[k]&&sigs[k].met?k:'\u00b7';}).join('');";
-  J += "    h+='<div style=\"background:#fff;border:1px solid #e5e7eb;border-radius:8px;padding:10px 12px;display:flex;gap:10px;align-items:center;font-size:12px\">';";
-  J += "    h+='<div style=\"width:22px;height:22px;border-radius:50%;background:'+rankColor+';color:#fff;display:flex;align-items:center;justify-content:center;font-weight:700;font-size:12px;flex-shrink:0\">'+m.rank+'</div>';";
-  J += "    h+=betPill(m);";
-  J += "    h+='<div style=\"flex:1;min-width:0\"><div style=\"font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis\">'+esc(m.home_name||'')+' \u2013 '+esc(m.away_name||'')+'</div>';";
-  J += "    h+='<div style=\"color:#6b7280;font-size:11px\">'+esc(m.league_name||'\u2014')+' \u00b7 '+dStr+'</div></div>';";
-  J += "    h+='<div style=\"text-align:right;flex-shrink:0;font-family:ui-monospace,monospace;color:#374151\">'+sigStr+' \u00b7 CI '+(m.ci||0)+' \u00b7 '+(m.prob25||0)+'%</div>';";
-  J += "    h+='<div style=\"text-align:right;flex-shrink:0\"><div style=\"font-weight:700\">HT '+(m.ht_home||0)+'\u2013'+(m.ht_away||0)+'</div><div style=\"font-size:11px;color:#6b7280\">FT '+(m.ft_home||0)+'\u2013'+(m.ft_away||0)+'</div></div>';";
-  J += "    h+='</div>';";
+  J += "    var lbl=['Low','Signal','Watch','Prime','Fire'][m.rank]||'Low';";
+  J += "    var card={";
+  J += "      id:m.match_id, homeId:m.home_id, awayId:m.away_id,";
+  J += "      league:m.league_name||'\u2014', leagueSid:m.competition_id,";
+  J += "      home:m.home_name||'', away:m.away_name||'',";
+  J += "      dt:(m.date_unix||0)*1000,";
+  J += "      matchDate:m.date_unix?new Date(m.date_unix*1000).toISOString().slice(0,10):'',";
+  J += "      status:'complete', missingStats:!m.snap,";
+  J += "      rank:m.rank||0, label:lbl,";
+  J += "      prob25:Number(m.prob25)||0, prob15:Number(m.prob15)||0,";
+  J += "      eligible:(m.rank||0)>=3,";
+  J += "      ci:Number(m.ci)||0, defCi:Number(m.def_ci)||0,";
+  J += "      signals:m.signals||{}, snap:m.snap||null,";
+  J += "      hLast5:[], aLast5:[], hAvgFH:null, aAvgFH:null,";
+  J += "      matchResult:{fhH:m.ht_home||0, fhA:m.ht_away||0, ftH:m.ft_home||0, ftA:m.ft_away||0, hit25:!!m.hit_25, hit15:!!m.hit_15}";
+  J += "    };";
+  J += "    h+=renderCard(card);";
   J += "  });";
-  J += "  h+='</div></div>';";
+  J += "  h+='</div>';";
   J += "  main.innerHTML=h;";
+  J += "  // Wire up the toggle buttons inside History cards (form/H2H section)";
+  J += "  document.querySelectorAll('#mainView .toggle-btn').forEach(function(btn){btn.addEventListener('click',function(){";
+  J += "    var dEl=btn.nextElementSibling;var o=dEl.classList.toggle('open');";
+  J += "    btn.innerHTML=o?'\u25b2 Hide last 5 games & H2H':'\u25bc Show last 5 games & H2H';";
+  J += "    if(o){var h2h=dEl.querySelector('[id^=\"h2h-\"]');if(h2h&&!h2h.dataset.loaded){loadH2H(h2h);}}";
+  J += "  });});";
   J += "}";
 
   // renderLeagueList — accordion: only one league open at a time
