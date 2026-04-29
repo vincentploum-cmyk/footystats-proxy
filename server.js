@@ -1234,6 +1234,13 @@ body{background:#f3f4f6;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',
   J += "function lgLabel(r){return r===4?'Fire \ud83d\udd25':r===3?'Prime \u26a1':r===2?'Watch \ud83d\udc40':r===1?'Signal \ud83d\udce1':'Low';}";
   J += "function fLetter(r){return r==='W'?'<span class=\"fw\">W</span>':r==='L'?'<span class=\"fl\">L</span>':'<span class=\"fd\">D</span>';}";
   J += "function mkChip(lbl,val,thr,state){var cls='chip'+(state?' '+state:'');return '<div class=\"'+cls+'\">'+'<div class=\"chip-lbl\">'+esc(lbl)+'</div><div class=\"chip-val\">'+esc(val)+'</div><div class=\"chip-thr\">'+esc(thr)+'</div></div>';}";
+  // betPill: empirical bet markers from 22k-match analysis.
+  //   🔥  = combo contains B (FH>2.5 hit rate 52-87%)
+  //   🎯 BET = combo contains A or B (FH>1.5 hit rate 59-100%)
+  J += "function betPill(sigs){if(!sigs)return '';var aF=sigs.A&&sigs.A.met,bF=sigs.B&&sigs.B.met,h='';";
+  J += "  if(bF)h+='<div style=\"display:inline-block;background:#dc2626;color:#fff;font-size:11px;font-weight:700;padding:3px 9px;border-radius:6px;margin-right:4px\" title=\"Strong FH>2.5 candidate (signal B fires, 52-87% historical hit rate)\">🔥</div>';";
+  J += "  if(aF||bF)h+='<div style=\"display:inline-block;background:#15803d;color:#fff;font-size:11px;font-weight:700;padding:3px 9px;border-radius:6px;letter-spacing:.5px;margin-right:6px\" title=\"Strong FH>1.5 candidate (signal A or B fires, 59%+ hit rate)\">🎯 BET</div>';";
+  J += "  return h;}";
 
   J += "function renderTabs(){";
   J += "  var el=document.getElementById('dayTabs');var h='';";
@@ -1276,37 +1283,23 @@ body{background:#f3f4f6;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',
   J += "    }).catch(function(e){HISTORY_LOADING=false;main.innerHTML='<p style=\"color:#b91c1c;text-align:center;padding:40px\">Failed to load: '+esc(e.message)+'</p>';});";
   J += "    return;";
   J += "  }";
-  J += "  var d=HISTORY;var s=d.summary||{};";
+  J += "  var d=HISTORY;";
   J += "  var h='<div style=\"max-width:920px;margin:0 auto\">';";
-  J += "  h+='<div style=\"background:#fff;border:1px solid #e5e7eb;border-radius:10px;padding:16px;margin-bottom:14px\">';";
-  J += "  h+='<div style=\"font-size:11px;color:#6b7280;text-transform:uppercase;letter-spacing:.5px;margin-bottom:4px\">Last '+d.days+' days</div>';";
-  J += "  h+='<div style=\"display:flex;gap:24px;flex-wrap:wrap\">';";
-  J += "  h+='<div><div style=\"font-size:28px;font-weight:700\">'+s.total+'</div><div style=\"font-size:11px;color:#6b7280\">matches</div></div>';";
-  J += "  h+='<div><div style=\"font-size:28px;font-weight:700;color:#0f766e\">'+(s.actual25||0)+'%</div><div style=\"font-size:11px;color:#6b7280\">FH&gt;2.5 actual ('+(s.hit25||0)+')</div></div>';";
-  J += "  h+='<div><div style=\"font-size:28px;font-weight:700;color:#0f766e\">'+(s.actual15||0)+'%</div><div style=\"font-size:11px;color:#6b7280\">FH&gt;1.5 actual ('+(s.hit15||0)+')</div></div>';";
-  J += "  h+='</div></div>';";
-  J += "  h+='<div style=\"background:#fff;border:1px solid #e5e7eb;border-radius:10px;padding:14px;margin-bottom:14px;overflow-x:auto\">';";
-  J += "  h+='<div style=\"font-size:13px;font-weight:600;margin-bottom:10px\">Calibration by rank</div>';";
-  J += "  h+='<table style=\"width:100%;font-size:12px;border-collapse:collapse\"><thead><tr style=\"text-align:left;color:#6b7280;border-bottom:1px solid #e5e7eb\"><th style=\"padding:6px 8px\">Rank</th><th style=\"padding:6px 8px\">N</th><th style=\"padding:6px 8px\">Pred FH&gt;2.5</th><th style=\"padding:6px 8px\">Actual</th><th style=\"padding:6px 8px\">Pred FH&gt;1.5</th><th style=\"padding:6px 8px\">Actual</th></tr></thead><tbody>';";
-  J += "  for(var r=4;r>=0;r--){var b=d.byRank[r]||{n:0,actual25:0,actual15:0,expected25:0,expected15:0};";
-  J += "    var lbl=['Low','Signal','Watch','Prime','Fire'][r];";
-  J += "    h+='<tr style=\"border-bottom:1px solid #f3f4f6\"><td style=\"padding:6px 8px;font-weight:600\">'+r+' '+lbl+'</td><td style=\"padding:6px 8px\">'+b.n+'</td><td style=\"padding:6px 8px;color:#6b7280\">'+b.expected25+'%</td><td style=\"padding:6px 8px;font-weight:600;color:'+(b.actual25>=b.expected25?'#0f766e':'#b91c1c')+'\">'+b.actual25+'%</td><td style=\"padding:6px 8px;color:#6b7280\">'+b.expected15+'%</td><td style=\"padding:6px 8px;font-weight:600;color:'+(b.actual15>=b.expected15?'#0f766e':'#b91c1c')+'\">'+b.actual15+'%</td></tr>';";
-  J += "  }";
-  J += "  h+='</tbody></table></div>';";
   J += "  if(!d.matches||!d.matches.length){h+='<p style=\"color:#6b7280;text-align:center;padding:40px\">No completed matches in the last '+d.days+' days yet.</p>';h+='</div>';main.innerHTML=h;return;}";
-  J += "  h+='<div style=\"font-size:12px;color:#6b7280;margin-bottom:8px\">'+d.matches.length+' matches \u2014 sorted newest first</div>';";
+  J += "  h+='<div style=\"font-size:12px;color:#6b7280;margin-bottom:8px\">'+d.matches.length+' matches \u2014 last '+d.days+' days, newest first</div>';";
   J += "  h+='<div style=\"display:flex;flex-direction:column;gap:6px\">';";
   J += "  d.matches.forEach(function(m){";
   J += "    var dStr=m.date_unix?new Date(m.date_unix*1000).toISOString().slice(0,10):'';";
-  J += "    var hit25=m.hit_25,hit15=m.hit_15;";
   J += "    var rankColor=['#6b7280','#0891b2','#7c3aed','#d97706','#dc2626'][m.rank]||'#6b7280';";
-  J += "    var icon25=hit25?'\u2705':'\u274c';var icon15=hit15?'\u2705':'\u274c';";
+  J += "    var sigs=m.signals||{};";
+  J += "    var sigStr=['A','B','C','D'].map(function(k){return sigs[k]&&sigs[k].met?k:'\u00b7';}).join('');";
   J += "    h+='<div style=\"background:#fff;border:1px solid #e5e7eb;border-radius:8px;padding:10px 12px;display:flex;gap:10px;align-items:center;font-size:12px\">';";
-  J += "    h+='<div style=\"width:18px;height:18px;border-radius:50%;background:'+rankColor+';color:#fff;display:flex;align-items:center;justify-content:center;font-weight:700;font-size:11px;flex-shrink:0\">'+m.rank+'</div>';";
+  J += "    h+='<div style=\"width:22px;height:22px;border-radius:50%;background:'+rankColor+';color:#fff;display:flex;align-items:center;justify-content:center;font-weight:700;font-size:12px;flex-shrink:0\">'+m.rank+'</div>';";
+  J += "    h+=betPill(m.signals);";
   J += "    h+='<div style=\"flex:1;min-width:0\"><div style=\"font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis\">'+esc(m.home_name||'')+' \u2013 '+esc(m.away_name||'')+'</div>';";
   J += "    h+='<div style=\"color:#6b7280;font-size:11px\">'+esc(m.league_name||'\u2014')+' \u00b7 '+dStr+'</div></div>';";
-  J += "    h+='<div style=\"text-align:right;flex-shrink:0\"><div style=\"font-weight:700\">'+(m.ht_home||0)+'-'+(m.ht_away||0)+' <span style=\"color:#9ca3af;font-weight:400\">('+ (m.ft_home||0) +'-'+(m.ft_away||0)+')</span></div>';";
-  J += "    h+='<div style=\"font-size:11px;color:#6b7280\">'+icon15+' &gt;1.5 \u00a0 '+icon25+' &gt;2.5</div></div>';";
+  J += "    h+='<div style=\"text-align:right;flex-shrink:0;font-family:ui-monospace,monospace;color:#374151\">'+sigStr+' \u00b7 CI '+(m.ci||0)+' \u00b7 '+(m.prob25||0)+'%</div>';";
+  J += "    h+='<div style=\"text-align:right;flex-shrink:0\"><div style=\"font-weight:700\">HT '+(m.ht_home||0)+'\u2013'+(m.ht_away||0)+'</div><div style=\"font-size:11px;color:#6b7280\">FT '+(m.ft_home||0)+'\u2013'+(m.ft_away||0)+'</div></div>';";
   J += "    h+='</div>';";
   J += "  });";
   J += "  h+='</div></div>';";
@@ -1486,7 +1479,7 @@ body{background:#f3f4f6;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',
   J += "          +'<div style=\"font-size:10px;color:#9ca3af;text-transform:uppercase;letter-spacing:.7px;margin-bottom:5px\">'+esc(m.league)+' \u00b7 '+esc(dt)+mw+'</div>'";
   J += "          +sb";
   J += "        +'</div>'";
-  J += "        +'<div class=\"rank-pill '+rc+'\"><div class=\"rn\">'+m.rank+'/4</div><div class=\"rl\">'+esc(m.label)+'</div></div>'";
+  J += "        +'<div style=\"display:flex;align-items:center;gap:6px\">'+betPill(m.signals)+'<div class=\"rank-pill '+rc+'\"><div class=\"rn\">'+m.rank+'/4</div><div class=\"rl\">'+esc(m.label)+'</div></div></div>'";
   J += "      +'</div>'";
   J += "    +ps+rb";
   J += "    +'<div class=\"teams\">'";
