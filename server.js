@@ -1453,8 +1453,17 @@ app.listen(PORT, () => {
   }).catch(e => console.error("League list failed:", e.message));
 
   if (supabase) {
-    // Initial load of league prob tables (don't block startup)
-    setTimeout(() => { loadLeagueProbCache().catch(e => console.error("loadLeagueProbCache:", e.message)); }, 30 * 1000);
+    // Initial load of league prob tables. If empty (first deploy after Phase 2),
+    // trigger one recalibration so we don't have to wait 24h for the schedule.
+    setTimeout(async () => {
+      try {
+        await loadLeagueProbCache();
+        if (Object.keys(LEAGUE_PROB_CACHE).length === 0) {
+          console.log("league_prob_tables empty — running initial recalibration");
+          await recalibrateLeagueProbs();
+        }
+      } catch (e) { console.error("initial league prob load:", e.message); }
+    }, 30 * 1000);
     // Periodic cache refresh (in case another instance ran recalibration)
     setInterval(() => { loadLeagueProbCache().catch(e => console.error("loadLeagueProbCache:", e.message)); }, LEAGUE_PROB_CACHE_TTL);
     // Daily recalibration
