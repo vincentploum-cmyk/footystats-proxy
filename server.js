@@ -365,6 +365,174 @@ app.get("/supabase-status", (req, res) => {
   });
 });
 
+// ─── ONE-SHOT HISTORICAL DATASET LOADER ──────────────────────────────────────
+// Loads dataset_combined_filled.csv into match_results. Gated by LOAD_DATASET_TOKEN.
+// Usage: GET /admin/load-dataset?token=<LOAD_DATASET_TOKEN>
+// Skips: women's leagues, incomplete matches, rows missing IDs or HT data.
+// Recomputes rank using current 4-signal logic so historical data matches runtime.
+const WOMENS_LEAGUE_IDS = new Set([15020, 16037, 16046, 16563]);
+
+function parseCsvDataset(buf) {
+  const text = buf.toString("utf8");
+  const lines = text.split(/\r?\n/);
+  if (lines.length < 2) return { header: [], rows: [] };
+  const header = lines[0].split(",");
+  const idx = {};
+  header.forEach((h, i) => idx[h] = i);
+  const rows = [];
+  for (let i = 1; i < lines.length; i++) {
+    const line = lines[i];
+    if (!line) continue;
+    rows.push(line.split(","));
+  }
+  return { header, idx, rows };
+}
+
+function csvRowToMatchResult(row, idx) {
+  const get = (k) => row[idx[k]];
+  const num = (k) => { const v = parseFloat(get(k)); return isNaN(v) ? 0 : v; };
+  const intg = (k) => { const v = parseInt(get(k), 10); return isNaN(v) ? 0 : v; };
+
+  const matchId = intg("id");
+  const compId  = intg("competition_id");
+  if (!matchId || !compId) return null;
+  if (WOMENS_LEAGUE_IDS.has(compId)) return null;
+  if (get("status") !== "complete") return null;
+
+  const homeId = intg("homeID");
+  const awayId = intg("awayID");
+  if (!homeId || !awayId) return null;
+
+  const hStats = {
+    name: get("home_name") || "",
+    scored_fh: num("h_scoredAVGHT_home"),
+    conced_fh: num("h_concededAVGHT_home"),
+    t1_pct:    num("h_seasonOver25PercentageHT_home"),
+    cn010_avg: num("h_cn010_home"),
+    sot_avg:   0,
+    mp:        intg("h_mp_home"),
+    mpRole:    intg("h_mp_home"),
+  };
+  const aStats = {
+    name: get("away_name") || "",
+    scored_fh: num("a_scoredAVGHT_away"),
+    conced_fh: num("a_concededAVGHT_away"),
+    t1_pct:    num("a_seasonOver25PercentageHT_away"),
+    cn010_avg: num("a_cn010_away"),
+    sot_avg:   0,
+    mp:        intg("a_mp_away"),
+    mpRole:    intg("a_mp_away"),
+  };
+  const snap = { fetchedAt: "historical-import", home: hStats, away: aStats };
+  const result = computeSignals(snap);
+
+  const fhH = intg("ht_goals_team_a");
+  const fhA = intg("ht_goals_team_b");
+  const ftH = intg("homeGoalCount");
+  const ftA = intg("awayGoalCount");
+  const fhTotal = fhH + fhA;
+
+  return {
+    match_id: matchId,
+    competition_id: compId,
+    league_name: LEAGUE_NAMES[compId] || null,
+    home_id: homeId,
+    away_id: awayId,
+    home_name: hStats.name,
+    away_name: aStats.name,
+    date_unix: intg("date_unix") || null,
+    ht_home: fhH,
+    ht_away: fhA,
+    ft_home: ftH,
+    ft_away: ftA,
+    fh_total: fhTotal,
+    hit_15: fhTotal > 1,
+    hit_25: fhTotal > 2,
+    rank: result.rank,
+    ci: result.ci,
+    def_ci: result.defCi,
+    prob25: result.prob25,
+    prob15: result.prob15,
+    signals: result.signals,
+    snap: { fetchedAt: snap.fetchedAt,
+            home: { name: hStats.name, scored_fh: hStats.scored_fh, conced_fh: hStats.conced_fh, t1_pct: hStats.t1_pct, cn010_avg: hStats.cn010_avg, sot_avg: 0 },
+            away: { name: aStats.name, scored_fh: aStats.scored_fh, conced_fh: aStats.conced_fh, t1_pct: aStats.t1_pct, cn010_avg: aStats.cn010_avg, sot_avg: 0 } },
+  };
+}
+
+app.get("/admin/load-dataset", async (req, res) => {
+  const expected = process.env.LOAD_DATASET_TOKEN;
+  if (!expected) return res.status(403).json({ ok: false, error: "LOAD_DATASET_TOKEN not configured on server" });
+  if (req.query.token !== expected) return res.status(403).json({ ok: false, error: "invalid token" });
+  if (!supabase) return res.status(400).json({ ok: false, error: "Supabase not enabled" });
+
+  const fs = require("fs");
+  const path = require("path");
+  const csvPath = path.join(__dirname, "dataset_combined_filled.csv");
+  if (!fs.existsSync(csvPath)) return res.status(500).json({ ok: false, error: "dataset_combined_filled.csv not found" });
+
+  const t0 = Date.now();
+  let parsed;
+  try {
+    const buf = fs.readFileSync(csvPath);
+    parsed = parseCsvDataset(buf);
+  } catch (e) {
+    return res.status(500).json({ ok: false, error: "csv read/parse failed: " + e.message });
+  }
+
+  const { idx, rows } = parsed;
+  if (!idx || !rows) return res.status(500).json({ ok: false, error: "csv had no rows" });
+
+  const validRows = [];
+  let skipped = 0;
+  for (const r of rows) {
+    const mr = csvRowToMatchResult(r, idx);
+    if (mr) validRows.push(mr); else skipped++;
+  }
+
+  const dryRun = req.query.dryRun === "1";
+  if (dryRun) {
+    const byRank = { 0: 0, 1: 0, 2: 0, 3: 0, 4: 0 };
+    const byComp = {};
+    for (const r of validRows) {
+      byRank[r.rank] = (byRank[r.rank] || 0) + 1;
+      byComp[r.competition_id] = (byComp[r.competition_id] || 0) + 1;
+    }
+    return res.json({
+      ok: true, dryRun: true,
+      totalRows: rows.length, valid: validRows.length, skipped,
+      byRank, distinctCompetitions: Object.keys(byComp).length,
+      sampleRow: validRows[0] || null,
+      elapsedMs: Date.now() - t0,
+    });
+  }
+
+  const BATCH_SIZE = 500;
+  let written = 0;
+  const errors = [];
+  for (let i = 0; i < validRows.length; i += BATCH_SIZE) {
+    const batch = validRows.slice(i, i + BATCH_SIZE);
+    const { error } = await supabase.from("match_results").upsert(batch, { onConflict: "match_id" });
+    if (error) {
+      errors.push({ batchStart: i, message: error.message });
+      if (errors.length >= 5) break;
+    } else {
+      written += batch.length;
+    }
+  }
+
+  res.json({
+    ok: errors.length === 0,
+    totalRows: rows.length,
+    valid: validRows.length,
+    skipped,
+    written,
+    batches: Math.ceil(validRows.length / BATCH_SIZE),
+    errors,
+    elapsedMs: Date.now() - t0,
+  });
+});
+
 app.get("/cache-status", (req, res) => {
   const now = Date.now();
   res.json({
