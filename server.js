@@ -85,6 +85,96 @@ async function persistCompletedPreds(preds) {
   }
 }
 
+// ─── PHASE 2: PER-LEAGUE PROBABILITY TABLES ──────────────────────────────────
+// Cache shape: { "<compId>:<rank>": { n, prob25, prob15 } }
+// Populated from league_prob_tables on startup + every CACHE_TTL_MS.
+// Recalibration: calls the compute_league_prob_buckets() RPC, upserts results.
+const LEAGUE_PROB_MIN_N      = 30;                  // min sample size for league override
+const LEAGUE_PROB_CACHE_TTL  = 6 * 60 * 60 * 1000;  // 6h
+const LEAGUE_PROB_RECAL_TTL  = 24 * 60 * 60 * 1000; // 24h
+let   LEAGUE_PROB_CACHE      = {};
+let   LEAGUE_PROB_LAST_LOAD  = { at: 0, rows: 0, error: null };
+let   LEAGUE_PROB_LAST_RECAL = { at: 0, buckets: 0, written: 0, error: null };
+
+async function loadLeagueProbCache() {
+  if (!supabase) return;
+  try {
+    const next = {};
+    const PAGE = 1000;
+    for (let off = 0; ; off += PAGE) {
+      const { data, error } = await supabase
+        .from("league_prob_tables")
+        .select("competition_id, rank, n, prob25, prob15")
+        .range(off, off + PAGE - 1);
+      if (error) throw error;
+      if (!data || data.length === 0) break;
+      for (const r of data) {
+        next[r.competition_id + ":" + r.rank] = { n: r.n, prob25: Number(r.prob25), prob15: Number(r.prob15) };
+      }
+      if (data.length < PAGE) break;
+    }
+    LEAGUE_PROB_CACHE = next;
+    LEAGUE_PROB_LAST_LOAD = { at: Date.now(), rows: Object.keys(next).length, error: null };
+    console.log("League prob cache loaded: " + LEAGUE_PROB_LAST_LOAD.rows + " rows");
+  } catch (e) {
+    LEAGUE_PROB_LAST_LOAD = { at: Date.now(), rows: Object.keys(LEAGUE_PROB_CACHE).length, error: e.message };
+    console.error("League prob cache load failed: " + e.message);
+  }
+}
+
+async function recalibrateLeagueProbs() {
+  if (!supabase) return { ok: false, error: "supabase not enabled" };
+  const t0 = Date.now();
+  try {
+    const { data: buckets, error: rpcErr } = await supabase.rpc("compute_league_prob_buckets");
+    if (rpcErr) throw rpcErr;
+    if (!buckets || buckets.length === 0) {
+      LEAGUE_PROB_LAST_RECAL = { at: Date.now(), buckets: 0, written: 0, error: null };
+      return { ok: true, buckets: 0, written: 0 };
+    }
+    const rows = buckets.map(b => ({
+      competition_id: b.competition_id,
+      rank: b.rank,
+      n: b.n,
+      prob25: b.prob25,
+      prob15: b.prob15,
+      updated_at: new Date().toISOString(),
+    }));
+    const BATCH = 500;
+    let written = 0;
+    for (let i = 0; i < rows.length; i += BATCH) {
+      const batch = rows.slice(i, i + BATCH);
+      const { error } = await supabase
+        .from("league_prob_tables")
+        .upsert(batch, { onConflict: "competition_id,rank" });
+      if (error) throw error;
+      written += batch.length;
+    }
+    await loadLeagueProbCache();
+    LEAGUE_PROB_LAST_RECAL = { at: Date.now(), buckets: buckets.length, written, error: null };
+    console.log("Recalibrated league prob tables: " + written + " buckets (" + (Date.now() - t0) + "ms)");
+    return { ok: true, buckets: buckets.length, written, elapsedMs: Date.now() - t0 };
+  } catch (e) {
+    LEAGUE_PROB_LAST_RECAL = { at: Date.now(), buckets: 0, written: 0, error: e.message };
+    console.error("Recalibration failed: " + e.message);
+    return { ok: false, error: e.message };
+  }
+}
+
+function applyLeagueProb(result, compId) {
+  if (!result || !compId) return;
+  const entry = LEAGUE_PROB_CACHE[compId + ":" + result.rank];
+  if (entry && entry.n >= LEAGUE_PROB_MIN_N) {
+    result.prob25 = entry.prob25;
+    result.prob15 = entry.prob15;
+    result.probSource = "league";
+    result.probSampleN = entry.n;
+  } else {
+    result.probSource = "global";
+    result.probSampleN = entry ? entry.n : 0;
+  }
+}
+
 let LEAGUE_NAMES = {};
 let LEAGUE_LIST_LOADING = false;
 
@@ -533,6 +623,33 @@ app.get("/admin/load-dataset", async (req, res) => {
   });
 });
 
+app.get("/admin/recalibrate", async (req, res) => {
+  const expected = process.env.LOAD_DATASET_TOKEN;
+  if (!expected) return res.status(403).json({ ok: false, error: "LOAD_DATASET_TOKEN not configured on server" });
+  if (req.query.token !== expected) return res.status(403).json({ ok: false, error: "invalid token" });
+  const result = await recalibrateLeagueProbs();
+  res.json(result);
+});
+
+app.get("/league-probs", (req, res) => {
+  const compId = req.query.compId ? parseInt(req.query.compId, 10) : null;
+  const out = [];
+  for (const [k, v] of Object.entries(LEAGUE_PROB_CACHE)) {
+    const [cid, rank] = k.split(":").map(Number);
+    if (compId && cid !== compId) continue;
+    out.push({ competition_id: cid, league: LEAGUE_NAMES[cid] || null, rank, n: v.n, prob25: v.prob25, prob15: v.prob15, usedForOverride: v.n >= LEAGUE_PROB_MIN_N });
+  }
+  out.sort((a, b) => a.competition_id - b.competition_id || a.rank - b.rank);
+  res.json({
+    ok: true,
+    minSampleForOverride: LEAGUE_PROB_MIN_N,
+    cacheRows: Object.keys(LEAGUE_PROB_CACHE).length,
+    lastLoad:  LEAGUE_PROB_LAST_LOAD.at  ? { at: new Date(LEAGUE_PROB_LAST_LOAD.at).toISOString(),  rows:    LEAGUE_PROB_LAST_LOAD.rows,    error: LEAGUE_PROB_LAST_LOAD.error }    : null,
+    lastRecal: LEAGUE_PROB_LAST_RECAL.at ? { at: new Date(LEAGUE_PROB_LAST_RECAL.at).toISOString(), buckets: LEAGUE_PROB_LAST_RECAL.buckets, written: LEAGUE_PROB_LAST_RECAL.written, error: LEAGUE_PROB_LAST_RECAL.error } : null,
+    rows: out,
+  });
+});
+
 app.get("/cache-status", (req, res) => {
   const now = Date.now();
   res.json({
@@ -739,6 +856,9 @@ async function computePreds(tzOffset) {
           result = computeSignals(snap);
         }
 
+        // Phase 2: override prob25/prob15 with league-specific values when n>=30
+        if (result) applyLeagueProb(result, parseInt(sid, 10));
+
         const isComplete = fix.status === "complete" || (fix.status === "incomplete" && isPlayedMatch(fix, nowSecs));
         const fhH = parseInt(fix.ht_goals_team_a || 0, 10);
         const fhA = parseInt(fix.ht_goals_team_b || 0, 10);
@@ -751,6 +871,7 @@ async function computePreds(tzOffset) {
           CI_SNAPSHOT_CACHE[matchId] = {
             ci: result.ci, defCi: result.defCi, rank: result.rank,
             label: result.label, prob25: result.prob25, prob15: result.prob15,
+            probSource: result.probSource, probSampleN: result.probSampleN,
             eligible: result.eligible, signals: result.signals,
             snap: snap ? {
               fetchedAt: snap.fetchedAt,
@@ -777,6 +898,8 @@ async function computePreds(tzOffset) {
           label:    frozen ? frozen.label    : (result ? result.label    : "Low"),
           prob25:   frozen ? frozen.prob25   : (result ? result.prob25   : 10.0),
           prob15:   frozen ? frozen.prob15   : (result ? result.prob15   : 31.4),
+          probSource:  frozen ? frozen.probSource  : (result ? result.probSource  : "global"),
+          probSampleN: frozen ? frozen.probSampleN : (result ? result.probSampleN : 0),
           eligible: frozen ? frozen.eligible : (result ? result.eligible : false),
           ci:       frozen ? frozen.ci       : (result ? result.ci       : 0),
           defCi:    frozen ? frozen.defCi    : (result ? result.defCi    : 0),
@@ -1328,6 +1451,24 @@ app.listen(PORT, () => {
       console.log("Match cache warming in 5 min...");
     }
   }).catch(e => console.error("League list failed:", e.message));
+
+  if (supabase) {
+    // Initial load of league prob tables. If empty (first deploy after Phase 2),
+    // trigger one recalibration so we don't have to wait 24h for the schedule.
+    setTimeout(async () => {
+      try {
+        await loadLeagueProbCache();
+        if (Object.keys(LEAGUE_PROB_CACHE).length === 0) {
+          console.log("league_prob_tables empty — running initial recalibration");
+          await recalibrateLeagueProbs();
+        }
+      } catch (e) { console.error("initial league prob load:", e.message); }
+    }, 30 * 1000);
+    // Periodic cache refresh (in case another instance ran recalibration)
+    setInterval(() => { loadLeagueProbCache().catch(e => console.error("loadLeagueProbCache:", e.message)); }, LEAGUE_PROB_CACHE_TTL);
+    // Daily recalibration
+    setInterval(() => { recalibrateLeagueProbs().catch(e => console.error("recalibrateLeagueProbs:", e.message)); }, LEAGUE_PROB_RECAL_TTL);
+  }
 });
 
 process.on("uncaughtException", e => console.error("Uncaught:", e.message));
