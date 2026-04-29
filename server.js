@@ -823,6 +823,26 @@ app.get("/history", async (req, res) => {
   }
 });
 
+app.get("/h2h", async (req, res) => {
+  if (!supabase) return res.json({ ok: true, matches: [] });
+  const h = parseInt(req.query.h, 10);
+  const a = parseInt(req.query.a, 10);
+  const limit = Math.min(20, Math.max(1, parseInt(req.query.limit || "5", 10)));
+  if (!h || !a) return res.status(400).json({ ok: false, error: "h and a required" });
+  try {
+    const { data, error } = await supabase
+      .from("match_results")
+      .select("match_id, date_unix, home_id, away_id, home_name, away_name, ht_home, ht_away, ft_home, ft_away, league_name")
+      .or("and(home_id.eq." + h + ",away_id.eq." + a + "),and(home_id.eq." + a + ",away_id.eq." + h + ")")
+      .order("date_unix", { ascending: false })
+      .limit(limit);
+    if (error) throw error;
+    res.json({ ok: true, matches: data || [] });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
 app.get("/cache-status", (req, res) => {
   const now = Date.now();
   res.json({
@@ -1348,7 +1368,8 @@ body{background:#f3f4f6;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',
   J += "  });});";
   J += "  document.querySelectorAll('.toggle-btn').forEach(function(btn){btn.addEventListener('click',function(){";
   J += "    var d=btn.nextElementSibling;var o=d.classList.toggle('open');";
-  J += "    btn.innerHTML=o?'\u25b2 Hide last 5 games':'\u25bc Show last 5 games';";
+  J += "    btn.innerHTML=o?'\u25b2 Hide last 5 games & H2H':'\u25bc Show last 5 games & H2H';";
+  J += "    if(o){var h2h=d.querySelector('[id^=\"h2h-\"]');if(h2h&&!h2h.dataset.loaded){loadH2H(h2h);}}";
   J += "  });});";
   J += "  if(openLeague){var oms=lmap[openLeague]||[];oms.forEach(function(m){renderForm(m.id,m.homeId,m.home,m.hLast5,m.hAvgFH);renderForm(m.id,m.awayId,m.away,m.aLast5,m.aAvgFH);});}";
   J += "}";
@@ -1385,6 +1406,33 @@ body{background:#f3f4f6;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',
   J += "    +'<th style=\"width:12%;text-align:center\">FT</th>'";
   J += "    +'<th style=\"width:10%;text-align:center\">Res</th>'";
   J += "    +'</tr></thead><tbody>'+rows+'</tbody>'+foot+'</table></div>';";
+  J += "}";
+
+  // loadH2H — lazy-fetches /h2h on first toggle expansion
+  J += "function loadH2H(el){";
+  J += "  el.dataset.loaded='1';";
+  J += "  var h=el.dataset.h,a=el.dataset.a,hn=el.dataset.hn||'';";
+  J += "  el.innerHTML='<div style=\"font-size:11px;color:#9ca3af\">↻ Loading H2H...</div>';";
+  J += "  fetch('/h2h?h='+h+'&a='+a+'&limit=10').then(function(r){return r.json();}).then(function(d){";
+  J += "    if(!d.ok||!d.matches||!d.matches.length){el.innerHTML='<div style=\"font-size:11px;color:#9ca3af\">No H2H history found.</div>';return;}";
+  J += "    var rows=d.matches.map(function(m){";
+  J += "      var ds=m.date_unix?new Date(m.date_unix*1000).toISOString().slice(0,10):'';";
+  J += "      var fhT=(m.ht_home||0)+(m.ht_away||0);";
+  J += "      var ftT=(m.ft_home||0)+(m.ft_away||0);";
+  J += "      var ov15=fhT>1?'<span style=\"color:#15803d\">✓1.5</span>':'<span style=\"color:#9ca3af\">·1.5</span>';";
+  J += "      var ov25=fhT>2?'<span style=\"color:#dc2626\">✓2.5</span>':'<span style=\"color:#9ca3af\">·2.5</span>';";
+  J += "      return '<tr><td style=\"padding:3px 6px;color:#6b7280;font-size:10px\">'+ds+'</td>'";
+  J += "        +'<td style=\"padding:3px 6px;font-size:11px\">'+esc(m.home_name||'')+' v '+esc(m.away_name||'')+'</td>'";
+  J += "        +'<td style=\"padding:3px 6px;font-weight:700;font-size:11px;text-align:center\">'+(m.ht_home||0)+'-'+(m.ht_away||0)+'</td>'";
+  J += "        +'<td style=\"padding:3px 6px;color:#6b7280;font-size:11px;text-align:center\">'+(m.ft_home||0)+'-'+(m.ft_away||0)+'</td>'";
+  J += "        +'<td style=\"padding:3px 6px;font-size:10px;text-align:right\">'+ov15+' '+ov25+'</td></tr>';";
+  J += "    }).join('');";
+  J += "    var nMatches=d.matches.length;";
+  J += "    var hits15=d.matches.filter(function(m){return ((m.ht_home||0)+(m.ht_away||0))>1;}).length;";
+  J += "    var hits25=d.matches.filter(function(m){return ((m.ht_home||0)+(m.ht_away||0))>2;}).length;";
+  J += "    el.innerHTML='<div style=\"font-size:11px;font-weight:600;color:#374151;margin-bottom:4px\">H2H — last '+nMatches+' meetings · FH&gt;1.5 '+hits15+'/'+nMatches+' · FH&gt;2.5 '+hits25+'/'+nMatches+'</div>'";
+  J += "      +'<table style=\"width:100%;border-collapse:collapse\"><thead><tr style=\"color:#9ca3af;font-size:10px;text-align:left\"><th style=\"padding:3px 6px\">Date</th><th style=\"padding:3px 6px\">Match</th><th style=\"padding:3px 6px;text-align:center\">HT</th><th style=\"padding:3px 6px;text-align:center\">FT</th><th style=\"padding:3px 6px;text-align:right\">FH O/U</th></tr></thead><tbody>'+rows+'</tbody></table>';";
+  J += "  }).catch(function(e){el.innerHTML='<div style=\"font-size:11px;color:#b91c1c\">H2H load failed</div>';});";
   J += "}";
 
   J += "function renderCard(m){";
@@ -1488,12 +1536,13 @@ body{background:#f3f4f6;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',
   J += "    +'</div>'";
   J += "    +sigsH+ciH";
   J += "    +(m.hLast5&&m.hLast5.length||m.aLast5&&m.aLast5.length?";
-  J += "      '<div class=\"toggle-btn\">\u25bc Show last 5 games</div>'";
+  J += "      '<div class=\"toggle-btn\">\u25bc Show last 5 games & H2H</div>'";
   J += "      +'<div class=\"details\">'";
   J += "        +'<div class=\"form-wrap\">'";
   J += "          +'<div id=\"form-'+m.id+'-'+m.homeId+'\"><div style=\"font-size:11px;color:#9ca3af\">\u21bb Loading '+esc(m.home)+'...</div></div>'";
   J += "          +'<div id=\"form-'+m.id+'-'+m.awayId+'\" style=\"margin-top:6px\"><div style=\"font-size:11px;color:#9ca3af\">\u21bb Loading '+esc(m.away)+'...</div></div>'";
   J += "        +'</div>'";
+  J += "        +'<div id=\"h2h-'+m.id+'\" data-h=\"'+m.homeId+'\" data-a=\"'+m.awayId+'\" data-hn=\"'+esc(m.home||'')+'\" style=\"margin-top:10px;padding-top:10px;border-top:1px solid #f3f4f6\"></div>'";
   J += "      +'</div>'";
   J += "    :'')";
   J += "  +'</div></div>';";
