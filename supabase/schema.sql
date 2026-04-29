@@ -61,10 +61,12 @@ create policy match_results_anon_rw on match_results
   with check (true);
 
 drop policy if exists league_prob_tables_anon_read on league_prob_tables;
-create policy league_prob_tables_anon_read on league_prob_tables
-  for select
+drop policy if exists league_prob_tables_anon_rw   on league_prob_tables;
+create policy league_prob_tables_anon_rw on league_prob_tables
+  for all
   to anon
-  using (true);
+  using (true)
+  with check (true);
 
 -- Phase 2 recalibration RPC: returns per-(competition_id, rank) hit rates
 -- computed from match_results. Server calls this, then upserts the rows
