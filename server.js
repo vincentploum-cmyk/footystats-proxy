@@ -161,18 +161,110 @@ async function recalibrateLeagueProbs() {
   }
 }
 
+// Phase 3: per-league signal-combination probabilities
+// Cache shape: { "<compId>:<combo4chars>": { n, prob25, prob15 } }
+const LEAGUE_COMBO_MIN_N    = 20;
+let   LEAGUE_COMBO_CACHE    = {};
+let   LEAGUE_COMBO_LAST_LOAD  = { at: 0, rows: 0, error: null };
+let   LEAGUE_COMBO_LAST_RECAL = { at: 0, buckets: 0, written: 0, error: null };
+
+function comboFromSignals(sigs) {
+  if (!sigs) return "0000";
+  const bit = (k) => (sigs[k] && sigs[k].met) ? "1" : "0";
+  return bit("A") + bit("B") + bit("C") + bit("D");
+}
+
+async function loadLeagueComboCache() {
+  if (!supabase) return;
+  try {
+    const next = {};
+    const PAGE = 1000;
+    for (let off = 0; ; off += PAGE) {
+      const { data, error } = await supabase
+        .from("league_combo_probs")
+        .select("competition_id, sig_combo, n, prob25, prob15")
+        .range(off, off + PAGE - 1);
+      if (error) throw error;
+      if (!data || data.length === 0) break;
+      for (const r of data) {
+        next[r.competition_id + ":" + r.sig_combo] = { n: r.n, prob25: Number(r.prob25), prob15: Number(r.prob15) };
+      }
+      if (data.length < PAGE) break;
+    }
+    LEAGUE_COMBO_CACHE = next;
+    LEAGUE_COMBO_LAST_LOAD = { at: Date.now(), rows: Object.keys(next).length, error: null };
+    console.log("League combo cache loaded: " + LEAGUE_COMBO_LAST_LOAD.rows + " rows");
+  } catch (e) {
+    LEAGUE_COMBO_LAST_LOAD = { at: Date.now(), rows: Object.keys(LEAGUE_COMBO_CACHE).length, error: e.message };
+    console.error("League combo cache load failed: " + e.message);
+  }
+}
+
+async function recalibrateLeagueComboProbs() {
+  if (!supabase) return { ok: false, error: "supabase not enabled" };
+  const t0 = Date.now();
+  try {
+    const { data: buckets, error: rpcErr } = await supabase.rpc("compute_league_combo_buckets");
+    if (rpcErr) throw rpcErr;
+    if (!buckets || buckets.length === 0) {
+      LEAGUE_COMBO_LAST_RECAL = { at: Date.now(), buckets: 0, written: 0, error: null };
+      return { ok: true, buckets: 0, written: 0 };
+    }
+    const rows = buckets.map(b => ({
+      competition_id: b.competition_id,
+      sig_combo: b.sig_combo,
+      n: b.n, prob25: b.prob25, prob15: b.prob15,
+      updated_at: new Date().toISOString(),
+    }));
+    const BATCH = 500;
+    let written = 0;
+    for (let i = 0; i < rows.length; i += BATCH) {
+      const batch = rows.slice(i, i + BATCH);
+      const { error } = await supabase
+        .from("league_combo_probs")
+        .upsert(batch, { onConflict: "competition_id,sig_combo" });
+      if (error) throw error;
+      written += batch.length;
+    }
+    await loadLeagueComboCache();
+    LEAGUE_COMBO_LAST_RECAL = { at: Date.now(), buckets: buckets.length, written, error: null };
+    console.log("Recalibrated league combo probs: " + written + " buckets (" + (Date.now() - t0) + "ms)");
+    return { ok: true, buckets: buckets.length, written, elapsedMs: Date.now() - t0 };
+  } catch (e) {
+    LEAGUE_COMBO_LAST_RECAL = { at: Date.now(), buckets: 0, written: 0, error: e.message };
+    console.error("Combo recalibration failed: " + e.message);
+    return { ok: false, error: e.message };
+  }
+}
+
+// Override hierarchy: combo (n>=20) → league rank (n>=30) → global
 function applyLeagueProb(result, compId) {
   if (!result || !compId) return;
+  // 1. Try combo-level (Phase 3)
+  const combo = comboFromSignals(result.signals);
+  const comboEntry = LEAGUE_COMBO_CACHE[compId + ":" + combo];
+  if (comboEntry && comboEntry.n >= LEAGUE_COMBO_MIN_N) {
+    result.prob25 = comboEntry.prob25;
+    result.prob15 = comboEntry.prob15;
+    result.probSource  = "league_combo";
+    result.probSampleN = comboEntry.n;
+    result.probCombo   = combo;
+    return;
+  }
+  // 2. Fall back to per-league rank prob (Phase 2)
   const entry = LEAGUE_PROB_CACHE[compId + ":" + result.rank];
   if (entry && entry.n >= LEAGUE_PROB_MIN_N) {
     result.prob25 = entry.prob25;
     result.prob15 = entry.prob15;
-    result.probSource = "league";
+    result.probSource  = "league_rank";
     result.probSampleN = entry.n;
-  } else {
-    result.probSource = "global";
-    result.probSampleN = entry ? entry.n : 0;
+    result.probCombo   = combo;
+    return;
   }
+  // 3. Global default already in result.prob25/prob15
+  result.probSource  = "global";
+  result.probSampleN = entry ? entry.n : 0;
+  result.probCombo   = combo;
 }
 
 let LEAGUE_NAMES = {};
@@ -627,8 +719,29 @@ app.get("/admin/recalibrate", async (req, res) => {
   const expected = process.env.LOAD_DATASET_TOKEN;
   if (!expected) return res.status(403).json({ ok: false, error: "LOAD_DATASET_TOKEN not configured on server" });
   if (req.query.token !== expected) return res.status(403).json({ ok: false, error: "invalid token" });
-  const result = await recalibrateLeagueProbs();
-  res.json(result);
+  const rank  = await recalibrateLeagueProbs();
+  const combo = await recalibrateLeagueComboProbs();
+  res.json({ rank, combo });
+});
+
+app.get("/league-combos", (req, res) => {
+  const compId = req.query.compId ? parseInt(req.query.compId, 10) : null;
+  const out = [];
+  for (const [k, v] of Object.entries(LEAGUE_COMBO_CACHE)) {
+    const [cid, combo] = k.split(":");
+    const cidN = parseInt(cid, 10);
+    if (compId && cidN !== compId) continue;
+    out.push({ competition_id: cidN, league: LEAGUE_NAMES[cidN] || null, sig_combo: combo, n: v.n, prob25: v.prob25, prob15: v.prob15, usedForOverride: v.n >= LEAGUE_COMBO_MIN_N });
+  }
+  out.sort((a, b) => a.competition_id - b.competition_id || a.sig_combo.localeCompare(b.sig_combo));
+  res.json({
+    ok: true,
+    minSampleForOverride: LEAGUE_COMBO_MIN_N,
+    cacheRows: Object.keys(LEAGUE_COMBO_CACHE).length,
+    lastLoad:  LEAGUE_COMBO_LAST_LOAD.at  ? { at: new Date(LEAGUE_COMBO_LAST_LOAD.at).toISOString(),  rows:    LEAGUE_COMBO_LAST_LOAD.rows,    error: LEAGUE_COMBO_LAST_LOAD.error }    : null,
+    lastRecal: LEAGUE_COMBO_LAST_RECAL.at ? { at: new Date(LEAGUE_COMBO_LAST_RECAL.at).toISOString(), buckets: LEAGUE_COMBO_LAST_RECAL.buckets, written: LEAGUE_COMBO_LAST_RECAL.written, error: LEAGUE_COMBO_LAST_RECAL.error } : null,
+    rows: out,
+  });
 });
 
 app.get("/league-probs", (req, res) => {
@@ -871,7 +984,7 @@ async function computePreds(tzOffset) {
           CI_SNAPSHOT_CACHE[matchId] = {
             ci: result.ci, defCi: result.defCi, rank: result.rank,
             label: result.label, prob25: result.prob25, prob15: result.prob15,
-            probSource: result.probSource, probSampleN: result.probSampleN,
+            probSource: result.probSource, probSampleN: result.probSampleN, probCombo: result.probCombo,
             eligible: result.eligible, signals: result.signals,
             snap: snap ? {
               fetchedAt: snap.fetchedAt,
@@ -900,6 +1013,7 @@ async function computePreds(tzOffset) {
           prob15:   frozen ? frozen.prob15   : (result ? result.prob15   : 31.4),
           probSource:  frozen ? frozen.probSource  : (result ? result.probSource  : "global"),
           probSampleN: frozen ? frozen.probSampleN : (result ? result.probSampleN : 0),
+          probCombo:   frozen ? frozen.probCombo   : (result ? result.probCombo   : null),
           eligible: frozen ? frozen.eligible : (result ? result.eligible : false),
           ci:       frozen ? frozen.ci       : (result ? result.ci       : 0),
           defCi:    frozen ? frozen.defCi    : (result ? result.defCi    : 0),
@@ -1453,21 +1567,27 @@ app.listen(PORT, () => {
   }).catch(e => console.error("League list failed:", e.message));
 
   if (supabase) {
-    // Initial load of league prob tables. If empty (first deploy after Phase 2),
-    // trigger one recalibration so we don't have to wait 24h for the schedule.
+    // Initial load. If empty, trigger one recalibration so we don't wait 24h.
     setTimeout(async () => {
       try {
         await loadLeagueProbCache();
+        await loadLeagueComboCache();
         if (Object.keys(LEAGUE_PROB_CACHE).length === 0) {
-          console.log("league_prob_tables empty — running initial recalibration");
+          console.log("league_prob_tables empty — running initial rank recalibration");
           await recalibrateLeagueProbs();
+        }
+        if (Object.keys(LEAGUE_COMBO_CACHE).length === 0) {
+          console.log("league_combo_probs empty — running initial combo recalibration");
+          await recalibrateLeagueComboProbs();
         }
       } catch (e) { console.error("initial league prob load:", e.message); }
     }, 30 * 1000);
-    // Periodic cache refresh (in case another instance ran recalibration)
+    // Periodic cache refresh
     setInterval(() => { loadLeagueProbCache().catch(e => console.error("loadLeagueProbCache:", e.message)); }, LEAGUE_PROB_CACHE_TTL);
-    // Daily recalibration
+    setInterval(() => { loadLeagueComboCache().catch(e => console.error("loadLeagueComboCache:", e.message)); }, LEAGUE_PROB_CACHE_TTL);
+    // Daily recalibration (both rank + combo)
     setInterval(() => { recalibrateLeagueProbs().catch(e => console.error("recalibrateLeagueProbs:", e.message)); }, LEAGUE_PROB_RECAL_TTL);
+    setInterval(() => { recalibrateLeagueComboProbs().catch(e => console.error("recalibrateLeagueComboProbs:", e.message)); }, LEAGUE_PROB_RECAL_TTL);
   }
 });
 
