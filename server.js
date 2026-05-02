@@ -33,23 +33,77 @@ if (SUPABASE_URL && SUPABASE_KEY) {
   console.log("Supabase disabled (set SUPABASE_URL + SUPABASE_ANON_KEY to enable)");
 }
 const SUPABASE_PERSISTED_IDS = new Set();
+const SUPABASE_EARLY_PERSISTED_IDS = new Set();
 let SUPABASE_LAST_PERSIST = { at: 0, attempted: 0, written: 0, error: null };
+let SUPABASE_LAST_EARLY  = { at: 0, attempted: 0, written: 0, error: null };
 
-async function persistCompletedPreds(preds) {
+function buildSnapRow(p) {
+  return {
+    match_id: p.id,
+    competition_id: p.leagueSid || null,
+    league_name: p.league || null,
+    home_id: p.homeId || null,
+    away_id: p.awayId || null,
+    home_name: p.home || null,
+    away_name: p.away || null,
+    date_unix: p.dt ? Math.floor(p.dt / 1000) : null,
+    rank: p.rank || 0,
+    ci: p.ci || 0,
+    def_ci: p.defCi || 0,
+    prob25: p.prob25 || 0,
+    prob15: p.prob15 || 0,
+    signals: p.signals || {},
+    snap: p.snap || null,
+  };
+}
+
+// Persist pre-game snapshots immediately so they survive Render restarts.
+// Uses upsert with ignoreDuplicates so existing rows are NOT overwritten —
+// the FIRST observation's snap is preserved (this is the freeze).
+async function persistEarlySnapshots(preds) {
   if (!supabase || !Array.isArray(preds) || preds.length === 0) return;
   const rows = [];
   for (const p of preds) {
+    if (!p || !p.id) continue;
+    if (p.matchResult) continue;            // completed → other path
+    if (!p.snap) continue;                  // no stats → nothing to freeze
+    if (SUPABASE_EARLY_PERSISTED_IDS.has(p.id)) continue;
+    if (SUPABASE_PERSISTED_IDS.has(p.id))    continue;
+    rows.push(buildSnapRow(p));
+  }
+  if (rows.length === 0) return;
+  try {
+    const { error } = await supabase
+      .from("match_results")
+      .upsert(rows, { onConflict: "match_id", ignoreDuplicates: true });
+    if (error) {
+      SUPABASE_LAST_EARLY = { at: Date.now(), attempted: rows.length, written: 0, error: error.message };
+      console.error("Early snapshot persist failed: " + error.message);
+      return;
+    }
+    for (const r of rows) SUPABASE_EARLY_PERSISTED_IDS.add(r.match_id);
+    SUPABASE_LAST_EARLY = { at: Date.now(), attempted: rows.length, written: rows.length, error: null };
+    console.log("Supabase: froze " + rows.length + " pre-game snapshot" + (rows.length === 1 ? "" : "s"));
+  } catch (e) {
+    SUPABASE_LAST_EARLY = { at: Date.now(), attempted: rows.length, written: 0, error: e.message };
+    console.error("Early snapshot exception: " + e.message);
+  }
+}
+
+async function persistCompletedPreds(preds) {
+  if (!supabase || !Array.isArray(preds) || preds.length === 0) return;
+  const completed = [];
+  for (const p of preds) {
     if (!p || !p.id || !p.matchResult) continue;
     if (SUPABASE_PERSISTED_IDS.has(p.id)) continue;
-    rows.push({
-      match_id: p.id,
-      competition_id: p.leagueSid || null,
-      league_name: p.league || null,
-      home_id: p.homeId || null,
-      away_id: p.awayId || null,
-      home_name: p.home || null,
-      away_name: p.away || null,
-      date_unix: p.dt ? Math.floor(p.dt / 1000) : null,
+    completed.push(p);
+  }
+  if (completed.length === 0) return;
+  try {
+    // Step 1: insert full row for matches that have NO existing row (ignoreDuplicates).
+    // Skips matches that were already persisted early — preserving their pre-game snap.
+    const insertRows = completed.map(p => ({
+      ...buildSnapRow(p),
       ht_home: p.matchResult.fhH,
       ht_away: p.matchResult.fhA,
       ft_home: p.matchResult.ftH,
@@ -57,31 +111,33 @@ async function persistCompletedPreds(preds) {
       fh_total: (p.matchResult.fhH || 0) + (p.matchResult.fhA || 0),
       hit_15: !!p.matchResult.hit15,
       hit_25: !!p.matchResult.hit25,
-      rank: p.rank || 0,
-      ci: p.ci || 0,
-      def_ci: p.defCi || 0,
-      prob25: p.prob25 || 0,
-      prob15: p.prob15 || 0,
-      signals: p.signals || {},
-      snap: p.snap || null,
-    });
-  }
-  if (rows.length === 0) return;
-  try {
-    const { error } = await supabase
-      .from("match_results")
-      .upsert(rows, { onConflict: "match_id" });
-    if (error) {
-      SUPABASE_LAST_PERSIST = { at: Date.now(), attempted: rows.length, written: 0, error: error.message };
-      console.error("Supabase upsert failed: " + error.message);
-      return;
-    }
-    for (const r of rows) SUPABASE_PERSISTED_IDS.add(r.match_id);
-    SUPABASE_LAST_PERSIST = { at: Date.now(), attempted: rows.length, written: rows.length, error: null };
-    console.log("Supabase: persisted " + rows.length + " completed match" + (rows.length === 1 ? "" : "es"));
+    }));
+    const insErr = (await supabase.from("match_results").upsert(insertRows, { onConflict: "match_id", ignoreDuplicates: true })).error;
+    if (insErr) console.error("Completed insert error: " + insErr.message);
+    // Step 2: update result fields on every row (touches both new + existing rows).
+    // Crucially does NOT touch snap/signals/rank — preserving the early-frozen values.
+    let written = 0;
+    let lastErr = null;
+    await Promise.all(completed.map(async (p) => {
+      const { error } = await supabase.from("match_results").update({
+        ht_home: p.matchResult.fhH,
+        ht_away: p.matchResult.fhA,
+        ft_home: p.matchResult.ftH,
+        ft_away: p.matchResult.ftA,
+        fh_total: (p.matchResult.fhH || 0) + (p.matchResult.fhA || 0),
+        hit_15: !!p.matchResult.hit15,
+        hit_25: !!p.matchResult.hit25,
+      }).eq("match_id", p.id);
+      if (error) { lastErr = error.message; return; }
+      written++;
+      SUPABASE_PERSISTED_IDS.add(p.id);
+    }));
+    SUPABASE_LAST_PERSIST = { at: Date.now(), attempted: completed.length, written, error: lastErr };
+    if (written) console.log("Supabase: completed " + written + " match" + (written === 1 ? "" : "es"));
+    if (lastErr) console.error("Completed update error: " + lastErr);
   } catch (e) {
-    SUPABASE_LAST_PERSIST = { at: Date.now(), attempted: rows.length, written: 0, error: e.message };
-    console.error("Supabase exception: " + e.message);
+    SUPABASE_LAST_PERSIST = { at: Date.now(), attempted: completed.length, written: 0, error: e.message };
+    console.error("Completed persist exception: " + e.message);
   }
 }
 
@@ -775,6 +831,7 @@ app.get("/history", async (req, res) => {
         .from("match_results")
         .select("match_id, competition_id, league_name, home_name, away_name, date_unix, ht_home, ht_away, ft_home, ft_away, fh_total, hit_15, hit_25, rank, ci, def_ci, prob25, prob15, signals, snap")
         .gte("date_unix", cutoffSec)
+        .not("hit_25", "is", null)
         .order("date_unix", { ascending: false })
         .range(off, off + PAGE - 1);
       if (error) throw error;
@@ -1115,6 +1172,7 @@ app.get("/preds", async (req, res) => {
     const tzOffset = parseInt(req.query.tz || "0", 10);
     const { preds } = await computePreds(tzOffset);
     // Fire-and-forget persistence of completed matches to Supabase (no-op if disabled)
+    persistEarlySnapshots(preds).catch(e => console.error("early persist error:", e.message));
     persistCompletedPreds(preds).catch(e => console.error("persist error:", e.message));
     res.json({ ok: true, preds, rateLimited: Date.now() < RATE_LIMITED_UNTIL });
   } catch(e) {

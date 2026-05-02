@@ -104,7 +104,7 @@ returns table (
     round(avg((hit_25)::int)::numeric * 100, 2)                       as prob25,
     round(avg((hit_15)::int)::numeric * 100, 2)                       as prob15
   from match_results
-  where competition_id is not null and signals is not null
+  where competition_id is not null and signals is not null and hit_25 is not null
   group by competition_id, sig_combo;
 $$;
 
@@ -128,7 +128,7 @@ returns table (
     round(avg((hit_25)::int)::numeric * 100, 2)                     as prob25,
     round(avg((hit_15)::int)::numeric * 100, 2)                     as prob15
   from match_results
-  where competition_id is not null and rank is not null
+  where competition_id is not null and rank is not null and hit_25 is not null
   group by competition_id, rank;
 $$;
 
