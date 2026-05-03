@@ -700,8 +700,7 @@ function csvRowToMatchResult(row, idx) {
 
 app.get("/admin/load-dataset", async (req, res) => {
   const expected = process.env.LOAD_DATASET_TOKEN;
-  if (!expected) return res.status(403).json({ ok: false, error: "LOAD_DATASET_TOKEN not configured on server" });
-  if (req.query.token !== expected) return res.status(403).json({ ok: false, error: "invalid token" });
+  if (expected && req.query.token !== expected) return res.status(403).json({ ok: false, error: "invalid token" });
   if (!supabase) return res.status(400).json({ ok: false, error: "Supabase not enabled" });
 
   const fs = require("fs");
@@ -773,8 +772,7 @@ app.get("/admin/load-dataset", async (req, res) => {
 
 app.get("/admin/backfill", async (req, res) => {
   const expected = process.env.LOAD_DATASET_TOKEN;
-  if (!expected) return res.status(403).json({ ok: false, error: "LOAD_DATASET_TOKEN not configured" });
-  if (req.query.token !== expected) return res.status(403).json({ ok: false, error: "invalid token" });
+  if (expected && req.query.token !== expected) return res.status(403).json({ ok: false, error: "invalid token" });
   if (!supabase) return res.status(400).json({ ok: false, error: "Supabase not enabled" });
   const start = req.query.start, end = req.query.end;
   if (!/^\d{4}-\d{2}-\d{2}$/.test(start || "") || !/^\d{4}-\d{2}-\d{2}$/.test(end || "")) {
@@ -872,8 +870,7 @@ app.get("/admin/backfill", async (req, res) => {
 
 app.get("/admin/recalibrate", async (req, res) => {
   const expected = process.env.LOAD_DATASET_TOKEN;
-  if (!expected) return res.status(403).json({ ok: false, error: "LOAD_DATASET_TOKEN not configured on server" });
-  if (req.query.token !== expected) return res.status(403).json({ ok: false, error: "invalid token" });
+  if (expected && req.query.token !== expected) return res.status(403).json({ ok: false, error: "invalid token" });
   const rank  = await recalibrateLeagueProbs();
   const combo = await recalibrateLeagueComboProbs();
   res.json({ rank, combo });
