@@ -771,6 +771,105 @@ app.get("/admin/load-dataset", async (req, res) => {
   });
 });
 
+app.get("/admin/backfill", async (req, res) => {
+  const expected = process.env.LOAD_DATASET_TOKEN;
+  if (!expected) return res.status(403).json({ ok: false, error: "LOAD_DATASET_TOKEN not configured" });
+  if (req.query.token !== expected) return res.status(403).json({ ok: false, error: "invalid token" });
+  if (!supabase) return res.status(400).json({ ok: false, error: "Supabase not enabled" });
+  const start = req.query.start, end = req.query.end;
+  if (!/^\d{4}-\d{2}-\d{2}$/.test(start || "") || !/^\d{4}-\d{2}-\d{2}$/.test(end || "")) {
+    return res.status(400).json({ ok: false, error: "start/end required as YYYY-MM-DD" });
+  }
+  // Cap range so we don't hammer FootyStats
+  const startMs = Date.parse(start), endMs = Date.parse(end);
+  if (isNaN(startMs) || isNaN(endMs) || endMs < startMs) return res.status(400).json({ ok: false, error: "invalid range" });
+  const dayCount = Math.round((endMs - startMs) / 86400000) + 1;
+  if (dayCount > 800) return res.status(400).json({ ok: false, error: "range too large (max ~2 years)" });
+
+  const t0 = Date.now();
+  const dates = [];
+  for (let d = new Date(startMs); d <= endMs; d.setUTCDate(d.getUTCDate() + 1)) dates.push(d.toISOString().slice(0, 10));
+
+  const seen = new Set();
+  const fixtures = [];
+  for (const d of dates) {
+    const f = await fetchFixtures(d);
+    for (const m of (f && f.data) || []) {
+      const id = m.id;
+      if (!id || seen.has(id)) continue;
+      seen.add(id);
+      if (m.status !== "complete") continue;
+      const sid = parseInt(m.competition_id, 10);
+      if (!sid || WOMENS_LEAGUE_IDS.has(sid)) continue;
+      fixtures.push(m);
+    }
+  }
+
+  const sids = Array.from(new Set(fixtures.map(f => parseInt(f.competition_id, 10))));
+  const teamMaps = {};
+  for (const sid of sids) {
+    const tr = await fetchTeamStats(sid);
+    const tmap = {};
+    for (const t of (tr && tr.data) || []) if (t && t.id) tmap[t.id] = t;
+    teamMaps[sid] = tmap;
+  }
+
+  const rows = [];
+  let skipped = 0;
+  for (const fix of fixtures) {
+    const sid = parseInt(fix.competition_id, 10);
+    const teamMap = teamMaps[sid] || {};
+    const homeId = fix.homeID || fix.home_id;
+    const awayId = fix.awayID || fix.away_id;
+    const ht = teamMap[homeId], at = teamMap[awayId];
+    if (!homeId || !awayId || !ht || !at) { skipped++; continue; }
+    const hStats = extractStats(ht, "home");
+    const aStats = extractStats(at, "away");
+    const snap = { fetchedAt: "backfill", home: hStats, away: aStats };
+    const result = computeSignals(snap);
+    const fhH = parseInt(fix.ht_goals_team_a || 0, 10);
+    const fhA = parseInt(fix.ht_goals_team_b || 0, 10);
+    const ftH = parseInt(fix.homeGoalCount || 0, 10);
+    const ftA = parseInt(fix.awayGoalCount || 0, 10);
+    rows.push({
+      match_id: fix.id,
+      competition_id: sid,
+      league_name: LEAGUE_NAMES[sid] || null,
+      home_id: homeId, away_id: awayId,
+      home_name: hStats.name, away_name: aStats.name,
+      date_unix: fix.date_unix || null,
+      ht_home: fhH, ht_away: fhA, ft_home: ftH, ft_away: ftA,
+      fh_total: fhH + fhA,
+      hit_15: (fhH + fhA) > 1, hit_25: (fhH + fhA) > 2,
+      rank: result.rank, ci: result.ci, def_ci: result.defCi,
+      prob25: result.prob25, prob15: result.prob15,
+      signals: result.signals,
+      snap: { fetchedAt: snap.fetchedAt,
+              home: { name: hStats.name, scored_fh: hStats.scored_fh, conced_fh: hStats.conced_fh, t1_pct: hStats.t1_pct, cn010_avg: hStats.cn010_avg, sot_avg: 0 },
+              away: { name: aStats.name, scored_fh: aStats.scored_fh, conced_fh: aStats.conced_fh, t1_pct: aStats.t1_pct, cn010_avg: aStats.cn010_avg, sot_avg: 0 } },
+    });
+  }
+
+  if (req.query.dryRun === "1") {
+    return res.json({ ok: true, dryRun: true, dates: dates.length, fixtures: fixtures.length, valid: rows.length, skipped, sampleRow: rows[0] || null, elapsedMs: Date.now() - t0 });
+  }
+
+  const BATCH = 500;
+  let written = 0;
+  const errors = [];
+  for (let i = 0; i < rows.length; i += BATCH) {
+    const batch = rows.slice(i, i + BATCH);
+    const { error } = await supabase.from("match_results").upsert(batch, { onConflict: "match_id" });
+    if (error) {
+      errors.push({ batchStart: i, message: error.message });
+      if (errors.length >= 5) break;
+    } else {
+      written += batch.length;
+    }
+  }
+  res.json({ ok: errors.length === 0, dates: dates.length, fixtures: fixtures.length, valid: rows.length, skipped, written, errors, elapsedMs: Date.now() - t0 });
+});
+
 app.get("/admin/recalibrate", async (req, res) => {
   const expected = process.env.LOAD_DATASET_TOKEN;
   if (!expected) return res.status(403).json({ ok: false, error: "LOAD_DATASET_TOKEN not configured on server" });
