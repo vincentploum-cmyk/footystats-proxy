@@ -987,6 +987,7 @@ app.get("/h2h", async (req, res) => {
       .from("match_results")
       .select("match_id, date_unix, home_id, away_id, home_name, away_name, ht_home, ht_away, ft_home, ft_away, league_name")
       .or("and(home_id.eq." + h + ",away_id.eq." + a + "),and(home_id.eq." + a + ",away_id.eq." + h + ")")
+      .not("hit_25", "is", null)
       .order("date_unix", { ascending: false })
       .limit(limit);
     if (error) throw error;
