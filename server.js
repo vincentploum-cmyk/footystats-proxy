@@ -915,6 +915,71 @@ app.get("/league-probs", (req, res) => {
   });
 });
 
+// Clean-cohort calibration: matches with TRUE pre-game freeze (excludes
+// historical-import and backfill rows). Used to measure real forward accuracy.
+app.get("/calibration", async (req, res) => {
+  if (!supabase) return res.status(400).json({ ok: false, error: "Supabase not enabled" });
+  try {
+    const all = [];
+    const PAGE = 1000;
+    for (let off = 0; ; off += PAGE) {
+      const { data, error } = await supabase
+        .from("match_results")
+        .select("rank, prob25, prob15, hit_25, hit_15, signals, snap")
+        .not("hit_25", "is", null)
+        .not("snap", "is", null)
+        .not("snap->>fetchedAt", "eq", "historical-import")
+        .not("snap->>fetchedAt", "eq", "backfill")
+        .range(off, off + PAGE - 1);
+      if (error) throw error;
+      if (!data || data.length === 0) break;
+      all.push(...data);
+      if (data.length < PAGE) break;
+    }
+    const byRank = {};
+    for (let r = 0; r <= 4; r++) byRank[r] = { n: 0, hit25: 0, hit15: 0, sumP25: 0, sumP15: 0 };
+    let total = { n: 0, hit25: 0, hit15: 0, sumP25: 0, sumP15: 0 };
+    for (const m of all) {
+      const r = m.rank;
+      if (byRank[r] !== undefined) {
+        byRank[r].n++;
+        if (m.hit_25) byRank[r].hit25++;
+        if (m.hit_15) byRank[r].hit15++;
+        byRank[r].sumP25 += Number(m.prob25 || 0);
+        byRank[r].sumP15 += Number(m.prob15 || 0);
+      }
+      total.n++;
+      if (m.hit_25) total.hit25++;
+      if (m.hit_15) total.hit15++;
+      total.sumP25 += Number(m.prob25 || 0);
+      total.sumP15 += Number(m.prob15 || 0);
+    }
+    for (const k of Object.keys(byRank)) {
+      const b = byRank[k];
+      b.predicted25 = b.n ? +(b.sumP25 / b.n).toFixed(1) : 0;
+      b.predicted15 = b.n ? +(b.sumP15 / b.n).toFixed(1) : 0;
+      b.actual25 = b.n ? +(b.hit25 / b.n * 100).toFixed(1) : 0;
+      b.actual15 = b.n ? +(b.hit15 / b.n * 100).toFixed(1) : 0;
+      delete b.sumP25; delete b.sumP15;
+    }
+    res.json({
+      ok: true,
+      cohortSize: total.n,
+      summary: {
+        n: total.n,
+        hit25: total.hit25, hit15: total.hit15,
+        actual25: total.n ? +(total.hit25 / total.n * 100).toFixed(1) : 0,
+        actual15: total.n ? +(total.hit15 / total.n * 100).toFixed(1) : 0,
+        predicted25: total.n ? +(total.sumP25 / total.n).toFixed(1) : 0,
+        predicted15: total.n ? +(total.sumP15 / total.n).toFixed(1) : 0,
+      },
+      byRank,
+    });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
 app.get("/history", async (req, res) => {
   if (!supabase) return res.status(400).json({ ok: false, error: "Supabase not enabled" });
   const days = Math.min(7, Math.max(1, parseInt(req.query.days || "7", 10)));
@@ -1433,6 +1498,7 @@ body{background:#f3f4f6;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',
   J += "  }";
   J += "  h+='<button class=\"tab'+(activeView==='bestbets'?' active':'')+'\" data-view=\"bestbets\" style=\"background:'+(activeView==='bestbets'?'#ff6b35':'#1b5e20')+';color:#fff;font-weight:700\">\ud83c\udfaf Best Bets</button>';";
   J += "  h+='<button class=\"tab'+(activeView==='history'?' active':'')+'\" data-view=\"history\" style=\"background:'+(activeView==='history'?'#ff6b35':'#374151')+';color:#fff;font-weight:700\">\ud83d\udcca History</button>';";
+  J += "  h+='<button class=\"tab'+(activeView==='calibration'?' active':'')+'\" data-view=\"calibration\" style=\"background:'+(activeView==='calibration'?'#ff6b35':'#4f46e5')+';color:#fff;font-weight:700\">\ud83d\udccf Calibration</button>';";
   J += "  el.innerHTML=h;";
   J += "  el.querySelectorAll('[data-di]').forEach(function(btn){btn.addEventListener('click',function(){";
   J += "    var i=Number(btn.getAttribute('data-di'));";
@@ -1449,6 +1515,67 @@ body{background:#f3f4f6;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',
   J += "    activeView='history';activeDate=null;renderTabs();renderHistory();";
   J += "    document.getElementById('hdrTitle').textContent='History \u2014 Last 7 Days';";
   J += "  });";
+  J += "  var cBtn=el.querySelector('[data-view=\"calibration\"]');";
+  J += "  if(cBtn)cBtn.addEventListener('click',function(){";
+  J += "    activeView='calibration';activeDate=null;renderTabs();renderCalibration();";
+  J += "    document.getElementById('hdrTitle').textContent='Calibration \u2014 Clean Cohort';";
+  J += "  });";
+  J += "}";
+
+  // renderCalibration: lazy-load /calibration, show clean-cohort summary + per-rank table
+  J += "var CALIB=null;var CALIB_LOADING=false;";
+  J += "function renderCalibration(){";
+  J += "  var main=document.getElementById('mainView');";
+  J += "  if(CALIB_LOADING){main.innerHTML='<p style=\"color:#6b7280;text-align:center;padding:40px;font-size:13px\">\u23f3 Loading calibration\u2026</p>';return;}";
+  J += "  if(!CALIB){";
+  J += "    CALIB_LOADING=true;main.innerHTML='<p style=\"color:#6b7280;text-align:center;padding:40px;font-size:13px\">\u23f3 Loading calibration\u2026</p>';";
+  J += "    fetch('/calibration').then(function(r){return r.json();}).then(function(d){";
+  J += "      CALIB_LOADING=false;";
+  J += "      if(!d.ok){main.innerHTML='<p style=\"color:#b91c1c;text-align:center;padding:40px\">'+esc(d.error||'Failed to load')+'</p>';return;}";
+  J += "      CALIB=d;renderCalibration();";
+  J += "    }).catch(function(e){CALIB_LOADING=false;main.innerHTML='<p style=\"color:#b91c1c;text-align:center;padding:40px\">Failed: '+esc(e.message)+'</p>';});";
+  J += "    return;";
+  J += "  }";
+  J += "  var d=CALIB,s=d.summary||{};";
+  J += "  var h='<div style=\"max-width:920px;margin:0 auto\">';";
+  J += "  h+='<div style=\"background:#eef2ff;border:1px solid #c7d2fe;border-radius:10px;padding:14px;margin-bottom:14px;font-size:12px;color:#4338ca;line-height:1.5\">';";
+  J += "  h+='<strong>Clean cohort:</strong> '+d.cohortSize+' matches captured pre-game (no look-ahead bias). ';";
+  J += "  h+='This excludes the 22k historical CSV + backfilled rows, so it\\'s the ONLY honest accuracy measure. ';";
+  J += "  h+='Bigger cohort = more reliable. Aim for \u2265200 before trusting any specific rank\\'s row.';";
+  J += "  h+='</div>';";
+  J += "  if(d.cohortSize===0){h+='<p style=\"color:#6b7280;text-align:center;padding:40px\">No clean-cohort matches yet. The cohort grows daily as live-captured matches complete.</p></div>';main.innerHTML=h;return;}";
+  J += "  h+='<div style=\"background:#fff;border:1px solid #e5e7eb;border-radius:10px;padding:16px;margin-bottom:14px\">';";
+  J += "  h+='<div style=\"font-size:11px;color:#6b7280;text-transform:uppercase;letter-spacing:.5px;margin-bottom:8px\">Overall \u2014 '+d.cohortSize+' matches</div>';";
+  J += "  h+='<div style=\"display:flex;gap:24px;flex-wrap:wrap\">';";
+  // Helper for one stat block (predicted vs actual)
+  J += "  function blk(lbl,pred,act){var col=(act>=pred-2)?'#0f766e':(act>=pred-5)?'#a16207':'#b91c1c';";
+  J += "    return '<div><div style=\"font-size:10px;color:#9ca3af;text-transform:uppercase;letter-spacing:.5px\">'+lbl+'</div>'";
+  J += "      +'<div style=\"display:flex;align-items:baseline;gap:6px\"><span style=\"font-size:24px;font-weight:700;color:'+col+'\">'+act+'%</span>'";
+  J += "      +'<span style=\"font-size:11px;color:#9ca3af\">actual / '+pred+'% pred</span></div></div>';}";
+  J += "  h+=blk('FH > 1.5',s.predicted15,s.actual15);";
+  J += "  h+=blk('FH > 2.5',s.predicted25,s.actual25);";
+  J += "  h+='</div></div>';";
+  J += "  h+='<div style=\"background:#fff;border:1px solid #e5e7eb;border-radius:10px;padding:14px;overflow-x:auto\">';";
+  J += "  h+='<div style=\"font-size:13px;font-weight:600;margin-bottom:10px\">By rank \u2014 predicted vs actual</div>';";
+  J += "  h+='<table style=\"width:100%;font-size:12px;border-collapse:collapse\"><thead><tr style=\"text-align:left;color:#6b7280;border-bottom:1px solid #e5e7eb\">'";
+  J += "    +'<th style=\"padding:6px 8px\">Rank</th><th style=\"padding:6px 8px\">N</th>'";
+  J += "    +'<th style=\"padding:6px 8px\">Pred FH&gt;2.5</th><th style=\"padding:6px 8px\">Actual</th>'";
+  J += "    +'<th style=\"padding:6px 8px\">Pred FH&gt;1.5</th><th style=\"padding:6px 8px\">Actual</th></tr></thead><tbody>';";
+  J += "  for(var r=4;r>=0;r--){var b=d.byRank[r]||{n:0,predicted25:0,actual25:0,predicted15:0,actual15:0};";
+  J += "    var lbl=['Low','Signal','Watch','Prime','Fire'][r];";
+  J += "    var c25=(b.n<10)?'#9ca3af':(b.actual25>=b.predicted25-2)?'#0f766e':'#b91c1c';";
+  J += "    var c15=(b.n<10)?'#9ca3af':(b.actual15>=b.predicted15-2)?'#0f766e':'#b91c1c';";
+  J += "    h+='<tr style=\"border-bottom:1px solid #f3f4f6\">'";
+  J += "      +'<td style=\"padding:6px 8px;font-weight:600\">'+r+' '+lbl+'</td>'";
+  J += "      +'<td style=\"padding:6px 8px\">'+b.n+(b.n<10?'<span style=\"color:#9ca3af;font-size:10px\"> (low n)</span>':'')+'</td>'";
+  J += "      +'<td style=\"padding:6px 8px;color:#6b7280\">'+b.predicted25+'%</td>'";
+  J += "      +'<td style=\"padding:6px 8px;font-weight:600;color:'+c25+'\">'+b.actual25+'%</td>'";
+  J += "      +'<td style=\"padding:6px 8px;color:#6b7280\">'+b.predicted15+'%</td>'";
+  J += "      +'<td style=\"padding:6px 8px;font-weight:600;color:'+c15+'\">'+b.actual15+'%</td>'";
+  J += "    +'</tr>';";
+  J += "  }";
+  J += "  h+='</tbody></table></div></div>';";
+  J += "  main.innerHTML=h;";
   J += "}";
 
   // renderHistory \u2014 fetches /history and shows summary + per-rank calibration + match list
