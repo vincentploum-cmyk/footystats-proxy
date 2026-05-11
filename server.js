@@ -1409,18 +1409,19 @@ body{background:#f3f4f6;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',
   J += "function lgLabel(r){return r===4?'Fire \ud83d\udd25':r===3?'Prime \u26a1':r===2?'Watch \ud83d\udc40':r===1?'Signal \ud83d\udce1':'Low';}";
   J += "function fLetter(r){return r==='W'?'<span class=\"fw\">W</span>':r==='L'?'<span class=\"fl\">L</span>':'<span class=\"fd\">D</span>';}";
   J += "function mkChip(lbl,val,thr,state){var cls='chip'+(state?' '+state:'');return '<div class=\"'+cls+'\">'+'<div class=\"chip-lbl\">'+esc(lbl)+'</div><div class=\"chip-val\">'+esc(val)+'</div><div class=\"chip-thr\">'+esc(thr)+'</div></div>';}";
-  // betPill: drives off predicted probability AND a soft Sig B for the FH>1.5 pill.
-  //   🔥  = prob25 ≥ 50 (strong FH>2.5 candidate)
-  //   🎯 BET = prob15 ≥ 60 OR (min(T1) ≥ 15 AND max(T1) ≥ 25)
-  // The soft Sig B catches asymmetric-T1 matches the model rates as rank 0/1
-  // but empirically hit FH>1.5 at 48-53% (e.g. T1 18% vs 30%).
+  // betPill: drives off predicted probability AND a soft Sig B + Sig "recent form" for the pills.
+  //   🔥  = prob25 ≥ 50  OR  both teams' last-5 FH avg ≥ 2.25  (empirical 31% on FH>2.5)
+  //   🎯 BET = prob15 ≥ 60  OR  (min(T1) ≥ 15 AND max(T1) ≥ 25)  OR  both teams' last-5 FH avg ≥ 2.0  (empirical 50% on FH>1.5)
   J += "function betPill(m){if(!m)return '';";
   J += "  var p25=m.prob25||0,p15=m.prob15||0;";
   J += "  var sn=m.snap||{},hT=sn.home&&Number(sn.home.t1_pct)||0,aT=sn.away&&Number(sn.away.t1_pct)||0;";
   J += "  var bSoft=Math.min(hT,aT)>=15&&Math.max(hT,aT)>=25;";
+  J += "  function fhAvg(arr){if(!arr||arr.length<3)return 0;var s=0;arr.forEach(function(g){s+=(g.fhFor||0)+(g.fhAgst||0);});return s/arr.length;}";
+  J += "  var minAvg=Math.min(fhAvg(m.hLast5),fhAvg(m.aLast5));";
+  J += "  var recent25=minAvg>=2.25,recent15=minAvg>=2.0;";
   J += "  var h='';";
-  J += "  if(p25>=50)h+='<div style=\"display:inline-block;background:#dc2626;color:#fff;font-size:11px;font-weight:700;padding:3px 9px;border-radius:6px;margin-right:4px\" title=\"Strong FH>2.5 candidate (≥ 50%)\">🔥</div>';";
-  J += "  if(p15>=60||bSoft)h+='<div style=\"display:inline-block;background:#15803d;color:#fff;font-size:11px;font-weight:700;padding:3px 9px;border-radius:6px;letter-spacing:.5px;margin-right:6px\" title=\"Strong FH>1.5 candidate (prob ≥ 60% or T1 min/max ≥ 15/25)\">🎯 BET</div>';";
+  J += "  if(p25>=50||recent25)h+='<div style=\"display:inline-block;background:#dc2626;color:#fff;font-size:11px;font-weight:700;padding:3px 9px;border-radius:6px;margin-right:4px\" title=\"Strong FH>2.5 candidate\">🔥</div>';";
+  J += "  if(p15>=60||bSoft||recent15)h+='<div style=\"display:inline-block;background:#15803d;color:#fff;font-size:11px;font-weight:700;padding:3px 9px;border-radius:6px;letter-spacing:.5px;margin-right:6px\" title=\"Strong FH>1.5 candidate\">🎯 BET</div>';";
   J += "  return h;}";
 
   J += "function renderTabs(){";
