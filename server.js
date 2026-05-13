@@ -937,6 +937,7 @@ app.get("/calibration", async (req, res) => {
       if (data.length < PAGE) break;
     }
     const byRank = {};
+    const byCombo = {};
     for (let r = 0; r <= 4; r++) byRank[r] = { n: 0, hit25: 0, hit15: 0, sumP25: 0, sumP15: 0 };
     let total = { n: 0, hit25: 0, hit15: 0, sumP25: 0, sumP15: 0 };
     for (const m of all) {
@@ -948,20 +949,31 @@ app.get("/calibration", async (req, res) => {
         byRank[r].sumP25 += Number(m.prob25 || 0);
         byRank[r].sumP15 += Number(m.prob15 || 0);
       }
+      // Per-combo bucket
+      const sigs = m.signals || {};
+      const bit = (k) => (sigs[k] && sigs[k].met) ? "1" : "0";
+      const combo = bit("A") + bit("B") + bit("C") + bit("D");
+      if (!byCombo[combo]) byCombo[combo] = { n: 0, hit25: 0, hit15: 0, sumP25: 0, sumP15: 0 };
+      byCombo[combo].n++;
+      if (m.hit_25) byCombo[combo].hit25++;
+      if (m.hit_15) byCombo[combo].hit15++;
+      byCombo[combo].sumP25 += Number(m.prob25 || 0);
+      byCombo[combo].sumP15 += Number(m.prob15 || 0);
       total.n++;
       if (m.hit_25) total.hit25++;
       if (m.hit_15) total.hit15++;
       total.sumP25 += Number(m.prob25 || 0);
       total.sumP15 += Number(m.prob15 || 0);
     }
-    for (const k of Object.keys(byRank)) {
-      const b = byRank[k];
+    function finalize(b) {
       b.predicted25 = b.n ? +(b.sumP25 / b.n).toFixed(1) : 0;
       b.predicted15 = b.n ? +(b.sumP15 / b.n).toFixed(1) : 0;
       b.actual25 = b.n ? +(b.hit25 / b.n * 100).toFixed(1) : 0;
       b.actual15 = b.n ? +(b.hit15 / b.n * 100).toFixed(1) : 0;
       delete b.sumP25; delete b.sumP15;
     }
+    for (const k of Object.keys(byRank)) finalize(byRank[k]);
+    for (const k of Object.keys(byCombo)) finalize(byCombo[k]);
     res.json({
       ok: true,
       cohortSize: total.n,
@@ -974,6 +986,7 @@ app.get("/calibration", async (req, res) => {
         predicted15: total.n ? +(total.sumP15 / total.n).toFixed(1) : 0,
       },
       byRank,
+      byCombo,
     });
   } catch (e) {
     res.status(500).json({ ok: false, error: e.message });
@@ -1574,7 +1587,35 @@ body{background:#f3f4f6;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',
   J += "      +'<td style=\"padding:6px 8px;font-weight:600;color:'+c15+'\">'+b.actual15+'%</td>'";
   J += "    +'</tr>';";
   J += "  }";
-  J += "  h+='</tbody></table></div></div>';";
+  J += "  h+='</tbody></table></div>';";
+  // By-combo table — same level of granularity the model actually predicts at
+  J += "  var comboMeaning={'0000':'none','1000':'only A (CI)','0100':'only B (T1)','0010':'only C (defCI)','0001':'only D (away atk)',";
+  J += "    '1100':'A+B','1010':'A+C','1001':'A+D','0110':'B+C','0101':'B+D','0011':'C+D',";
+  J += "    '1110':'A+B+C','1101':'A+B+D','1011':'A+C+D','0111':'B+C+D','1111':'ALL four'};";
+  J += "  var comboKeys=Object.keys(d.byCombo||{}).sort(function(a,b){return d.byCombo[b].n-d.byCombo[a].n;});";
+  J += "  if(comboKeys.length){";
+  J += "    h+='<div style=\"background:#fff;border:1px solid #e5e7eb;border-radius:10px;padding:14px;margin-top:14px;overflow-x:auto\">';";
+  J += "    h+='<div style=\"font-size:13px;font-weight:600;margin-bottom:10px\">By signal combo — predicted vs actual</div>';";
+  J += "    h+='<table style=\"width:100%;font-size:12px;border-collapse:collapse\"><thead><tr style=\"text-align:left;color:#6b7280;border-bottom:1px solid #e5e7eb\">'";
+  J += "      +'<th style=\"padding:6px 8px\">Combo</th><th style=\"padding:6px 8px\">N</th>'";
+  J += "      +'<th style=\"padding:6px 8px\">Pred FH&gt;2.5</th><th style=\"padding:6px 8px\">Actual</th>'";
+  J += "      +'<th style=\"padding:6px 8px\">Pred FH&gt;1.5</th><th style=\"padding:6px 8px\">Actual</th></tr></thead><tbody>';";
+  J += "    comboKeys.forEach(function(c){var b=d.byCombo[c];";
+  J += "      var lbl=comboMeaning[c]||c;";
+  J += "      var c25=(b.n<10)?'#9ca3af':(b.actual25>=b.predicted25-2)?'#0f766e':'#b91c1c';";
+  J += "      var c15=(b.n<10)?'#9ca3af':(b.actual15>=b.predicted15-2)?'#0f766e':'#b91c1c';";
+  J += "      h+='<tr style=\"border-bottom:1px solid #f3f4f6\">'";
+  J += "        +'<td style=\"padding:6px 8px;font-family:ui-monospace,monospace;font-weight:600\">'+c+' <span style=\"color:#6b7280;font-weight:400;font-family:system-ui\">'+lbl+'</span></td>'";
+  J += "        +'<td style=\"padding:6px 8px\">'+b.n+(b.n<10?'<span style=\"color:#9ca3af;font-size:10px\"> (low n)</span>':'')+'</td>'";
+  J += "        +'<td style=\"padding:6px 8px;color:#6b7280\">'+b.predicted25+'%</td>'";
+  J += "        +'<td style=\"padding:6px 8px;font-weight:600;color:'+c25+'\">'+b.actual25+'%</td>'";
+  J += "        +'<td style=\"padding:6px 8px;color:#6b7280\">'+b.predicted15+'%</td>'";
+  J += "        +'<td style=\"padding:6px 8px;font-weight:600;color:'+c15+'\">'+b.actual15+'%</td>'";
+  J += "      +'</tr>';";
+  J += "    });";
+  J += "    h+='</tbody></table></div>';";
+  J += "  }";
+  J += "  h+='</div>';";
   J += "  main.innerHTML=h;";
   J += "}";
 
