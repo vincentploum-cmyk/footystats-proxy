@@ -1132,6 +1132,25 @@ app.get("/signal-backtest", async (req, res) => {
       delete b.sumP25; delete b.sumP15;
     }
 
+    // Per-combination buckets — rank counts signals, but specific combos can
+    // diverge a lot at the same rank (e.g. B alone vs C alone). This surfaces
+    // which combinations actually carry the predictive weight.
+    const byCombo = {};
+    for (const m of all) {
+      const c = ["A", "B", "C", "D"].filter(k => met(m, k)).join("") || "(none)";
+      if (!byCombo[c]) byCombo[c] = { n: 0, hit25: 0, hit15: 0 };
+      byCombo[c].n++;
+      if (m.hit_25) byCombo[c].hit25++;
+      if (m.hit_15) byCombo[c].hit15++;
+    }
+    for (const c of Object.keys(byCombo)) {
+      const b = byCombo[c];
+      b.rank = c === "(none)" ? 0 : c.length;
+      b.actual25 = b.n ? +(b.hit25 / b.n * 100).toFixed(1) : 0;
+      b.actual15 = b.n ? +(b.hit15 / b.n * 100).toFixed(1) : 0;
+      b.lift25 = base25 ? +(b.hit25 / b.n / base25).toFixed(2) : 0;
+    }
+
     res.json({
       ok: true,
       cohortSize: n,
@@ -1139,7 +1158,8 @@ app.get("/signal-backtest", async (req, res) => {
       baseRate15: +(base15 * 100).toFixed(1),
       perSignal,
       byRank,
-      note: "Excludes historical-import/backfill. lift25~1.0 = no live edge; gap25<0 = table overpredicts.",
+      byCombo,
+      note: "Excludes historical-import/backfill. lift25~1.0 = no live edge; gap25<0 = table overpredicts; byCombo.lift25 < same-rank peers = that signal is dead weight.",
     });
   } catch (e) {
     res.status(500).json({ ok: false, error: e.message });
@@ -1450,6 +1470,15 @@ async function computePreds(tzOffset) {
         const ftH = parseInt(fix.homeGoalCount   || 0, 10);
         const ftA = parseInt(fix.awayGoalCount   || 0, 10);
 
+        // Freeze the last-5 FH form the signals used, so the recent-form inputs
+        // can be re-validated on live data later (snapshots previously kept only
+        // season stats, leaving the new signals impossible to backtest live).
+        const h5snap = last5Form(hLast5), a5snap = last5Form(aLast5);
+        const l5snap = (h5snap && a5snap) ? {
+          home: { f: +h5snap.f.toFixed(2), a: +h5snap.a.toFixed(2), t: +h5snap.t.toFixed(2) },
+          away: { f: +a5snap.f.toFixed(2), a: +a5snap.a.toFixed(2), t: +a5snap.t.toFixed(2) },
+        } : null;
+
         // Snapshot pre-match prediction values before match completes
         const matchId = fix.id;
         if (result && !isComplete && !CI_SNAPSHOT_CACHE[matchId]) {
@@ -1462,6 +1491,7 @@ async function computePreds(tzOffset) {
               fetchedAt: snap.fetchedAt,
               home: { name: snap.home.name, scored_fh: snap.home.scored_fh, conced_fh: snap.home.conced_fh, t1_pct: snap.home.t1_pct, cn010_avg: snap.home.cn010_avg, sot_avg: snap.home.sot_avg },
               away: { name: snap.away.name, scored_fh: snap.away.scored_fh, conced_fh: snap.away.conced_fh, t1_pct: snap.away.t1_pct, cn010_avg: snap.away.cn010_avg, sot_avg: snap.away.sot_avg },
+              l5: l5snap,
             } : null,
           };
         }
@@ -1478,6 +1508,7 @@ async function computePreds(tzOffset) {
             fetchedAt: snap.fetchedAt,
             home: { name: snap.home.name, scored_fh: snap.home.scored_fh, conced_fh: snap.home.conced_fh, t1_pct: snap.home.t1_pct, cn010_avg: snap.home.cn010_avg, sot_avg: snap.home.sot_avg },
             away: { name: snap.away.name, scored_fh: snap.away.scored_fh, conced_fh: snap.away.conced_fh, t1_pct: snap.away.t1_pct, cn010_avg: snap.away.cn010_avg, sot_avg: snap.away.sot_avg },
+            l5: l5snap,
           } : null),
           rank:     frozen ? frozen.rank     : (result ? result.rank     : 0),
           label:    frozen ? frozen.label    : (result ? result.label    : "Low"),
