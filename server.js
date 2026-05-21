@@ -141,6 +141,38 @@ async function persistCompletedPreds(preds) {
   }
 }
 
+// Rehydrate CI_SNAPSHOT_CACHE from Supabase on startup. Without this, a Render
+// restart loses every in-memory frozen pre-match snapshot, so completed matches
+// would be recomputed from current stats instead of showing their frozen view.
+async function loadFrozenSnapshots() {
+  if (!supabase) return;
+  try {
+    const cutoff = Math.floor(Date.now() / 1000) - 30 * 24 * 60 * 60;
+    const { data, error } = await supabase
+      .from("match_results")
+      .select("match_id, rank, ci, def_ci, prob25, prob15, signals, snap")
+      .not("snap", "is", null)
+      .gte("date_unix", cutoff);
+    if (error) throw error;
+    let n = 0;
+    for (const r of (data || [])) {
+      if (!r.match_id || CI_SNAPSHOT_CACHE[r.match_id]) continue;
+      const rank = r.rank || 0;
+      CI_SNAPSHOT_CACHE[r.match_id] = {
+        ci: Number(r.ci) || 0, defCi: Number(r.def_ci) || 0,
+        rank, label: RANK_LABELS[rank] || "Low",
+        prob25: Number(r.prob25) || 0, prob15: Number(r.prob15) || 0,
+        probSource: "frozen", probSampleN: 0, probCombo: null,
+        eligible: rank >= 3, signals: r.signals || {}, snap: r.snap || null,
+      };
+      n++;
+    }
+    console.log("Rehydrated " + n + " frozen snapshot" + (n === 1 ? "" : "s") + " from Supabase");
+  } catch (e) {
+    console.error("loadFrozenSnapshots: " + e.message);
+  }
+}
+
 // ─── PHASE 2: PER-LEAGUE PROBABILITY TABLES ──────────────────────────────────
 // Cache shape: { "<compId>:<rank>": { n, prob25, prob15 } }
 // Populated from league_prob_tables on startup + every CACHE_TTL_MS.
@@ -1221,10 +1253,17 @@ app.get("/debug-team/:teamId", (req, res) => {
 });
 
 app.get("/api/*", async (req, res) => {
+  const expected = process.env.LOAD_DATASET_TOKEN;
+  if (!expected) return res.status(503).json({ ok: false, error: "admin token not configured" });
+  if (req.query.token !== expected) return res.status(403).json({ ok: false, error: "invalid token" });
   try {
     const path = req.path.replace("/api", "");
-    const qs = new URLSearchParams({ ...req.query, key: KEY }).toString();
-    res.json(await ftch(BASE + path + "?" + qs));
+    const params = { ...req.query };
+    delete params.token;
+    const qs = new URLSearchParams({ ...params, key: KEY }).toString();
+    const data = await safeFetch(BASE + path + "?" + qs);
+    if (!data) return res.status(503).json({ error: "upstream unavailable or rate limited" });
+    res.json(data);
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
@@ -2178,6 +2217,8 @@ app.listen(PORT, () => {
   }).catch(e => console.error("League list failed:", e.message));
 
   if (supabase) {
+    // Restore frozen pre-match snapshots so completed matches survive restarts.
+    loadFrozenSnapshots().catch(e => console.error("loadFrozenSnapshots:", e.message));
     // Initial load. If empty, trigger one recalibration so we don't wait 24h.
     setTimeout(async () => {
       try {
