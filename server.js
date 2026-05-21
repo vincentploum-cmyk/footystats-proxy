@@ -141,6 +141,38 @@ async function persistCompletedPreds(preds) {
   }
 }
 
+// Rehydrate CI_SNAPSHOT_CACHE from Supabase on startup. Without this, a Render
+// restart loses every in-memory frozen pre-match snapshot, so completed matches
+// would be recomputed from current stats instead of showing their frozen view.
+async function loadFrozenSnapshots() {
+  if (!supabase) return;
+  try {
+    const cutoff = Math.floor(Date.now() / 1000) - 30 * 24 * 60 * 60;
+    const { data, error } = await supabase
+      .from("match_results")
+      .select("match_id, rank, ci, def_ci, prob25, prob15, signals, snap")
+      .not("snap", "is", null)
+      .gte("date_unix", cutoff);
+    if (error) throw error;
+    let n = 0;
+    for (const r of (data || [])) {
+      if (!r.match_id || CI_SNAPSHOT_CACHE[r.match_id]) continue;
+      const rank = r.rank || 0;
+      CI_SNAPSHOT_CACHE[r.match_id] = {
+        ci: Number(r.ci) || 0, defCi: Number(r.def_ci) || 0,
+        rank, label: RANK_LABELS[rank] || "Low",
+        prob25: Number(r.prob25) || 0, prob15: Number(r.prob15) || 0,
+        probSource: "frozen", probSampleN: 0, probCombo: null,
+        eligible: rank >= 3, signals: r.signals || {}, snap: r.snap || null,
+      };
+      n++;
+    }
+    console.log("Rehydrated " + n + " frozen snapshot" + (n === 1 ? "" : "s") + " from Supabase");
+  } catch (e) {
+    console.error("loadFrozenSnapshots: " + e.message);
+  }
+}
+
 // ─── PHASE 2: PER-LEAGUE PROBABILITY TABLES ──────────────────────────────────
 // Cache shape: { "<compId>:<rank>": { n, prob25, prob15 } }
 // Populated from league_prob_tables on startup + every CACHE_TTL_MS.
@@ -584,10 +616,12 @@ function buildLast5(teamId, cache) {
       const oppFt  = isHome ? m.awayGoalCount : m.homeGoalCount;
       const result = teamFt > oppFt ? "W" : teamFt < oppFt ? "L" : "D";
       const date   = m.date_unix ? new Date(m.date_unix * 1000).toISOString().slice(0, 10) : "";
-      // Always display as home-away order
+      // Goals are team-relative (for/against from THIS team's perspective), not home-away.
       return { date, venue: isHome ? "H" : "A", opp: isHome ? m.away_name : m.home_name,
-               fhFor: m.ht_goals_team_a, fhAgst: m.ht_goals_team_b,
-               ftFor: m.homeGoalCount, ftAgst: m.awayGoalCount, result };
+               fhFor:  isHome ? m.ht_goals_team_a : m.ht_goals_team_b,
+               fhAgst: isHome ? m.ht_goals_team_b : m.ht_goals_team_a,
+               ftFor:  isHome ? m.homeGoalCount : m.awayGoalCount,
+               ftAgst: isHome ? m.awayGoalCount : m.homeGoalCount, result };
     });
 }
 
@@ -612,17 +646,33 @@ const WOMENS_LEAGUE_IDS = new Set([15020, 16037, 16046, 16563]);
 
 function parseCsvDataset(buf) {
   const text = buf.toString("utf8");
-  const lines = text.split(/\r?\n/);
-  if (lines.length < 2) return { header: [], rows: [] };
-  const header = lines[0].split(",");
+  // Character-level RFC-4180 parse: handles quoted commas, escaped quotes (""),
+  // and newlines inside quoted fields — split(",") corrupts all three.
+  const records = [];
+  let field = "", record = [], inQuotes = false;
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    if (inQuotes) {
+      if (c === '"') {
+        if (text[i + 1] === '"') { field += '"'; i++; }
+        else inQuotes = false;
+      } else field += c;
+    } else if (c === '"') {
+      inQuotes = true;
+    } else if (c === ",") {
+      record.push(field); field = "";
+    } else if (c === "\n") {
+      record.push(field); records.push(record); field = ""; record = [];
+    } else if (c !== "\r") {
+      field += c;
+    }
+  }
+  if (field.length > 0 || record.length > 0) { record.push(field); records.push(record); }
+  if (records.length < 2) return { header: [], idx: {}, rows: [] };
+  const header = records[0];
   const idx = {};
   header.forEach((h, i) => idx[h] = i);
-  const rows = [];
-  for (let i = 1; i < lines.length; i++) {
-    const line = lines[i];
-    if (!line) continue;
-    rows.push(line.split(","));
-  }
+  const rows = records.slice(1).filter(r => !(r.length === 1 && r[0] === ""));
   return { header, idx, rows };
 }
 
@@ -700,7 +750,8 @@ function csvRowToMatchResult(row, idx) {
 
 app.get("/admin/load-dataset", async (req, res) => {
   const expected = process.env.LOAD_DATASET_TOKEN;
-  if (expected && req.query.token !== expected) return res.status(403).json({ ok: false, error: "invalid token" });
+  if (!expected) return res.status(503).json({ ok: false, error: "admin token not configured" });
+  if (req.query.token !== expected) return res.status(403).json({ ok: false, error: "invalid token" });
   if (!supabase) return res.status(400).json({ ok: false, error: "Supabase not enabled" });
 
   const fs = require("fs");
@@ -772,7 +823,8 @@ app.get("/admin/load-dataset", async (req, res) => {
 
 app.get("/admin/backfill", async (req, res) => {
   const expected = process.env.LOAD_DATASET_TOKEN;
-  if (expected && req.query.token !== expected) return res.status(403).json({ ok: false, error: "invalid token" });
+  if (!expected) return res.status(503).json({ ok: false, error: "admin token not configured" });
+  if (req.query.token !== expected) return res.status(403).json({ ok: false, error: "invalid token" });
   if (!supabase) return res.status(400).json({ ok: false, error: "Supabase not enabled" });
   const start = req.query.start, end = req.query.end;
   if (!/^\d{4}-\d{2}-\d{2}$/.test(start || "") || !/^\d{4}-\d{2}-\d{2}$/.test(end || "")) {
@@ -870,7 +922,8 @@ app.get("/admin/backfill", async (req, res) => {
 
 app.get("/admin/recalibrate", async (req, res) => {
   const expected = process.env.LOAD_DATASET_TOKEN;
-  if (expected && req.query.token !== expected) return res.status(403).json({ ok: false, error: "invalid token" });
+  if (!expected) return res.status(503).json({ ok: false, error: "admin token not configured" });
+  if (req.query.token !== expected) return res.status(403).json({ ok: false, error: "invalid token" });
   const rank  = await recalibrateLeagueProbs();
   const combo = await recalibrateLeagueComboProbs();
   res.json({ rank, combo });
@@ -987,6 +1040,86 @@ app.get("/calibration", async (req, res) => {
       },
       byRank,
       byCombo,
+    });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
+// ─── SIGNAL BACKTEST (live data, no look-ahead bias) ─────────────────────────
+// Tests each signal A-D against real recorded predictions. Excludes
+// historical-import and backfill rows, whose seasonOver25PercentageHT carries
+// full-season look-ahead bias. lift25 ~1.0 means the signal has no live
+// predictive value; a negative gap25 means the probability table overpredicts.
+app.get("/signal-backtest", async (req, res) => {
+  if (!supabase) return res.status(400).json({ ok: false, error: "Supabase not enabled" });
+  try {
+    const all = [];
+    const PAGE = 1000;
+    for (let off = 0; ; off += PAGE) {
+      const { data, error } = await supabase
+        .from("match_results")
+        .select("rank, prob25, prob15, hit_25, hit_15, signals, snap")
+        .not("hit_25", "is", null)
+        .not("snap", "is", null)
+        .not("snap->>fetchedAt", "eq", "historical-import")
+        .not("snap->>fetchedAt", "eq", "backfill")
+        .range(off, off + PAGE - 1);
+      if (error) throw error;
+      if (!data || data.length === 0) break;
+      all.push(...data);
+      if (data.length < PAGE) break;
+    }
+    const n = all.length;
+    const base25 = n ? all.filter(m => m.hit_25).length / n : 0;
+    const base15 = n ? all.filter(m => m.hit_15).length / n : 0;
+    const met = (m, k) => !!(m.signals && m.signals[k] && m.signals[k].met);
+
+    const perSignal = {};
+    for (const k of ["A", "B", "C", "D"]) {
+      const fired = all.filter(m => met(m, k));
+      const quiet = all.filter(m => !met(m, k));
+      const fHit = fired.length ? fired.filter(m => m.hit_25).length / fired.length : 0;
+      const qHit = quiet.length ? quiet.filter(m => m.hit_25).length / quiet.length : 0;
+      const labelRow = fired.find(m => m.signals[k] && m.signals[k].label);
+      perSignal[k] = {
+        label: labelRow ? labelRow.signals[k].label : k,
+        fires: fired.length,
+        hit25WhenFire: +(fHit * 100).toFixed(1),
+        hit25WhenQuiet: +(qHit * 100).toFixed(1),
+        lift25: base25 ? +(fHit / base25).toFixed(2) : 0,
+      };
+    }
+
+    const byRank = {};
+    for (let r = 0; r <= 4; r++) byRank[r] = { n: 0, hit25: 0, hit15: 0, sumP25: 0, sumP15: 0 };
+    for (const m of all) {
+      const b = byRank[m.rank];
+      if (!b) continue;
+      b.n++;
+      if (m.hit_25) b.hit25++;
+      if (m.hit_15) b.hit15++;
+      b.sumP25 += Number(m.prob25 || 0);
+      b.sumP15 += Number(m.prob15 || 0);
+    }
+    for (const r of Object.keys(byRank)) {
+      const b = byRank[r];
+      b.actual25 = b.n ? +(b.hit25 / b.n * 100).toFixed(1) : 0;
+      b.actual15 = b.n ? +(b.hit15 / b.n * 100).toFixed(1) : 0;
+      b.predicted25 = b.n ? +(b.sumP25 / b.n).toFixed(1) : 0;
+      b.predicted15 = b.n ? +(b.sumP15 / b.n).toFixed(1) : 0;
+      b.gap25 = +(b.actual25 - b.predicted25).toFixed(1);
+      delete b.sumP25; delete b.sumP15;
+    }
+
+    res.json({
+      ok: true,
+      cohortSize: n,
+      baseRate25: +(base25 * 100).toFixed(1),
+      baseRate15: +(base15 * 100).toFixed(1),
+      perSignal,
+      byRank,
+      note: "Excludes historical-import/backfill. lift25~1.0 = no live edge; gap25<0 = table overpredicts.",
     });
   } catch (e) {
     res.status(500).json({ ok: false, error: e.message });
@@ -1136,10 +1269,17 @@ app.get("/debug-team/:teamId", (req, res) => {
 });
 
 app.get("/api/*", async (req, res) => {
+  const expected = process.env.LOAD_DATASET_TOKEN;
+  if (!expected) return res.status(503).json({ ok: false, error: "admin token not configured" });
+  if (req.query.token !== expected) return res.status(403).json({ ok: false, error: "invalid token" });
   try {
     const path = req.path.replace("/api", "");
-    const qs = new URLSearchParams({ ...req.query, key: KEY }).toString();
-    res.json(await ftch(BASE + path + "?" + qs));
+    const params = { ...req.query };
+    delete params.token;
+    const qs = new URLSearchParams({ ...params, key: KEY }).toString();
+    const data = await safeFetch(BASE + path + "?" + qs);
+    if (!data) return res.status(503).json({ error: "upstream unavailable or rate limited" });
+    res.json(data);
   } catch(e) { res.status(500).json({ error: e.message }); }
 });
 
@@ -1487,9 +1627,11 @@ body{background:#f3f4f6;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',
   J += "function lgLabel(r){return r===4?'Fire \ud83d\udd25':r===3?'Prime \u26a1':r===2?'Watch \ud83d\udc40':r===1?'Signal \ud83d\udce1':'Low';}";
   J += "function fLetter(r){return r==='W'?'<span class=\"fw\">W</span>':r==='L'?'<span class=\"fl\">L</span>':'<span class=\"fd\">D</span>';}";
   J += "function mkChip(lbl,val,thr,state){var cls='chip'+(state?' '+state:'');return '<div class=\"'+cls+'\">'+'<div class=\"chip-lbl\">'+esc(lbl)+'</div><div class=\"chip-val\">'+esc(val)+'</div><div class=\"chip-thr\">'+esc(thr)+'</div></div>';}";
-  // betPill: drives off predicted probability AND a soft Sig B + Sig "recent form" for the pills.
-  //   🔥  = prob25 ≥ 50  OR  both teams' last-5 FH avg ≥ 2.25  (empirical 31% on FH>2.5)
-  //   🎯 BET = prob15 ≥ 60  OR  (min(T1) ≥ 15 AND max(T1) ≥ 25)  OR  both teams' last-5 FH avg ≥ 2.0  (empirical 50% on FH>1.5)
+  // betPill: EXTRA heuristic filters, NOT the calibrated model. They blend the
+  // predicted probability with soft Sig B + recent-form thresholds. Labelled as
+  // filters so users don't mistake them for the calibrated rank/probability.
+  //   🔥     = prob25 ≥ 50  OR  both teams' last-5 FH avg ≥ 2.25
+  //   🎯 FILTER = prob15 ≥ 60  OR  (min(T1) ≥ 15 AND max(T1) ≥ 25)  OR  both teams' last-5 FH avg ≥ 2.0
   J += "function betPill(m){if(!m)return '';";
   J += "  var p25=m.prob25||0,p15=m.prob15||0;";
   J += "  var sn=m.snap||{},hT=sn.home&&Number(sn.home.t1_pct)||0,aT=sn.away&&Number(sn.away.t1_pct)||0;";
@@ -1498,8 +1640,8 @@ body{background:#f3f4f6;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',
   J += "  var minAvg=Math.min(fhAvg(m.hLast5),fhAvg(m.aLast5));";
   J += "  var recent25=minAvg>=2.25,recent15=minAvg>=2.0;";
   J += "  var h='';";
-  J += "  if(p25>=50||recent25)h+='<div style=\"display:inline-block;background:#dc2626;color:#fff;font-size:11px;font-weight:700;padding:3px 9px;border-radius:6px;margin-right:4px\" title=\"Strong FH>2.5 candidate\">🔥</div>';";
-  J += "  if(p15>=60||bSoft||recent15)h+='<div style=\"display:inline-block;background:#15803d;color:#fff;font-size:11px;font-weight:700;padding:3px 9px;border-radius:6px;letter-spacing:.5px;margin-right:6px\" title=\"Strong FH>1.5 candidate\">🎯 BET</div>';";
+  J += "  if(p25>=50||recent25)h+='<div style=\"display:inline-block;background:#dc2626;color:#fff;font-size:11px;font-weight:700;padding:3px 9px;border-radius:6px;margin-right:4px\" title=\"Extra filter (recent form / soft signals) — not the calibrated model\">🔥</div>';";
+  J += "  if(p15>=60||bSoft||recent15)h+='<div style=\"display:inline-block;background:#15803d;color:#fff;font-size:11px;font-weight:700;padding:3px 9px;border-radius:6px;letter-spacing:.5px;margin-right:6px\" title=\"Extra filter (recent form / soft signals) — not the calibrated model\">🎯 FILTER</div>';";
   J += "  return h;}";
 
   J += "function renderTabs(){";
@@ -2093,6 +2235,8 @@ app.listen(PORT, () => {
   }).catch(e => console.error("League list failed:", e.message));
 
   if (supabase) {
+    // Restore frozen pre-match snapshots so completed matches survive restarts.
+    loadFrozenSnapshots().catch(e => console.error("loadFrozenSnapshots:", e.message));
     // Initial load. If empty, trigger one recalibration so we don't wait 24h.
     setTimeout(async () => {
       try {
