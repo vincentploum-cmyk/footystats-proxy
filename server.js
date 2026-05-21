@@ -503,8 +503,13 @@ function unixToLocalDate(unix, tzOffset) {
   return y + "-" + m + "-" + day;
 }
 
-const PROB25_BY_RANK = { 4: 87.5, 3: 60.6, 2: 36.6, 1: 23.1, 0: 11.5 };
-const PROB15_BY_RANK = { 4: 96.9, 3: 75.0, 2: 64.2, 1: 56.5, 0: 33.0 };
+// Look-ahead-free tables, recalibrated from 22,829 pre-game matches via
+// scripts/recalibrate_pregame.py. FH>2.5 is near-flat/non-monotonic because the
+// signals separate weakly once season-aggregate look-ahead bias is removed — and
+// the "sig C required for rank 3+" gate drags rank 3 below rank 1. Small n at
+// ranks 3-4 (219 / 25), so treat those as noisy.
+const PROB25_BY_RANK = { 4: 32.0, 3: 10.0, 2: 14.4, 1: 15.3, 0: 10.4 };
+const PROB15_BY_RANK = { 4: 48.0, 3: 39.7, 2: 38.1, 1: 38.3, 0: 29.0 };
 const RANK_LABELS = { 4: "Fire", 3: "Prime", 2: "Watch", 1: "Signal", 0: "Low" };
 
 function computeSignals(snap) {
@@ -2215,7 +2220,7 @@ body{background:#f3f4f6;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',
   <div style="background:#fffbeb;border:1px solid #fde68a;border-radius:8px;padding:10px 14px;margin-bottom:14px;font-size:12px;color:#92400e;line-height:1.6">
     <strong>How it works:</strong> 4 stats-only signals (A&ndash;D), each worth 1 point. Rank = signals fired.
     A: CI&ge;3.2 &middot; B: Both teams FH&gt;2.5 history&ge;25% &middot; C: Defence CI&ge;2.25 &middot; D: Away FH scored&ge;1.25.
-    Backtested on 22,967 matches &middot; base rate 12.8% &middot; Rank 4 = 87.5% FH&gt;2.5 &middot; Rank 3 = 60.6% FH&gt;2.5 (sig C required for rank 3+).
+    Recalibrated on 22,829 look-ahead-free pre-game matches &middot; base rate 11.0% FH&gt;2.5 &middot; ranks separate weakly (rank 1&ndash;3 &asymp; 10&ndash;15% FH&gt;2.5) &mdash; see scripts/recalibrate_pregame.py.
   </div>
   <div id="mainView"></div>
 </div>
