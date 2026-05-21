@@ -503,35 +503,50 @@ function unixToLocalDate(unix, tzOffset) {
   return y + "-" + m + "-" + day;
 }
 
-// Look-ahead-free tables, recalibrated from 22,829 pre-game matches via
-// scripts/recalibrate_pregame.py. FH>2.5 is near-flat/non-monotonic because the
-// signals separate weakly once season-aggregate look-ahead bias is removed — and
-// the "sig C required for rank 3+" gate drags rank 3 below rank 1. Small n at
-// ranks 3-4 (219 / 25), so treat those as noisy.
-const PROB25_BY_RANK = { 4: 32.0, 3: 10.0, 2: 14.4, 1: 15.3, 0: 10.4 };
-const PROB15_BY_RANK = { 4: 48.0, 3: 39.7, 2: 38.1, 1: 38.3, 0: 29.0 };
+// Look-ahead-free tables, calibrated from 24,677 pre-game matches via
+// scripts/recalibrate_pregame.py. The recent-form signals produce a monotonic
+// gradient (rank 0->4: 10.7 -> 13.9 -> 16.8 -> 17.5 -> 30.2% FH>2.5). Rank 4
+// is small (n=53), so treat it as noisy.
+const PROB25_BY_RANK = { 4: 30.2, 3: 17.5, 2: 16.8, 1: 13.9, 0: 10.7 };
+const PROB15_BY_RANK = { 4: 50.9, 3: 42.7, 2: 40.4, 1: 36.4, 0: 29.8 };
 const RANK_LABELS = { 4: "Fire", 3: "Prime", 2: "Watch", 1: "Signal", 0: "Low" };
 
-function computeSignals(snap) {
-  const h = snap.home, a = snap.away;
-  const ci    = safe(h.scored_fh + a.scored_fh + h.conced_fh + a.conced_fh);
-  const defCi = safe(h.conced_fh + a.conced_fh);
-  const sigA = ci    >= 3.2;
-  const sigB = h.t1_pct >= 25 && a.t1_pct >= 25;
-  const sigC = defCi >= 2.25;
-  const sigD = a.scored_fh >= 1.25;
-  const rawRank = [sigA, sigB, sigC, sigD].filter(Boolean).length;
-  const rank = (rawRank >= 3 && !sigC) ? 2 : rawRank;
+// Average a team's last-5 first-half form. Goals are team-relative (fhFor =
+// scored, fhAgst = conceded). Returns null if fewer than 3 recent games.
+function last5Form(arr) {
+  if (!Array.isArray(arr) || arr.length < 3) return null;
+  const games = arr.slice(0, 5);
+  const n = games.length;
+  let f = 0, a = 0;
+  for (const g of games) { f += (g.fhFor || 0); a += (g.fhAgst || 0); }
+  return { f: f / n, a: a / n, t: (f + a) / n };
+}
+
+// Recent-form signal engine. All four signals derive from each team's last-5
+// first-half form, which IS available pre-kickoff — no season-aggregate
+// look-ahead bias. See scripts/recalibrate_pregame.py for calibration.
+function computeSignals(snap, hLast5, aLast5) {
+  const h5 = last5Form(hLast5), a5 = last5Form(aLast5);
+  const ok = !!(h5 && a5);
+  const recentCI = ok ? (h5.t + a5.t) : 0;
+  const sigA = ok && recentCI >= 4.0;                  // Recent Intensity
+  const sigB = ok && h5.f > 1.0 && a5.a > 1.0;         // home attack vs away leak
+  const sigC = ok && h5.f > 0.8 && a5.f > 0.8;         // both scoring
+  const sigD = ok && h5.t > 1.5 && a5.t > 1.5;         // both open
+  const rank = [sigA, sigB, sigC, sigD].filter(Boolean).length;
+  const f2 = (v) => v.toFixed(2);
   return {
     rank, label: RANK_LABELS[rank] || "Low",
-    prob25: PROB25_BY_RANK[rank] ?? 10.0,
-    prob15: PROB15_BY_RANK[rank] ?? 31.4,
-    ci: +ci.toFixed(2), defCi: +defCi.toFixed(2), eligible: rank >= 3,
+    prob25: PROB25_BY_RANK[rank] ?? 10.7,
+    prob15: PROB15_BY_RANK[rank] ?? 29.8,
+    ci: +recentCI.toFixed(2),
+    defCi: ok ? +a5.a.toFixed(2) : 0,
+    eligible: rank >= 3,
     signals: {
-      A: { met: sigA, label: "Combined Intensity",  value: ci.toFixed(2),                                                  threshold: ">= 3.20" },
-      B: { met: sigB, label: "FH History Both",     value: h.t1_pct.toFixed(0) + "%/" + a.t1_pct.toFixed(0) + "%",        threshold: "both >= 25%" },
-      C: { met: sigC, label: "Leaky Defences",      value: h.conced_fh.toFixed(2) + "+" + a.conced_fh.toFixed(2) + "=" + defCi.toFixed(2), threshold: ">= 2.25" },
-      D: { met: sigD, label: "Away FH Attack",      value: a.scored_fh.toFixed(2),                                         threshold: ">= 1.25" },
+      A: { met: sigA, label: "Recent Intensity", value: ok ? f2(recentCI) : "n/a",                threshold: "both L5 FH total >= 4.0" },
+      B: { met: sigB, label: "Attack vs Leak",   value: ok ? f2(h5.f) + "/" + f2(a5.a) : "n/a",   threshold: "home L5 scored>1.0 & away L5 conc>1.0" },
+      C: { met: sigC, label: "Both Scoring",     value: ok ? f2(h5.f) + "/" + f2(a5.f) : "n/a",   threshold: "both L5 FH scored > 0.8" },
+      D: { met: sigD, label: "Both Open",        value: ok ? f2(h5.t) + "/" + f2(a5.t) : "n/a",   threshold: "both L5 FH total > 1.5" },
     },
   };
 }
@@ -1406,7 +1421,7 @@ async function computePreds(tzOffset) {
           const hStats = extractStats(homeTeam, "home");
           const aStats = extractStats(awayTeam, "away");
           snap   = { fetchedAt, home: hStats, away: aStats };
-          result = computeSignals(snap);
+          result = computeSignals(snap, hLast5, aLast5);
         } else if (hLast5.length >= 1 && aLast5.length >= 1) {
           // Synthetic stats from match history when API stats are missing
           const hHome = hLast5.filter(g => g.venue === "H");
@@ -1423,7 +1438,7 @@ async function computePreds(tzOffset) {
           const hStats = { name: fix.home_name || "", scored_fh: hScored, conced_fh: hConced, t1_pct: hT1pct, cn010_avg: 0, sot_avg: 0, mp: hGames.length, mpRole: hGames.length };
           const aStats = { name: fix.away_name || "", scored_fh: aScored, conced_fh: aConced, t1_pct: aT1pct, cn010_avg: 0, sot_avg: 0, mp: aGames.length, mpRole: aGames.length };
           snap   = { fetchedAt: fetchedAt + " (from history)", home: hStats, away: aStats };
-          result = computeSignals(snap);
+          result = computeSignals(snap, hLast5, aLast5);
         }
 
         // Phase 2: override prob25/prob15 with league-specific values when n>=30
@@ -2014,24 +2029,14 @@ body{background:#f3f4f6;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',
   J += "      +'</div>';";
   J += "  });";
   J += "  sigsH+='</div>';";
-  J += "  var ciH='';";
-  J += "  if(m.snap){";
-  J += "    var h=m.snap.home,a=m.snap.away;";
-  J += "    var defCiVal=m.defCi||0;";
-  J += "    var ciCls=m.ci>=3.2?'ci-bar ci-bright':m.ci>=2.8?'ci-bar ci-light':'ci-bar ci-cold';";
-  J += "    var ciValCol=m.ci>=3.2?'#69f0ae':m.ci>=2.8?'#2e7d32':'#111827';";
-  J += "    var ciCheck=m.ci>=3.2?'\u2713':m.ci>=2.8?'\u25d1':'\u2717';";
-  J += "    var defCiCol=defCiVal>=2.25?'#69f0ae':defCiVal>=1.5?'#a5d6a7':'inherit';";
-  J += "    ciH='<div class=\"'+ciCls+'\">'";
-  J += "      +'<span>'+h.scored_fh.toFixed(2)+' + '+a.scored_fh.toFixed(2)+' + '+h.conced_fh.toFixed(2)+' + '+a.conced_fh.toFixed(2)+'</span>'";
-  J += "      +'<span style=\"font-size:18px;font-weight:700;color:'+ciValCol+'\">'+m.ci+' '+ciCheck+'</span>'";
-  J += "    +'</div>'";
-  J += "    +'<div style=\"font-size:10px;font-family:monospace;padding:4px 12px 8px;color:#6b7280\">'";
-  J += "      +'DefCI: <span style=\"font-weight:700;color:'+defCiCol+'\">'+defCiVal.toFixed(2)+'</span>'";
-  J += "      +' (conceded sum \u2265 2.25 \u2192 sig C) \u00b7 Away scored: <span style=\"font-weight:700;color:'+(a.scored_fh>=1.25?'#2e7d32':'#6b7280')+'\">'+a.scored_fh.toFixed(2)+'</span>'";
-  J += "      +' (\u2265 1.25 \u2192 sig D)'";
-  J += "    +'</div>';";
-  J += "  }";
+  J += "  var ciVal=m.ci||0;";
+  J += "  var ciCls=ciVal>=4.0?'ci-bar ci-bright':ciVal>=3.0?'ci-bar ci-light':'ci-bar ci-cold';";
+  J += "  var ciValCol=ciVal>=4.0?'#69f0ae':ciVal>=3.0?'#2e7d32':'#111827';";
+  J += "  var ciCheck=ciVal>=4.0?'\u2713':ciVal>=3.0?'\u25d1':'\u2717';";
+  J += "  var ciH='<div class=\"'+ciCls+'\">'";
+  J += "    +'<span>Recent FH intensity \u00b7 both teams\u2019 last 5</span>'";
+  J += "    +'<span style=\"font-size:18px;font-weight:700;color:'+ciValCol+'\">'+ciVal.toFixed(2)+' '+ciCheck+'</span>'";
+  J += "  +'</div>';";
   J += "  var mw=m.missingStats?'<span style=\"background:#fef3c7;color:#92400e;font-size:10px;padding:2px 6px;border-radius:4px;font-weight:600;margin-left:6px\">\u26a0 no stats</span>':'';";
   J += "  return '<div class=\"card\">'";
   J += "    +'<div class=\"card-accent\" style=\"background:'+accent+'\"></div>'";
@@ -2128,11 +2133,11 @@ body{background:#f3f4f6;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',
   J += "  h+=renderBBSection('\ud83d\udd25 Top 7 \u2014 FH Over 2.5 Goals','#15803d','#a5d6a7',s25.slice(0,7),'prob25','> 2.5');";
 
   // Top 5 Value Picks — high CI but low rank (close to more signals firing)
-  J += "  var value=upcoming.filter(function(p){return p.rank>=1&&p.rank<=2&&p.ci>=2.8;}).sort(function(a,b){return b.ci-a.ci;});";
+  J += "  var value=upcoming.filter(function(p){return p.rank>=1&&p.rank<=2&&p.ci>=3.0;}).sort(function(a,b){return b.ci-a.ci;});";
   J += "  if(value.length){";
   J += "    h+='<div style=\"margin-bottom:24px\">';";
   J += "    h+='<div style=\"font-size:16px;font-weight:700;color:#92400e;margin-bottom:10px;padding-bottom:6px;border-bottom:2px solid #fde68a\">\ud83d\udca1 Top 5 Value Picks \u2014 High CI, Signals Developing</div>';";
-  J += "    h+='<div style=\"background:#fffbeb;border:1px solid #fde68a;border-radius:8px;padding:8px 12px;margin-bottom:10px;font-size:11px;color:#92400e\">These matches have high Combined Intensity (CI \u2265 2.8) but only 1\u20132 signals fired. The underlying stats suggest goal potential that the full signal set hasn\\'t captured yet.</div>';";
+  J += "    h+='<div style=\"background:#fffbeb;border:1px solid #fde68a;border-radius:8px;padding:8px 12px;margin-bottom:10px;font-size:11px;color:#92400e\">These matches have high recent FH intensity (\u2265 3.0) but only 1\u20132 signals fired. Both teams\u2019 recent first halves suggest goal potential the full signal set hasn\\'t captured yet.</div>';";
   J += "    h+='<div style=\"background:#fff;border:1px solid #e5e7eb;border-radius:12px;overflow:hidden\">';";
   J += "    value.slice(0,5).forEach(function(m,i){h+=renderBBRow(m,'prob15','value',i);});";
   J += "    h+='</div></div>';";
@@ -2218,9 +2223,9 @@ body{background:#f3f4f6;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',
 <div class="body">
   ${rateLimited ? '<div style="background:#fef2f2;border:1px solid #fca5a5;border-radius:8px;padding:10px 14px;margin-bottom:14px;font-size:12px;color:#b91c1c;line-height:1.6"><strong>&#9888; API rate limit reached</strong> \u2014 showing cached data. Resets at ' + new Date(RATE_LIMITED_UNTIL).toLocaleTimeString('en-GB') + '. <a href="/cache-status" style="color:#b91c1c">View cache status</a></div>' : ''}
   <div style="background:#fffbeb;border:1px solid #fde68a;border-radius:8px;padding:10px 14px;margin-bottom:14px;font-size:12px;color:#92400e;line-height:1.6">
-    <strong>How it works:</strong> 4 stats-only signals (A&ndash;D), each worth 1 point. Rank = signals fired.
-    A: CI&ge;3.2 &middot; B: Both teams FH&gt;2.5 history&ge;25% &middot; C: Defence CI&ge;2.25 &middot; D: Away FH scored&ge;1.25.
-    Recalibrated on 22,829 look-ahead-free pre-game matches &middot; base rate 11.0% FH&gt;2.5 &middot; ranks separate weakly (rank 1&ndash;3 &asymp; 10&ndash;15% FH&gt;2.5) &mdash; see scripts/recalibrate_pregame.py.
+    <strong>How it works:</strong> 4 recent-form signals (A&ndash;D) from each team's last-5 first halves &mdash; available pre-kickoff, no look-ahead bias. Each worth 1 point; rank = signals fired.
+    A: both teams' L5 FH total &ge; 4.0 &middot; B: home L5 scored &gt;1.0 &amp; away L5 conceded &gt;1.0 &middot; C: both L5 FH scored &gt;0.8 &middot; D: both L5 FH total &gt;1.5.
+    Calibrated on 24,677 look-ahead-free pre-game matches &middot; base rate 11.2% FH&gt;2.5 &middot; rank 0&ndash;4: 10.7 / 13.9 / 16.8 / 17.5 / 30.2% &mdash; see scripts/recalibrate_pregame.py.
   </div>
   <div id="mainView"></div>
 </div>
