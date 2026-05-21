@@ -646,17 +646,33 @@ const WOMENS_LEAGUE_IDS = new Set([15020, 16037, 16046, 16563]);
 
 function parseCsvDataset(buf) {
   const text = buf.toString("utf8");
-  const lines = text.split(/\r?\n/);
-  if (lines.length < 2) return { header: [], rows: [] };
-  const header = lines[0].split(",");
+  // Character-level RFC-4180 parse: handles quoted commas, escaped quotes (""),
+  // and newlines inside quoted fields — split(",") corrupts all three.
+  const records = [];
+  let field = "", record = [], inQuotes = false;
+  for (let i = 0; i < text.length; i++) {
+    const c = text[i];
+    if (inQuotes) {
+      if (c === '"') {
+        if (text[i + 1] === '"') { field += '"'; i++; }
+        else inQuotes = false;
+      } else field += c;
+    } else if (c === '"') {
+      inQuotes = true;
+    } else if (c === ",") {
+      record.push(field); field = "";
+    } else if (c === "\n") {
+      record.push(field); records.push(record); field = ""; record = [];
+    } else if (c !== "\r") {
+      field += c;
+    }
+  }
+  if (field.length > 0 || record.length > 0) { record.push(field); records.push(record); }
+  if (records.length < 2) return { header: [], idx: {}, rows: [] };
+  const header = records[0];
   const idx = {};
   header.forEach((h, i) => idx[h] = i);
-  const rows = [];
-  for (let i = 1; i < lines.length; i++) {
-    const line = lines[i];
-    if (!line) continue;
-    rows.push(line.split(","));
-  }
+  const rows = records.slice(1).filter(r => !(r.length === 1 && r[0] === ""));
   return { header, idx, rows };
 }
 
@@ -1611,9 +1627,11 @@ body{background:#f3f4f6;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',
   J += "function lgLabel(r){return r===4?'Fire \ud83d\udd25':r===3?'Prime \u26a1':r===2?'Watch \ud83d\udc40':r===1?'Signal \ud83d\udce1':'Low';}";
   J += "function fLetter(r){return r==='W'?'<span class=\"fw\">W</span>':r==='L'?'<span class=\"fl\">L</span>':'<span class=\"fd\">D</span>';}";
   J += "function mkChip(lbl,val,thr,state){var cls='chip'+(state?' '+state:'');return '<div class=\"'+cls+'\">'+'<div class=\"chip-lbl\">'+esc(lbl)+'</div><div class=\"chip-val\">'+esc(val)+'</div><div class=\"chip-thr\">'+esc(thr)+'</div></div>';}";
-  // betPill: drives off predicted probability AND a soft Sig B + Sig "recent form" for the pills.
-  //   🔥  = prob25 ≥ 50  OR  both teams' last-5 FH avg ≥ 2.25  (empirical 31% on FH>2.5)
-  //   🎯 BET = prob15 ≥ 60  OR  (min(T1) ≥ 15 AND max(T1) ≥ 25)  OR  both teams' last-5 FH avg ≥ 2.0  (empirical 50% on FH>1.5)
+  // betPill: EXTRA heuristic filters, NOT the calibrated model. They blend the
+  // predicted probability with soft Sig B + recent-form thresholds. Labelled as
+  // filters so users don't mistake them for the calibrated rank/probability.
+  //   🔥     = prob25 ≥ 50  OR  both teams' last-5 FH avg ≥ 2.25
+  //   🎯 FILTER = prob15 ≥ 60  OR  (min(T1) ≥ 15 AND max(T1) ≥ 25)  OR  both teams' last-5 FH avg ≥ 2.0
   J += "function betPill(m){if(!m)return '';";
   J += "  var p25=m.prob25||0,p15=m.prob15||0;";
   J += "  var sn=m.snap||{},hT=sn.home&&Number(sn.home.t1_pct)||0,aT=sn.away&&Number(sn.away.t1_pct)||0;";
@@ -1622,8 +1640,8 @@ body{background:#f3f4f6;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',
   J += "  var minAvg=Math.min(fhAvg(m.hLast5),fhAvg(m.aLast5));";
   J += "  var recent25=minAvg>=2.25,recent15=minAvg>=2.0;";
   J += "  var h='';";
-  J += "  if(p25>=50||recent25)h+='<div style=\"display:inline-block;background:#dc2626;color:#fff;font-size:11px;font-weight:700;padding:3px 9px;border-radius:6px;margin-right:4px\" title=\"Strong FH>2.5 candidate\">🔥</div>';";
-  J += "  if(p15>=60||bSoft||recent15)h+='<div style=\"display:inline-block;background:#15803d;color:#fff;font-size:11px;font-weight:700;padding:3px 9px;border-radius:6px;letter-spacing:.5px;margin-right:6px\" title=\"Strong FH>1.5 candidate\">🎯 BET</div>';";
+  J += "  if(p25>=50||recent25)h+='<div style=\"display:inline-block;background:#dc2626;color:#fff;font-size:11px;font-weight:700;padding:3px 9px;border-radius:6px;margin-right:4px\" title=\"Extra filter (recent form / soft signals) — not the calibrated model\">🔥</div>';";
+  J += "  if(p15>=60||bSoft||recent15)h+='<div style=\"display:inline-block;background:#15803d;color:#fff;font-size:11px;font-weight:700;padding:3px 9px;border-radius:6px;letter-spacing:.5px;margin-right:6px\" title=\"Extra filter (recent form / soft signals) — not the calibrated model\">🎯 FILTER</div>';";
   J += "  return h;}";
 
   J += "function renderTabs(){";
