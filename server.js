@@ -993,6 +993,86 @@ app.get("/calibration", async (req, res) => {
   }
 });
 
+// ─── SIGNAL BACKTEST (live data, no look-ahead bias) ─────────────────────────
+// Tests each signal A-D against real recorded predictions. Excludes
+// historical-import and backfill rows, whose seasonOver25PercentageHT carries
+// full-season look-ahead bias. lift25 ~1.0 means the signal has no live
+// predictive value; a negative gap25 means the probability table overpredicts.
+app.get("/signal-backtest", async (req, res) => {
+  if (!supabase) return res.status(400).json({ ok: false, error: "Supabase not enabled" });
+  try {
+    const all = [];
+    const PAGE = 1000;
+    for (let off = 0; ; off += PAGE) {
+      const { data, error } = await supabase
+        .from("match_results")
+        .select("rank, prob25, prob15, hit_25, hit_15, signals, snap")
+        .not("hit_25", "is", null)
+        .not("snap", "is", null)
+        .not("snap->>fetchedAt", "eq", "historical-import")
+        .not("snap->>fetchedAt", "eq", "backfill")
+        .range(off, off + PAGE - 1);
+      if (error) throw error;
+      if (!data || data.length === 0) break;
+      all.push(...data);
+      if (data.length < PAGE) break;
+    }
+    const n = all.length;
+    const base25 = n ? all.filter(m => m.hit_25).length / n : 0;
+    const base15 = n ? all.filter(m => m.hit_15).length / n : 0;
+    const met = (m, k) => !!(m.signals && m.signals[k] && m.signals[k].met);
+
+    const perSignal = {};
+    for (const k of ["A", "B", "C", "D"]) {
+      const fired = all.filter(m => met(m, k));
+      const quiet = all.filter(m => !met(m, k));
+      const fHit = fired.length ? fired.filter(m => m.hit_25).length / fired.length : 0;
+      const qHit = quiet.length ? quiet.filter(m => m.hit_25).length / quiet.length : 0;
+      const labelRow = fired.find(m => m.signals[k] && m.signals[k].label);
+      perSignal[k] = {
+        label: labelRow ? labelRow.signals[k].label : k,
+        fires: fired.length,
+        hit25WhenFire: +(fHit * 100).toFixed(1),
+        hit25WhenQuiet: +(qHit * 100).toFixed(1),
+        lift25: base25 ? +(fHit / base25).toFixed(2) : 0,
+      };
+    }
+
+    const byRank = {};
+    for (let r = 0; r <= 4; r++) byRank[r] = { n: 0, hit25: 0, hit15: 0, sumP25: 0, sumP15: 0 };
+    for (const m of all) {
+      const b = byRank[m.rank];
+      if (!b) continue;
+      b.n++;
+      if (m.hit_25) b.hit25++;
+      if (m.hit_15) b.hit15++;
+      b.sumP25 += Number(m.prob25 || 0);
+      b.sumP15 += Number(m.prob15 || 0);
+    }
+    for (const r of Object.keys(byRank)) {
+      const b = byRank[r];
+      b.actual25 = b.n ? +(b.hit25 / b.n * 100).toFixed(1) : 0;
+      b.actual15 = b.n ? +(b.hit15 / b.n * 100).toFixed(1) : 0;
+      b.predicted25 = b.n ? +(b.sumP25 / b.n).toFixed(1) : 0;
+      b.predicted15 = b.n ? +(b.sumP15 / b.n).toFixed(1) : 0;
+      b.gap25 = +(b.actual25 - b.predicted25).toFixed(1);
+      delete b.sumP25; delete b.sumP15;
+    }
+
+    res.json({
+      ok: true,
+      cohortSize: n,
+      baseRate25: +(base25 * 100).toFixed(1),
+      baseRate15: +(base15 * 100).toFixed(1),
+      perSignal,
+      byRank,
+      note: "Excludes historical-import/backfill. lift25~1.0 = no live edge; gap25<0 = table overpredicts.",
+    });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
 app.get("/history", async (req, res) => {
   if (!supabase) return res.status(400).json({ ok: false, error: "Supabase not enabled" });
   const days = Math.min(7, Math.max(1, parseInt(req.query.days || "7", 10)));
