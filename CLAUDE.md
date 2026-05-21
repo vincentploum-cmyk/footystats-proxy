@@ -2,7 +2,7 @@
 
 ## Project Overview
 
-A Node.js/Express proxy server that predicts first-half (FH) goals in football matches. It fetches data from the football-data-api.com API, applies a 4-signal ranking algorithm, and serves predictions via a server-rendered HTML frontend with async JSON loading.
+A Node.js/Express proxy server that predicts first-half (FH) goals in football matches. It fetches data from the football-data-api.com API, applies a 4-signal recent-form ranking algorithm (each team's last-5 first-half form), and serves predictions via a server-rendered HTML frontend with async JSON loading.
 
 **Live:** https://footystats-proxy.onrender.com | **Hosted on:** Render.com
 
@@ -22,7 +22,7 @@ package.json       — Dependencies and start script
 |---------|---------|
 | **safeFetch / rate limiting** | Wraps API calls with timeout, caching, and rate-limit detection |
 | **In-memory caches** | `FIXTURE_CACHE`, `LEAGUE_MATCHES_CACHE`, `TEAM_STATS_CACHE`, `SERVER_MATCH_CACHE` with TTLs |
-| **Prediction engine** | `extractStats()` → `computeSignals()` pipeline with 4-signal ranking |
+| **Prediction engine** | `buildLast5()` → `last5Form()` → `computeSignals()` pipeline; 4 recent-form signals. (`extractStats()` still builds the season-stat `snap` for display) |
 | **buildHTML()** | Server-side HTML/CSS/JS generation (inline, no templates) |
 | **Routes** | `/` (HTML shell), `/preds` (JSON API), `/cache-status`, `/debug`, `/api/*` (passthrough) |
 
@@ -63,52 +63,65 @@ There is no test suite, linter, or build step configured.
 
 ## Prediction Algorithm (4-Signal Ranking)
 
-Matches are ranked 0–4 based on how many signals fire. All signals are computed
-from team stats only — **no odds data is used**. Stats come from the
-`/league-teams?season_id=X&include=stats` endpoint at prediction time.
+Matches are ranked 0–4 based on how many signals fire. **All four signals derive
+from each team's last-5 first-half form** — the average first-half goals scored
+and conceded over their most recent (≤5) played matches. These are reconstructed
+at prediction time via `buildLast5()` and consumed by `computeSignals()`. Recent
+form is available pre-kickoff, so the signals carry **no season-aggregate
+look-ahead bias** (see "Look-ahead bias" below).
+
+Notation: `hF`/`hA` = home team last-5 FH scored/conceded; `aF`/`aA` = away team
+last-5 FH scored/conceded; `hT = hF + hA`, `aT = aF + aA` (per-team FH totals).
 
 ### Signals
 
-| Signal | Name | Field(s) | Threshold |
-|--------|------|----------|-----------|
-| A | Combined Intensity (CI) | `home_scored_fh + away_scored_fh + home_conceded_fh + away_conceded_fh` | ≥ 3.20 |
-| B | FH History Both | Both teams `seasonOver25PercentageHT` (role-specific) | both ≥ 25% |
-| C | Leaky Defences (DefCI) | `home_conceded_fh + away_conceded_fh` | ≥ 2.25 |
-| D | Away FH Attack | Away team `scoredAVGHT_away` | ≥ 1.25 |
+| Signal | Name | Rule |
+|--------|------|------|
+| A | Recent Intensity | `hT + aT >= 4.0` |
+| B | Attack vs Leak | `hF > 1.0` AND `aA > 1.0` (home attacking, away leaking) |
+| C | Both Scoring | `hF > 0.8` AND `aF > 0.8` |
+| D | Both Open | `hT > 1.5` AND `aT > 1.5` |
 
-Rank = count of signals fired (0–4). Rank determines probability labels:
+A team needs **≥ 3 recent games** for signals to evaluate; otherwise the match is
+rank 0 (`last5Form()` returns null). `computeSignals(snap, hLast5, aLast5)` also
+returns `ci` = recent intensity (`hT + aT`) for display/sorting, and `defCi` =
+away last-5 FH conceded (`aA`).
+
+Rank = count of signals fired (0–4):
 🔥 Fire (4) → ⚡ Prime (3) → 👀 Watch (2) → 📢 Signal (1) → Low (0).
 
-### Probability Tables (backtested on 22,967 matches, base rate 12.8% FH > 2.5)
+### Probability Tables (calibrated on 24,677 look-ahead-free pre-game matches, base rate 11.2% FH > 2.5)
 
 | Rank | n (matches) | FH > 2.5 | FH > 1.5 |
 |------|-------------|----------|----------|
-| 4    | 24          | 87.5%    | 100.0%   |
-| 3    | 142         | 62.0%    | 75.4%    |
-| 2    | 710         | 40.3%    | 66.8%    |
-| 1    | 1,644       | 29.6%    | 61.1%    |
-| 0    | 20,447      | 10.0%    | 31.4%    |
+| 4    | 53          | 30.2%    | 50.9%    |
+| 3    | 337         | 17.5%    | 42.7%    |
+| 2    | 679         | 16.8%    | 40.4%    |
+| 1    | 1,501       | 13.9%    | 36.4%    |
+| 0    | 22,107      | 10.7%    | 29.8%    |
 
-Rank 4 has a small sample (n=24) — treat with caution. Rank 3+ is considered
-"eligible" and shown with star badges in the UI.
+Regenerate with `python3 scripts/recalibrate_pregame.py`. Rank 4 has a small
+sample (n=53) — treat with caution. Rank 3+ is "eligible" (star badges in UI).
+Note the honest scale: even rank 3 (~17.5%) sits near the break-even for typical
+FH-over-2.5 market odds, so probabilities are modest, not the inflated 60%+ the
+old season-stat tables claimed.
 
-### Signal Field Mapping in extractStats()
+### Per-combination performance
 
-`extractStats(teamObj, role)` returns:
+Rank just counts signals; specific combos diverge at the same rank. On the clean
+data, **B alone (rank 1) ≈ 20% beats every rank-3 combo**, while **C is nearly
+dead weight** (~12% alone, ~base rate) and tends to drag combos down. Use
+`GET /signal-backtest` (`byCombo` field) to monitor this on live data; consider a
+weighted/combo score rather than a flat count if the pattern holds.
 
-| Field | Source stat | Role suffix |
-|-------|------------|-------------|
-| `scored_fh` | `scoredAVGHT` | `_home` or `_away` |
-| `conced_fh` | `concededAVGHT` | `_home` or `_away` |
-| `t1_pct` | `seasonOver25PercentageHT` | `_home` or `_away` |
-| `cn010_avg` | `goals_conceded_min_0_to_10` / `mpRole` | `_home` or `_away` |
-| `sot_avg` | `shotsOnTarget` / `mpRole` | `_home` or `_away` (informational only) |
+### Recent-form snapshot (`snap.l5`)
 
-Role-specific stats are preferred when `mpRole >= 3`, otherwise falls back to
-`_overall`. `cn010_avg` is kept for display purposes but is **not a signal** —
-it was removed from scoring after analysis showed near-zero additive value.
+Each frozen snapshot stores the last-5 inputs the signals used:
+`snap.l5 = { home: {f, a, t}, away: {f, a, t} }`. This lets the recent-form
+signals be re-validated and re-tuned on live data — earlier snapshots stored only
+season stats, which made the new signals impossible to backtest live.
 
-### Women's Leagues — Excluded from Signal Computation
+### Women's Leagues — Excluded from Signal Calibration
 
 The following competition IDs are excluded from clean signal analysis. They have
 different FH goal dynamics and degrade model accuracy:
@@ -123,21 +136,28 @@ different FH goal dynamics and degrade model accuracy:
 These leagues still appear in the UI but their signal hit rates should not be
 used to recalibrate thresholds.
 
-### Signal Research Summary
+### Look-ahead bias (why the engine was rewritten)
 
-Signals were selected from a backtested dataset of 27,443 matches across 101
-competition IDs. Key findings:
+The original signals used **full-season** aggregate stats
+(`seasonOver25PercentageHT`, `scoredAVGHT`, ...). In `dataset_combined_filled.csv`
+those are end-of-season figures, so the original backtest was inflated — signal B
+appeared to be 4.71x lift, signal A 2.77x, etc. Validating against the live
+`match_results` (which froze as-of-kickoff stats) and against a look-ahead-free
+reconstruction both showed the true lifts were only ~1.2–1.4x, and the rank table
+was flat/inverted. The signals were rewritten on **last-5 recent form**, which is
+genuinely available pre-kickoff and produces a monotonic gradient. The lesson:
+**only trust backtests on as-of-kickoff data** — reconstruct pre-game stats with
+`scripts/recalibrate_pregame.py` or validate on live `match_results`, never on the
+raw season-aggregate dataset.
 
-- **T1 (signal B)** is the strongest individual signal: 4.71x lift at ≥25% threshold
-- **CI (signal A)** is 2.77x lift — reliable but broad
-- **DefCI (signal C)** is independently strong at 2.85x lift — leaky defences
-  predict FH goals as powerfully as high-scoring attacks
-- **Away scored (signal D)** is 2.43x lift — away teams that score heavily in
-  FH force open games
-- **Odds signals** (O1, FH O2.5) were explored but excluded — not reliably
-  available at prediction time from the FootyStats API
-- **CN010 (early goals conceded)** was dropped — near-zero additive value when
-  CI + T1 are already present
+### Deprecated / removed
+
+- **Old season-stat signals** (CI≥3.2, T1 both≥25%, DefCI≥2.25, away scored≥1.25)
+  — removed; collapsed to ~1.3x lift once look-ahead bias was stripped.
+- **Odds signals** (O1, FH O2.5) — not reliably available at prediction time.
+- **CN010 (early goals conceded)** — near-zero additive value.
+- **"sig C required for rank 3+" gate** — removed; it gated eligibility on the
+  weakest signal.
 
 ## Caching
 
@@ -160,7 +180,12 @@ requests until the reset time. Cached data is served while rate-limited.
 | `GET /preds?tz=<offset>` | JSON | Prediction data for 5-day window |
 | `GET /cache-status` | JSON | Cache sizes and rate-limit status |
 | `GET /debug` | JSON | Fixtures, league registry, cache state |
-| `GET /api/*` | JSON | Passthrough proxy to football-data-api.com |
+| `GET /calibration` | JSON | Live predicted-vs-actual by rank/combo (Supabase) |
+| `GET /signal-backtest` | JSON | Per-signal live lift + `byRank`/`byCombo` (Supabase) |
+| `GET /history?days=N` | JSON | Recent completed matches with results (Supabase) |
+| `GET /supabase-status` | JSON | Supabase connection + persistence status |
+| `GET /api/*` | JSON | Passthrough proxy — **gated by `LOAD_DATASET_TOKEN`**, routes through `safeFetch` |
+| `GET /admin/*` | JSON | Dataset load / backfill / recalibrate — gated by `LOAD_DATASET_TOKEN` (fails closed) |
 
 ## Conventions and Patterns
 
@@ -180,9 +205,13 @@ for backtesting. Key facts:
 - 27,443 total rows across 101 competition IDs and multiple seasons
 - 24,203 complete matches; 23,593 (97.5%) have signal stats filled
 - 610 rows permanently unfillable (comp IDs 15238, 14904 — no team stats available)
-- Clean analysis set (CI>0, no women's): **22,967 rows**
-- Signals were researched and validated against this dataset before being
-  implemented in server.js
+
+⚠️ **Look-ahead caveat:** the per-row team stats columns (`*scoredAVGHT*`,
+`*seasonOver25PercentageHT*`, etc.) are **full-season aggregates**, not as-of-
+kickoff values. Backtesting signals directly on those columns inflates results.
+`scripts/recalibrate_pregame.py` rebuilds each team's pre-game last-5 FH form by
+walking matches chronologically (date-sorted, prior games only) — that is the
+look-ahead-free view the current signals are calibrated on (~24,677 usable rows).
 
 The dataset is not used at runtime — it is a research artifact only.
 
@@ -232,15 +261,27 @@ Supabase free tier (500MB, no credit card) is sufficient for this use case.
 - The app handles rate limiting gracefully by serving cached data — preserve
   this behavior in all modifications
 - `PREV_SEASON` mappings need manual updates when new seasons start
+- **Signals derive from last-5 recent form, not season stats** — `computeSignals`
+  takes `(snap, hLast5, aLast5)`. Do NOT revert to season-aggregate signals
+  (`seasonOver25PercentageHT`, `scoredAVGHT`); they only looked strong because of
+  look-ahead bias in the dataset. See "Look-ahead bias" above.
+- **Never recalibrate or validate signals on the raw `dataset_combined_filled.csv`
+  season stats** — they're end-of-season figures (look-ahead bias). Use
+  `scripts/recalibrate_pregame.py` (reconstructs pre-game state) or live
+  `match_results` via `/signal-backtest`.
 - **Do not add odds-based signals** — odds data is not reliably available at
   prediction time from the FootyStats API
-- **Do not reintroduce CN010 as a core signal** — it was deliberately removed
-  after analysis showed it adds no value when CI + T1 are present
+- **Do not reintroduce CN010 as a core signal** — near-zero additive value
 - **Women's leagues (15020, 16037, 16046, 16563) must be excluded** from any
   threshold recalibration or model retraining — their FH dynamics differ
   significantly from men's football
-- When modifying `computeSignals()`, always preserve the `defCi` field in the
-  return object — the UI uses it directly for the DefCI display row
+- `computeSignals()` returns `ci` (recent intensity = `hT + aT`) and `defCi`
+  (away last-5 FH conceded); both are persisted and used for display/sorting —
+  keep them in the return object.
 - The `eligible` flag (rank ≥ 3) controls star badges on league pills in the UI
-- Rank 4 probability of 87.5% FH>2.5 is real but based on only n=24 matches —
-  always note this caveat if surfacing the number to users
+- Rank 4 probability is ~30.2% FH>2.5 but based on only n=53 matches — always
+  note this caveat if surfacing the number to users
+- The 🔥/🎯 FILTER badges (`betPill`) are **UI heuristics**, not the calibrated
+  engine — don't conflate them with rank/probability
+- `snap.l5` carries the last-5 inputs the signals used — preserve it when changing
+  the snapshot/persistence path so live re-validation stays possible
