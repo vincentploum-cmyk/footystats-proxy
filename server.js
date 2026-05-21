@@ -1682,17 +1682,17 @@ body{background:#f3f4f6;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',
   // predicted probability with soft Sig B + recent-form thresholds. Labelled as
   // filters so users don't mistake them for the calibrated rank/probability.
   //   🔥     = prob25 ≥ 50  OR  both teams' last-5 FH avg ≥ 2.25
-  //   🎯 FILTER = prob15 ≥ 60  OR  (min(T1) ≥ 15 AND max(T1) ≥ 25)  OR  both teams' last-5 FH avg ≥ 2.0
+  //   🎯 FILTER = prob15 ≥ 60  OR  both teams' last-5 FH avg ≥ 2.0
+  // Both triggers use only recent form or the calibrated model probability — no
+  // season-aggregate stats (the look-ahead-prone t1_pct trigger was removed).
   J += "function betPill(m){if(!m)return '';";
   J += "  var p25=m.prob25||0,p15=m.prob15||0;";
-  J += "  var sn=m.snap||{},hT=sn.home&&Number(sn.home.t1_pct)||0,aT=sn.away&&Number(sn.away.t1_pct)||0;";
-  J += "  var bSoft=Math.min(hT,aT)>=15&&Math.max(hT,aT)>=25;";
   J += "  function fhAvg(arr){if(!arr||arr.length<3)return 0;var s=0;arr.forEach(function(g){s+=(g.fhFor||0)+(g.fhAgst||0);});return s/arr.length;}";
   J += "  var minAvg=Math.min(fhAvg(m.hLast5),fhAvg(m.aLast5));";
   J += "  var recent25=minAvg>=2.25,recent15=minAvg>=2.0;";
   J += "  var h='';";
-  J += "  if(p25>=50||recent25)h+='<div style=\"display:inline-block;background:#dc2626;color:#fff;font-size:11px;font-weight:700;padding:3px 9px;border-radius:6px;margin-right:4px\" title=\"Extra filter (recent form / soft signals) — not the calibrated model\">🔥</div>';";
-  J += "  if(p15>=60||bSoft||recent15)h+='<div style=\"display:inline-block;background:#15803d;color:#fff;font-size:11px;font-weight:700;padding:3px 9px;border-radius:6px;letter-spacing:.5px;margin-right:6px\" title=\"Extra filter (recent form / soft signals) — not the calibrated model\">🎯 FILTER</div>';";
+  J += "  if(p25>=50||recent25)h+='<div style=\"display:inline-block;background:#dc2626;color:#fff;font-size:11px;font-weight:700;padding:3px 9px;border-radius:6px;margin-right:4px\" title=\"Quick filter (recent form or model FH>2.5 prob) — not the calibrated rank\">🔥</div>';";
+  J += "  if(p15>=60||recent15)h+='<div style=\"display:inline-block;background:#15803d;color:#fff;font-size:11px;font-weight:700;padding:3px 9px;border-radius:6px;letter-spacing:.5px;margin-right:6px\" title=\"Quick filter (recent form or model FH>1.5 prob) — not the calibrated rank\">🎯 FILTER</div>';";
   J += "  return h;}";
 
   J += "function renderTabs(){";
