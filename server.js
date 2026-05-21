@@ -584,10 +584,12 @@ function buildLast5(teamId, cache) {
       const oppFt  = isHome ? m.awayGoalCount : m.homeGoalCount;
       const result = teamFt > oppFt ? "W" : teamFt < oppFt ? "L" : "D";
       const date   = m.date_unix ? new Date(m.date_unix * 1000).toISOString().slice(0, 10) : "";
-      // Always display as home-away order
+      // Goals are team-relative (for/against from THIS team's perspective), not home-away.
       return { date, venue: isHome ? "H" : "A", opp: isHome ? m.away_name : m.home_name,
-               fhFor: m.ht_goals_team_a, fhAgst: m.ht_goals_team_b,
-               ftFor: m.homeGoalCount, ftAgst: m.awayGoalCount, result };
+               fhFor:  isHome ? m.ht_goals_team_a : m.ht_goals_team_b,
+               fhAgst: isHome ? m.ht_goals_team_b : m.ht_goals_team_a,
+               ftFor:  isHome ? m.homeGoalCount : m.awayGoalCount,
+               ftAgst: isHome ? m.awayGoalCount : m.homeGoalCount, result };
     });
 }
 
@@ -700,7 +702,8 @@ function csvRowToMatchResult(row, idx) {
 
 app.get("/admin/load-dataset", async (req, res) => {
   const expected = process.env.LOAD_DATASET_TOKEN;
-  if (expected && req.query.token !== expected) return res.status(403).json({ ok: false, error: "invalid token" });
+  if (!expected) return res.status(503).json({ ok: false, error: "admin token not configured" });
+  if (req.query.token !== expected) return res.status(403).json({ ok: false, error: "invalid token" });
   if (!supabase) return res.status(400).json({ ok: false, error: "Supabase not enabled" });
 
   const fs = require("fs");
@@ -772,7 +775,8 @@ app.get("/admin/load-dataset", async (req, res) => {
 
 app.get("/admin/backfill", async (req, res) => {
   const expected = process.env.LOAD_DATASET_TOKEN;
-  if (expected && req.query.token !== expected) return res.status(403).json({ ok: false, error: "invalid token" });
+  if (!expected) return res.status(503).json({ ok: false, error: "admin token not configured" });
+  if (req.query.token !== expected) return res.status(403).json({ ok: false, error: "invalid token" });
   if (!supabase) return res.status(400).json({ ok: false, error: "Supabase not enabled" });
   const start = req.query.start, end = req.query.end;
   if (!/^\d{4}-\d{2}-\d{2}$/.test(start || "") || !/^\d{4}-\d{2}-\d{2}$/.test(end || "")) {
@@ -870,7 +874,8 @@ app.get("/admin/backfill", async (req, res) => {
 
 app.get("/admin/recalibrate", async (req, res) => {
   const expected = process.env.LOAD_DATASET_TOKEN;
-  if (expected && req.query.token !== expected) return res.status(403).json({ ok: false, error: "invalid token" });
+  if (!expected) return res.status(503).json({ ok: false, error: "admin token not configured" });
+  if (req.query.token !== expected) return res.status(403).json({ ok: false, error: "invalid token" });
   const rank  = await recalibrateLeagueProbs();
   const combo = await recalibrateLeagueComboProbs();
   res.json({ rank, combo });
