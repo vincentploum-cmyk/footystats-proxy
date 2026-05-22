@@ -2,13 +2,13 @@
 
 ## Project Overview
 
-A Node.js/Express proxy server that predicts first-half (FH) goals in football matches. It fetches data from the football-data-api.com API, applies a 4-signal recent-form ranking algorithm (each team's last-5 first-half form), and serves predictions via a server-rendered HTML frontend with async JSON loading.
+A Node.js/Express proxy server that predicts first-half (FH) goals in football matches. It fetches data from the football-data-api.com API, applies a 2-signal pre-game ranking algorithm, and serves predictions via a server-rendered HTML frontend with async JSON loading.
 
 **Live:** https://footystats-proxy.onrender.com | **Hosted on:** Render.com
 
 ## Architecture
 
-**Single-file monolith:** All application logic lives in `server.js` (~860 lines). No build step, no transpilation, no framework — vanilla JS throughout.
+**Single-file monolith:** All application logic lives in `server.js` (~870 lines). No build step, no transpilation, no framework — vanilla JS throughout.
 
 ```
 server.js          — Express server, API proxy, prediction engine, HTML frontend
@@ -22,7 +22,7 @@ package.json       — Dependencies and start script
 |---------|---------|
 | **safeFetch / rate limiting** | Wraps API calls with timeout, caching, and rate-limit detection |
 | **In-memory caches** | `FIXTURE_CACHE`, `LEAGUE_MATCHES_CACHE`, `TEAM_STATS_CACHE`, `SERVER_MATCH_CACHE` with TTLs |
-| **Prediction engine** | `buildLast5()` → `last5Form()` → `computeSignals()` pipeline; 4 recent-form signals. (`extractStats()` still builds the season-stat `snap` for display) |
+| **Prediction engine** | `buildLast5()` → `last5Form()` → `computeSignals()` pipeline; 2 signals (A + E). `extractStats()` builds the season-stat `snap` frozen pre-game. |
 | **buildHTML()** | Server-side HTML/CSS/JS generation (inline, no templates) |
 | **Routes** | `/` (HTML shell), `/preds` (JSON API), `/cache-status`, `/debug`, `/api/*` (passthrough) |
 
@@ -61,70 +61,97 @@ There is no test suite, linter, or build step configured.
 - `dotenv` — Environment variable loading
 - `node-fetch@2` — HTTP client (CommonJS-compatible v2)
 
-## Prediction Algorithm (4-Signal Ranking)
+## Prediction Algorithm (2-Signal Ranking)
 
-Matches are ranked 0–4 based on how many signals fire. **All four signals derive
-from each team's last-5 first-half form** — the average first-half goals scored
-and conceded over their most recent (≤5) played matches. These are reconstructed
-at prediction time via `buildLast5()` and consumed by `computeSignals()`. Recent
-form is available pre-kickoff, so the signals carry **no season-aggregate
-look-ahead bias** (see "Look-ahead bias" below).
-
-Notation: `hF`/`hA` = home team last-5 FH scored/conceded; `aF`/`aA` = away team
-last-5 FH scored/conceded; `hT = hF + hA`, `aT = aF + aA` (per-team FH totals).
+Matches are ranked 0–2 based on how many signals fire. Rank = signals fired (max 2).
+🔥 Fire (2) → 📢 Signal (1) → Low (0). `eligible` = rank ≥ 2.
 
 ### Signals
 
-| Signal | Name | Rule |
-|--------|------|------|
-| A | Recent Intensity | `hT + aT >= 4.0` |
-| B | Attack vs Leak | `hF > 1.0` AND `aA > 1.0` (home attacking, away leaking) |
-| C | Both Scoring | `hF > 0.8` AND `aF > 0.8` |
-| D | Both Open | `hT > 1.5` AND `aT > 1.5` |
+| Signal | Name | Rule | Data source |
+|--------|------|------|-------------|
+| A | Recent Intensity | `hT + aT >= 4.0` | Last-5 FH form (pre-kickoff) |
+| E | Home Profile | `snap.home.t1_pct >= 25` AND `snap.home.scored_fh >= 0.94` | Season stats frozen pre-game |
 
-A team needs **≥ 3 recent games** for signals to evaluate; otherwise the match is
-rank 0 (`last5Form()` returns null). `computeSignals(snap, hLast5, aLast5)` also
-returns `ci` = recent intensity (`hT + aT`) for display/sorting, and `defCi` =
-away last-5 FH conceded (`aA`).
+**Signal A** requires ≥ 3 recent games per team (`last5Form()` returns null otherwise → rank 0 for A).
+`hT = hF + hA` (home last-5 FH total), `aT = aF + aA` (away last-5 FH total).
 
-Rank = count of signals fired (0–4):
-🔥 Fire (4) → ⚡ Prime (3) → 👀 Watch (2) → 📢 Signal (1) → Low (0).
+**Signal E** uses season-aggregate stats frozen at pre-game snap time:
+- `snap.home.t1_pct` = `seasonOver25PercentageHT` (home team's historical % of matches with FH > 2.5)
+- `snap.home.scored_fh` = `scoredAVGHT` (home team's season avg FH goals scored)
 
-### Probability Tables (calibrated on 24,677 look-ahead-free pre-game matches, base rate 11.2% FH > 2.5)
+These are **not** look-ahead biased for live-captured rows — the snap is frozen on first write
+(`ignoreDuplicates: true`) before the match kicks off.
 
-| Rank | n (matches) | FH > 2.5 | FH > 1.5 |
-|------|-------------|----------|----------|
-| 4    | 53          | 30.2%    | 50.9%    |
-| 3    | 337         | 17.5%    | 42.7%    |
-| 2    | 679         | 16.8%    | 40.4%    |
-| 1    | 1,501       | 13.9%    | 36.4%    |
-| 0    | 22,107      | 10.7%    | 29.8%    |
+`computeSignals(snap, hLast5, aLast5)` returns:
+- `ci` = recent intensity (`hT + aT`) — used for display/sorting
+- `defCi` = away last-5 FH conceded (`aA`)
+- `signals` = `{ A: { met, label, value, threshold }, E: { met, label, value, threshold } }`
 
-Regenerate with `python3 scripts/recalibrate_pregame.py`. Rank 4 has a small
-sample (n=53) — treat with caution. Rank 3+ is "eligible" (star badges in UI).
-Note the honest scale: even rank 3 (~17.5%) sits near the break-even for typical
-FH-over-2.5 market odds, so probabilities are modest, not the inflated 60%+ the
-old season-stat tables claimed.
+### Probability Tables
 
-### Per-combination performance
+Calibrated on **601 clean live-captured matches** (look-ahead-free, snap frozen pre-game).
+Combo-specific probabilities — A-only and E-only differ significantly at rank 1:
 
-Rank just counts signals; specific combos diverge at the same rank. On the clean
-data, **B alone (rank 1) ≈ 20% beats every rank-3 combo**, while **C is nearly
-dead weight** (~12% alone, ~base rate) and tends to drag combos down. Use
-`GET /signal-backtest` (`byCombo` field) to monitor this on live data; consider a
-weighted/combo score rather than a flat count if the pattern holds.
+| Combo | Rank | n | FH > 1.5 | FH > 2.5 |
+|-------|------|---|----------|----------|
+| A + E | 2 🔥 | 26 | 57.7% | 26.9% |
+| E only | 1 | 23 | 52.2% | 17.4% |
+| A only | 1 | 47 | 44.7% | 10.6% |
+| Neither | 0 | 505 | 35.8% | 10.1% |
 
-### Recent-form snapshot (`snap.l5`)
+Global fallback rank table (used when league-specific data is insufficient):
 
-Each frozen snapshot stores the last-5 inputs the signals used:
-`snap.l5 = { home: {f, a, t}, away: {f, a, t} }`. This lets the recent-form
-signals be re-validated and re-tuned on live data — earlier snapshots stored only
-season stats, which made the new signals impossible to backtest live.
+| Rank | prob15 | prob25 |
+|------|--------|--------|
+| 2 | 57.7% | 26.9% |
+| 1 | 47.2% | 12.8% (weighted avg) |
+| 0 | 35.8% | 10.1% |
+
+Recalibrate by re-running the threshold analysis SQL on `match_results` filtered to
+live-captured rows (`fetchedAt NOT IN ('historical-import', 'backfill')`).
+
+### combo string format
+
+`comboFromSignals()` returns a **2-char string**: bit(A) + bit(E).
+e.g. "11" = both fire, "10" = A only, "01" = E only, "00" = neither.
+The Supabase `compute_league_combo_buckets()` function has been updated to match.
+
+### Clean data — what to trust
+
+The Supabase `match_results` table has three source types:
+
+| fetchedAt | Rows | Usable for signal analysis? |
+|-----------|------|----------------------------|
+| `historical-import` | ~18k | ❌ Season stats are end-of-season (look-ahead bias) |
+| `backfill` | ~11k | ❌ Same — season stats fetched after the fact |
+| Timestamp (e.g. `2026-05-03 00:11`) | ~800+ | ✅ Snap frozen pre-game, clean |
+
+**Always filter to live rows** for any backtesting or recalibration:
+```sql
+WHERE snap->>'fetchedAt' NOT IN ('historical-import', 'backfill')
+  AND snap->>'fetchedAt' NOT LIKE '%(from history)%'
+```
+
+Clean rows grow by ~10–15/day. At ~600 completed matches as of May 2026.
+
+### snap structure (live-captured rows)
+
+```json
+{
+  "fetchedAt": "2026-05-03 00:11",
+  "home": { "name": "...", "scored_fh": 0.94, "conced_fh": 0.61, "t1_pct": 27.0, "cn010_avg": 0.09, "sot_avg": 0 },
+  "away": { "name": "...", "scored_fh": 0.55, "conced_fh": 0.70, "t1_pct": 13.0, "cn010_avg": 0.12, "sot_avg": 0 },
+  "l5": { "home": { "f": 0.8, "a": 0.6, "t": 1.4 }, "away": { "f": 0.6, "a": 0.8, "t": 1.4 } }
+}
+```
+
+`snap.l5` is non-null only when both teams had ≥ 3 recent games at capture time.
+`snap.home/away` season stats are always present for live rows.
 
 ### Women's Leagues — Excluded from Signal Calibration
 
-The following competition IDs are excluded from clean signal analysis. They have
-different FH goal dynamics and degrade model accuracy:
+The following competition IDs are excluded from clean signal analysis:
 
 | competition_id | League |
 |---------------|--------|
@@ -133,31 +160,28 @@ different FH goal dynamics and degrade model accuracy:
 | 16046 | Arsenal Women / WSL |
 | 16563 | Women's internationals |
 
-These leagues still appear in the UI but their signal hit rates should not be
-used to recalibrate thresholds.
+These leagues still appear in the UI but must not be used for threshold recalibration.
 
-### Look-ahead bias (why the engine was rewritten)
+### Look-ahead bias — lessons learned
 
-The original signals used **full-season** aggregate stats
-(`seasonOver25PercentageHT`, `scoredAVGHT`, ...). In `dataset_combined_filled.csv`
-those are end-of-season figures, so the original backtest was inflated — signal B
-appeared to be 4.71x lift, signal A 2.77x, etc. Validating against the live
-`match_results` (which froze as-of-kickoff stats) and against a look-ahead-free
-reconstruction both showed the true lifts were only ~1.2–1.4x, and the rank table
-was flat/inverted. The signals were rewritten on **last-5 recent form**, which is
-genuinely available pre-kickoff and produces a monotonic gradient. The lesson:
-**only trust backtests on as-of-kickoff data** — reconstruct pre-game stats with
-`scripts/recalibrate_pregame.py` or validate on live `match_results`, never on the
-raw season-aggregate dataset.
+- `historical-import` and `backfill` rows used season-aggregate stats fetched **after** the match,
+  making all their signal features end-of-season figures. Any analysis on those rows is inflated.
+- `ci` and `def_ci` in those rows were computed from old season-stat-based signals (not last-5 form)
+  and are equally tainted.
+- Signal E uses `t1_pct` and `scored_fh` — these ARE valid pre-game for live-captured rows because
+  the snap is frozen before kickoff. They are NOT valid for backfill/historical-import rows.
+- **Never recalibrate on tainted rows.** Always filter to live captures.
 
-### Deprecated / removed
+### Deprecated / removed signals
 
-- **Old season-stat signals** (CI≥3.2, T1 both≥25%, DefCI≥2.25, away scored≥1.25)
-  — removed; collapsed to ~1.3x lift once look-ahead bias was stripped.
-- **Odds signals** (O1, FH O2.5) — not reliably available at prediction time.
-- **CN010 (early goals conceded)** — near-zero additive value.
-- **"sig C required for rank 3+" gate** — removed; it gated eligibility on the
-  weakest signal.
+| Signal | Reason dropped |
+|--------|---------------|
+| B — Attack vs Leak (`hF>1.0 & aA>1.0`) | n=19 on clean data, too thin |
+| C — Both Scoring (`hF>0.8 & aF>0.8`) | Below baseline on clean data (36.4% FH>1.5 vs 38.1% base) |
+| D — Both Open (`hT>1.5 & aT>1.5`) | n=13 on clean data, too thin |
+| Old season-stat signals (CI≥3.2, T1 both≥25%, etc.) | Look-ahead bias inflated results |
+| Odds signals (O1, FH O2.5) | Not reliably available pre-kickoff |
+| CN010 as core signal | Near-zero additive value on clean data |
 
 ## Caching
 
@@ -184,8 +208,8 @@ requests until the reset time. Cached data is served while rate-limited.
 | `GET /signal-backtest` | JSON | Per-signal live lift + `byRank`/`byCombo` (Supabase) |
 | `GET /history?days=N` | JSON | Recent completed matches with results (Supabase) |
 | `GET /supabase-status` | JSON | Supabase connection + persistence status |
-| `GET /api/*` | JSON | Passthrough proxy — **gated by `LOAD_DATASET_TOKEN`**, routes through `safeFetch` |
-| `GET /admin/*` | JSON | Dataset load / backfill / recalibrate — gated by `LOAD_DATASET_TOKEN` (fails closed) |
+| `GET /api/*` | JSON | Passthrough proxy — gated by `LOAD_DATASET_TOKEN` (fails closed if unset) |
+| `GET /admin/*` | JSON | Dataset load / backfill / recalibrate — gated by `LOAD_DATASET_TOKEN` (fails closed if unset) |
 
 ## Conventions and Patterns
 
@@ -195,25 +219,14 @@ requests until the reset time. Cached data is served while rate-limited.
 - **Fix comments** labeled `FIX 1` through `FIX 4` document known workarounds
 - **Previous-season fallback**: `PREV_SEASON` map provides fallback season IDs
   when current season has < 5 completed matches
-- **Commit messages** have historically been brief ("Update server.js")
+- **Backfill is safe**: both `/admin/backfill` and `/admin/load-dataset` use
+  `ignoreDuplicates: true` — running them will never overwrite a live-captured snap
 
 ## Dataset
 
 A CSV dataset (`dataset_combined_filled.csv`) was built and maintained separately
-for backtesting. Key facts:
-
-- 27,443 total rows across 101 competition IDs and multiple seasons
-- 24,203 complete matches; 23,593 (97.5%) have signal stats filled
-- 610 rows permanently unfillable (comp IDs 15238, 14904 — no team stats available)
-
-⚠️ **Look-ahead caveat:** the per-row team stats columns (`*scoredAVGHT*`,
-`*seasonOver25PercentageHT*`, etc.) are **full-season aggregates**, not as-of-
-kickoff values. Backtesting signals directly on those columns inflates results.
-`scripts/recalibrate_pregame.py` rebuilds each team's pre-game last-5 FH form by
-walking matches chronologically (date-sorted, prior games only) — that is the
-look-ahead-free view the current signals are calibrated on (~24,677 usable rows).
-
-The dataset is not used at runtime — it is a research artifact only.
+for backtesting. **Do not use it for signal calibration** — the season stats are
+end-of-season figures (look-ahead bias). It is a research artifact only.
 
 ## Planned: Self-Learning System
 
@@ -228,9 +241,8 @@ from its own completed match history, without requiring manual dataset updates.
 
 ### Phase 2 — League-specific probability tables (persisted)
 - Maintain separate prob tables per league/competition_id
-- Persist to an external store (Supabase free tier recommended)
+- Persist to Supabase (`league_prob_tables`)
 - Update nightly from accumulated match results
-- Env var needed: `SUPABASE_URL`, `SUPABASE_ANON_KEY`
 
 ### Phase 3 — Weighted signal scoring per league
 - Replace integer rank count with a weighted float score
@@ -239,16 +251,15 @@ from its own completed match history, without requiring manual dataset updates.
 - Requires Phase 2 persistence infrastructure
 
 **Constraint:** Render free tier has no disk persistence between restarts.
-All learning that needs to survive restarts must use an external DB.
-Supabase free tier (500MB, no credit card) is sufficient for this use case.
+All learning that needs to survive restarts must use Supabase.
 
 ## Environment
 
 - **No Docker** — deployed directly as a Node.js app on Render
-- **No database** — purely API-driven with in-memory state (Supabase planned)
-- **GitHub Actions** — single workflow for keep-alive pings to prevent
-  Render free-tier spin-down
+- **Supabase** — `SUPABASE_URL` and `SUPABASE_ANON_KEY` required for persistence
+- **GitHub Actions** — single workflow for keep-alive pings to prevent Render free-tier spin-down
 - **Auto-deploy** — Render deploys automatically on push to main branch
+- **`LOAD_DATASET_TOKEN`** — optional; gates admin endpoints. Fails closed (503) if not set.
 
 ## Important Notes for AI Assistants
 
@@ -261,27 +272,21 @@ Supabase free tier (500MB, no credit card) is sufficient for this use case.
 - The app handles rate limiting gracefully by serving cached data — preserve
   this behavior in all modifications
 - `PREV_SEASON` mappings need manual updates when new seasons start
-- **Signals derive from last-5 recent form, not season stats** — `computeSignals`
-  takes `(snap, hLast5, aLast5)`. Do NOT revert to season-aggregate signals
-  (`seasonOver25PercentageHT`, `scoredAVGHT`); they only looked strong because of
-  look-ahead bias in the dataset. See "Look-ahead bias" above.
-- **Never recalibrate or validate signals on the raw `dataset_combined_filled.csv`
-  season stats** — they're end-of-season figures (look-ahead bias). Use
-  `scripts/recalibrate_pregame.py` (reconstructs pre-game state) or live
-  `match_results` via `/signal-backtest`.
-- **Do not add odds-based signals** — odds data is not reliably available at
-  prediction time from the FootyStats API
-- **Do not reintroduce CN010 as a core signal** — near-zero additive value
+- **Signal E uses season stats from the snap** (`snap.home.t1_pct` and `snap.home.scored_fh`),
+  NOT from last-5 form. This is intentional and look-ahead-free for live rows.
+- **Signal A uses last-5 recent form** — `computeSignals` takes `(snap, hLast5, aLast5)`.
+  When hLast5/aLast5 are unavailable, Signal A cannot fire (returns false), rank stays 0 for A.
+- **Do NOT reintroduce signals B, C, or D** — they were dropped after calibration on 601 clean
+  matches showed B/D had n<20 and C was below baseline. See "Deprecated / removed signals" above.
+- **Do not add odds-based signals** — odds data is not reliably available pre-kickoff
+- **Do not reintroduce CN010 as a core signal** — near-zero additive value on clean data
 - **Women's leagues (15020, 16037, 16046, 16563) must be excluded** from any
-  threshold recalibration or model retraining — their FH dynamics differ
-  significantly from men's football
+  threshold recalibration or model retraining
 - `computeSignals()` returns `ci` (recent intensity = `hT + aT`) and `defCi`
-  (away last-5 FH conceded); both are persisted and used for display/sorting —
-  keep them in the return object.
-- The `eligible` flag (rank ≥ 3) controls star badges on league pills in the UI
-- Rank 4 probability is ~30.2% FH>2.5 but based on only n=53 matches — always
-  note this caveat if surfacing the number to users
-- The 🔥/🎯 FILTER badges (`betPill`) are **UI heuristics**, not the calibrated
-  engine — don't conflate them with rank/probability
-- `snap.l5` carries the last-5 inputs the signals used — preserve it when changing
-  the snapshot/persistence path so live re-validation stays possible
+  (away last-5 FH conceded) — keep them in the return object, they drive display/sorting
+- The `eligible` flag (rank ≥ 2) controls star badges on league pills in the UI
+- The 🔥/🎯 FILTER badges (`betPill`) are **UI heuristics** (prob25≥20 or prob15≥50),
+  not the calibrated rank — don't conflate them
+- `snap.l5` carries the last-5 inputs Signal A used — preserve it in the snapshot path
+- **combo string is 2 chars** (`bit(A) + bit(E)`) — do not revert to 4-char ABCD format
+- **Backfill guard**: both admin upsert routes use `ignoreDuplicates: true` — do not remove this
