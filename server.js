@@ -825,7 +825,7 @@ app.get("/admin/load-dataset", async (req, res) => {
   const errors = [];
   for (let i = 0; i < validRows.length; i += BATCH_SIZE) {
     const batch = validRows.slice(i, i + BATCH_SIZE);
-    const { error } = await supabase.from("match_results").upsert(batch, { onConflict: "match_id" });
+    const { error } = await supabase.from("match_results").upsert(batch, { onConflict: "match_id", ignoreDuplicates: true });
     if (error) {
       errors.push({ batchStart: i, message: error.message });
       if (errors.length >= 5) break;
@@ -934,7 +934,7 @@ app.get("/admin/backfill", async (req, res) => {
   const errors = [];
   for (let i = 0; i < rows.length; i += BATCH) {
     const batch = rows.slice(i, i + BATCH);
-    const { error } = await supabase.from("match_results").upsert(batch, { onConflict: "match_id" });
+    const { error } = await supabase.from("match_results").upsert(batch, { onConflict: "match_id", ignoreDuplicates: true });
     if (error) {
       errors.push({ batchStart: i, message: error.message });
       if (errors.length >= 5) break;
