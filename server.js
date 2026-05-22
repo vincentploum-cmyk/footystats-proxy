@@ -2229,7 +2229,7 @@ body{background:#f3f4f6;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',
   J += "(function loadPreds(){";
   J += "  var main=document.getElementById('mainView');";
   J += "  if(ALL.length===0&&main)main.innerHTML='<p style=\"color:#6b7280;text-align:center;padding:40px;font-size:13px\">\u23f3 Loading predictions\u2026</p>';";
-  J += "  fetch('/preds?tz='+TZ).then(function(r){return r.json();}).then(function(d){";
+  J += "  fetch('/preds?tz='+TZ+'&_='+Date.now()).then(function(r){return r.json();}).then(function(d){";
   J += "    if(d.ok&&d.preds&&d.preds.length){ALL=d.preds;renderTabs();renderLeagueList();}";
   J += "    else setTimeout(loadPreds,3000);";
   J += "  }).catch(function(){setTimeout(loadPreds,4000);});";
