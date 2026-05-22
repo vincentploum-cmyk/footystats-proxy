@@ -163,7 +163,7 @@ async function loadFrozenSnapshots() {
         rank, label: RANK_LABELS[rank] || "Low",
         prob25: Number(r.prob25) || 0, prob15: Number(r.prob15) || 0,
         probSource: "frozen", probSampleN: 0, probCombo: null,
-        eligible: rank >= 3, signals: r.signals || {}, snap: r.snap || null,
+        eligible: rank >= 2, signals: r.signals || {}, snap: r.snap || null,
       };
       n++;
     }
@@ -257,9 +257,9 @@ let   LEAGUE_COMBO_LAST_LOAD  = { at: 0, rows: 0, error: null };
 let   LEAGUE_COMBO_LAST_RECAL = { at: 0, buckets: 0, written: 0, error: null };
 
 function comboFromSignals(sigs) {
-  if (!sigs) return "0000";
+  if (!sigs) return "00";
   const bit = (k) => (sigs[k] && sigs[k].met) ? "1" : "0";
-  return bit("A") + bit("B") + bit("C") + bit("D");
+  return bit("A") + bit("E");
 }
 
 async function loadLeagueComboCache() {
@@ -505,11 +505,13 @@ function unixToLocalDate(unix, tzOffset) {
 
 // Look-ahead-free tables, calibrated from 24,677 pre-game matches via
 // scripts/recalibrate_pregame.py. The recent-form signals produce a monotonic
-// gradient (rank 0->4: 10.7 -> 13.9 -> 16.8 -> 17.5 -> 30.2% FH>2.5). Rank 4
-// is small (n=53), so treat it as noisy.
-const PROB25_BY_RANK = { 4: 30.2, 3: 17.5, 2: 16.8, 1: 13.9, 0: 10.7 };
-const PROB15_BY_RANK = { 4: 50.9, 3: 42.7, 2: 40.4, 1: 36.4, 0: 29.8 };
-const RANK_LABELS = { 4: "Fire", 3: "Prime", 2: "Watch", 1: "Signal", 0: "Low" };
+// Calibrated on 601 clean live-captured matches (look-ahead-free, pre-game snap frozen).
+// Signal A = Recent Intensity (last-5 hT+aT>=4.0); Signal E = Home Profile (h_fh25_hist>=25 & h_scored_fh>=0.94).
+// Combo-specific probs used in computeSignals; rank table kept for league-override fallback.
+// rank 2 (A+E): n=26, rank 1 weighted (A-only n=47, E-only n=23), rank 0: n=505.
+const PROB25_BY_RANK = { 2: 26.9, 1: 12.8, 0: 10.1 };
+const PROB15_BY_RANK = { 2: 57.7, 1: 47.2, 0: 35.8 };
+const RANK_LABELS = { 2: "Fire", 1: "Signal", 0: "Low" };
 
 // Average a team's last-5 first-half form. Goals are team-relative (fhFor =
 // scored, fhAgst = conceded). Returns null if fewer than 3 recent games.
@@ -522,31 +524,34 @@ function last5Form(arr) {
   return { f: f / n, a: a / n, t: (f + a) / n };
 }
 
-// Recent-form signal engine. All four signals derive from each team's last-5
-// first-half form, which IS available pre-kickoff — no season-aggregate
-// look-ahead bias. See scripts/recalibrate_pregame.py for calibration.
+// Two-signal engine — calibrated on 601 clean live-captured matches.
+//   Signal A: Recent Intensity — last-5 combined FH total (hT+aT) >= 4.0
+//   Signal E: Home Profile     — h_fh25_hist >= 25 AND h_scored_fh >= 0.94
+//             (h_fh25_hist = snap.home.t1_pct = seasonOver25PercentageHT frozen pre-game)
+//             (h_scored_fh  = snap.home.scored_fh = scoredAVGHT frozen pre-game)
+// Combo-specific probs (look-ahead-free): A+E n=26, E-only n=23, A-only n=47, none n=505.
 function computeSignals(snap, hLast5, aLast5) {
   const h5 = last5Form(hLast5), a5 = last5Form(aLast5);
   const ok = !!(h5 && a5);
   const recentCI = ok ? (h5.t + a5.t) : 0;
-  const sigA = ok && recentCI >= 4.0;                  // Recent Intensity
-  const sigB = ok && h5.f > 1.0 && a5.a > 1.0;         // home attack vs away leak
-  const sigC = ok && h5.f > 0.8 && a5.f > 0.8;         // both scoring
-  const sigD = ok && h5.t > 1.5 && a5.t > 1.5;         // both open
-  const rank = [sigA, sigB, sigC, sigD].filter(Boolean).length;
+  const sigA = ok && recentCI >= 4.0;
+  const sigE = !!(snap && snap.home &&
+                  (snap.home.t1_pct    || 0) >= 25 &&
+                  (snap.home.scored_fh || 0) >= 0.94);
+  const rank = (sigA ? 1 : 0) + (sigE ? 1 : 0);
   const f2 = (v) => v.toFixed(2);
+  // Combo-specific probabilities — A-only and E-only differ significantly at rank 1
+  const prob25 = (sigA && sigE) ? 26.9 : sigE ? 17.4 : sigA ? 10.6 : 10.1;
+  const prob15 = (sigA && sigE) ? 57.7 : sigE ? 52.2 : sigA ? 44.7 : 35.8;
   return {
     rank, label: RANK_LABELS[rank] || "Low",
-    prob25: PROB25_BY_RANK[rank] ?? 10.7,
-    prob15: PROB15_BY_RANK[rank] ?? 29.8,
+    prob25, prob15,
     ci: +recentCI.toFixed(2),
     defCi: ok ? +a5.a.toFixed(2) : 0,
-    eligible: rank >= 3,
+    eligible: rank >= 2,
     signals: {
-      A: { met: sigA, label: "Recent Intensity", value: ok ? f2(recentCI) : "n/a",                threshold: "both L5 FH total >= 4.0" },
-      B: { met: sigB, label: "Attack vs Leak",   value: ok ? f2(h5.f) + "/" + f2(a5.a) : "n/a",   threshold: "home L5 scored>1.0 & away L5 conc>1.0" },
-      C: { met: sigC, label: "Both Scoring",     value: ok ? f2(h5.f) + "/" + f2(a5.f) : "n/a",   threshold: "both L5 FH scored > 0.8" },
-      D: { met: sigD, label: "Both Open",        value: ok ? f2(h5.t) + "/" + f2(a5.t) : "n/a",   threshold: "both L5 FH total > 1.5" },
+      A: { met: sigA, label: "Recent Intensity", value: ok ? f2(recentCI) : "n/a", threshold: "both L5 FH total >= 4.0" },
+      E: { met: sigE, label: "Home Profile",     value: snap && snap.home ? (snap.home.t1_pct || 0).toFixed(0) + "% / " + (snap.home.scored_fh || 0).toFixed(2) : "n/a", threshold: "h_fh25_hist >= 25 & h_scored_fh >= 0.94" },
     },
   };
 }
@@ -1011,7 +1016,7 @@ app.get("/calibration", async (req, res) => {
     }
     const byRank = {};
     const byCombo = {};
-    for (let r = 0; r <= 4; r++) byRank[r] = { n: 0, hit25: 0, hit15: 0, sumP25: 0, sumP15: 0 };
+    for (let r = 0; r <= 2; r++) byRank[r] = { n: 0, hit25: 0, hit15: 0, sumP25: 0, sumP15: 0 };
     let total = { n: 0, hit25: 0, hit15: 0, sumP25: 0, sumP15: 0 };
     for (const m of all) {
       const r = m.rank;
@@ -1025,7 +1030,7 @@ app.get("/calibration", async (req, res) => {
       // Per-combo bucket
       const sigs = m.signals || {};
       const bit = (k) => (sigs[k] && sigs[k].met) ? "1" : "0";
-      const combo = bit("A") + bit("B") + bit("C") + bit("D");
+      const combo = bit("A") + bit("E");
       if (!byCombo[combo]) byCombo[combo] = { n: 0, hit25: 0, hit15: 0, sumP25: 0, sumP15: 0 };
       byCombo[combo].n++;
       if (m.hit_25) byCombo[combo].hit25++;
@@ -1096,7 +1101,7 @@ app.get("/signal-backtest", async (req, res) => {
     const met = (m, k) => !!(m.signals && m.signals[k] && m.signals[k].met);
 
     const perSignal = {};
-    for (const k of ["A", "B", "C", "D"]) {
+    for (const k of ["A", "E"]) {
       const fired = all.filter(m => met(m, k));
       const quiet = all.filter(m => !met(m, k));
       const fHit = fired.length ? fired.filter(m => m.hit_25).length / fired.length : 0;
@@ -1112,7 +1117,7 @@ app.get("/signal-backtest", async (req, res) => {
     }
 
     const byRank = {};
-    for (let r = 0; r <= 4; r++) byRank[r] = { n: 0, hit25: 0, hit15: 0, sumP25: 0, sumP15: 0 };
+    for (let r = 0; r <= 2; r++) byRank[r] = { n: 0, hit25: 0, hit15: 0, sumP25: 0, sumP15: 0 };
     for (const m of all) {
       const b = byRank[m.rank];
       if (!b) continue;
@@ -1137,7 +1142,7 @@ app.get("/signal-backtest", async (req, res) => {
     // which combinations actually carry the predictive weight.
     const byCombo = {};
     for (const m of all) {
-      const c = ["A", "B", "C", "D"].filter(k => met(m, k)).join("") || "(none)";
+      const c = ["A", "E"].filter(k => met(m, k)).join("") || "(none)";
       if (!byCombo[c]) byCombo[c] = { n: 0, hit25: 0, hit15: 0 };
       byCombo[c].n++;
       if (m.hit_25) byCombo[c].hit25++;
@@ -1678,11 +1683,11 @@ body{background:#f3f4f6;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',
   J += "function lgLabel(r){return r===4?'Fire \ud83d\udd25':r===3?'Prime \u26a1':r===2?'Watch \ud83d\udc40':r===1?'Signal \ud83d\udce1':'Low';}";
   J += "function fLetter(r){return r==='W'?'<span class=\"fw\">W</span>':r==='L'?'<span class=\"fl\">L</span>':'<span class=\"fd\">D</span>';}";
   J += "function mkChip(lbl,val,thr,state){var cls='chip'+(state?' '+state:'');return '<div class=\"'+cls+'\">'+'<div class=\"chip-lbl\">'+esc(lbl)+'</div><div class=\"chip-val\">'+esc(val)+'</div><div class=\"chip-thr\">'+esc(thr)+'</div></div>';}";
-  // betPill: EXTRA heuristic filters, NOT the calibrated model. They blend the
-  // predicted probability with soft Sig B + recent-form thresholds. Labelled as
+  // betPill: EXTRA heuristic filters, NOT the calibrated model. Labelled as
   // filters so users don't mistake them for the calibrated rank/probability.
-  //   🔥     = prob25 ≥ 50  OR  both teams' last-5 FH avg ≥ 2.25
-  //   🎯 FILTER = prob15 ≥ 60  OR  both teams' last-5 FH avg ≥ 2.0
+  //   🔥        = prob25 ≥ 20  OR  both teams' last-5 FH avg ≥ 2.25
+  //   🎯 FILTER = prob15 ≥ 50  OR  both teams' last-5 FH avg ≥ 2.0
+  // Thresholds calibrated against new 2-signal system (max prob25=26.9%, max prob15=57.7%).
   // Both triggers use only recent form or the calibrated model probability — no
   // season-aggregate stats (the look-ahead-prone t1_pct trigger was removed).
   J += "function betPill(m){if(!m)return '';";
@@ -1691,8 +1696,8 @@ body{background:#f3f4f6;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',
   J += "  var minAvg=Math.min(fhAvg(m.hLast5),fhAvg(m.aLast5));";
   J += "  var recent25=minAvg>=2.25,recent15=minAvg>=2.0;";
   J += "  var h='';";
-  J += "  if(p25>=50||recent25)h+='<div style=\"display:inline-block;background:#dc2626;color:#fff;font-size:11px;font-weight:700;padding:3px 9px;border-radius:6px;margin-right:4px\" title=\"Quick filter (recent form or model FH>2.5 prob) — not the calibrated rank\">🔥</div>';";
-  J += "  if(p15>=60||recent15)h+='<div style=\"display:inline-block;background:#15803d;color:#fff;font-size:11px;font-weight:700;padding:3px 9px;border-radius:6px;letter-spacing:.5px;margin-right:6px\" title=\"Quick filter (recent form or model FH>1.5 prob) — not the calibrated rank\">🎯 FILTER</div>';";
+  J += "  if(p25>=20||recent25)h+='<div style=\"display:inline-block;background:#dc2626;color:#fff;font-size:11px;font-weight:700;padding:3px 9px;border-radius:6px;margin-right:4px\" title=\"Quick filter (recent form or model FH>2.5 prob) — not the calibrated rank\">🔥</div>';";
+  J += "  if(p15>=50||recent15)h+='<div style=\"display:inline-block;background:#15803d;color:#fff;font-size:11px;font-weight:700;padding:3px 9px;border-radius:6px;letter-spacing:.5px;margin-right:6px\" title=\"Quick filter (recent form or model FH>1.5 prob) — not the calibrated rank\">🎯 FILTER</div>';";
   J += "  return h;}";
 
   J += "function renderTabs(){";
@@ -1832,9 +1837,9 @@ body{background:#f3f4f6;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',
   J += "  h+='<div style=\"font-size:12px;color:#6b7280;margin-bottom:8px\">'+d.matches.length+' matches \u2014 last '+d.days+' days, newest first. Click a row to expand.</div>';";
   J += "  d.matches.forEach(function(m){";
   J += "    var dStr=m.date_unix?new Date(m.date_unix*1000).toISOString().slice(0,10):'';";
-  J += "    var rankColor=['#6b7280','#0891b2','#7c3aed','#d97706','#dc2626'][m.rank]||'#6b7280';";
+  J += "    var rankColor=['#6b7280','#0891b2','#dc2626'][m.rank]||'#6b7280';";
   J += "    var sigs=m.signals||{};";
-  J += "    var sigStr=['A','B','C','D'].map(function(k){return sigs[k]&&sigs[k].met?k:'\u00b7';}).join('');";
+  J += "    var sigStr=['A','E'].map(function(k){return sigs[k]&&sigs[k].met?k:'\u00b7';}).join('');";
   J += "    h+='<div class=\"hist-row\" data-mid=\"'+m.match_id+'\" style=\"cursor:pointer;background:#fff;border:1px solid #e5e7eb;border-radius:8px;padding:10px 12px;display:flex;gap:10px;align-items:center;font-size:12px;margin-bottom:6px\">';";
   J += "    h+='<div style=\"width:22px;height:22px;border-radius:50%;background:'+rankColor+';color:#fff;display:flex;align-items:center;justify-content:center;font-weight:700;font-size:12px;flex-shrink:0\">'+m.rank+'</div>';";
   J += "    h+=betPill({prob25:Number(m.prob25)||0,prob15:Number(m.prob15)||0,snap:m.snap});";
@@ -1856,8 +1861,8 @@ body{background:#f3f4f6;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',
   J += "      if(!det.dataset.loaded){";
   J += "        var m=HISTORY.matches.find(function(x){return String(x.match_id)===mid;});";
   J += "        if(m){";
-  J += "          var lbl=['Low','Signal','Watch','Prime','Fire'][m.rank]||'Low';";
-  J += "          var card={id:m.match_id,homeId:m.home_id,awayId:m.away_id,league:m.league_name||'\u2014',leagueSid:m.competition_id,home:m.home_name||'',away:m.away_name||'',dt:(m.date_unix||0)*1000,matchDate:m.date_unix?new Date(m.date_unix*1000).toISOString().slice(0,10):'',status:'complete',missingStats:!m.snap,rank:m.rank||0,label:lbl,prob25:Number(m.prob25)||0,prob15:Number(m.prob15)||0,eligible:(m.rank||0)>=3,ci:Number(m.ci)||0,defCi:Number(m.def_ci)||0,signals:m.signals||{},snap:m.snap||null,hLast5:[],aLast5:[],hAvgFH:null,aAvgFH:null,matchResult:{fhH:m.ht_home||0,fhA:m.ht_away||0,ftH:m.ft_home||0,ftA:m.ft_away||0,hit25:!!m.hit_25,hit15:!!m.hit_15}};";
+  J += "          var lbl=['Low','Signal','Fire'][m.rank]||'Low';";
+  J += "          var card={id:m.match_id,homeId:m.home_id,awayId:m.away_id,league:m.league_name||'\u2014',leagueSid:m.competition_id,home:m.home_name||'',away:m.away_name||'',dt:(m.date_unix||0)*1000,matchDate:m.date_unix?new Date(m.date_unix*1000).toISOString().slice(0,10):'',status:'complete',missingStats:!m.snap,rank:m.rank||0,label:lbl,prob25:Number(m.prob25)||0,prob15:Number(m.prob15)||0,eligible:(m.rank||0)>=2,ci:Number(m.ci)||0,defCi:Number(m.def_ci)||0,signals:m.signals||{},snap:m.snap||null,hLast5:[],aLast5:[],hAvgFH:null,aAvgFH:null,matchResult:{fhH:m.ht_home||0,fhA:m.ht_away||0,ftH:m.ft_home||0,ftA:m.ft_away||0,hit25:!!m.hit_25,hit15:!!m.hit_15}};";
   J += "          det.innerHTML=renderCard(card);det.dataset.loaded='1';";
   J += "          det.querySelectorAll('.toggle-btn').forEach(function(btn){btn.addEventListener('click',function(ev){ev.stopPropagation();var dEl=btn.nextElementSibling;var o=dEl.classList.toggle('open');btn.innerHTML=o?'\u25b2 Hide last 5 games & H2H':'\u25bc Show last 5 games & H2H';if(o){var h2h=dEl.querySelector('[id^=\"h2h-\"]');if(h2h&&!h2h.dataset.loaded){loadH2H(h2h);}}});});";
   J += "        }";
@@ -2028,8 +2033,8 @@ body{background:#f3f4f6;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',
   J += "      totals.forEach(function(t){";
   J += "        var idx=Math.min(t,colors.length-1);";
   J += "        var bg=colors[idx];";
-  J += "        var fg=t>=3?'#fff':'#111827';";
-  J += "        var hPct=Math.min(100,(t/4)*100);if(t===0)hPct=14;";
+  J += "        var fg=t>=2?'#fff':'#111827';";
+  J += "        var hPct=Math.min(100,(t/2)*100);if(t===0)hPct=14;";
   J += "        fhBar+='<div style=\"flex:1;display:flex;flex-direction:column;align-items:stretch;height:24px;justify-content:flex-end\">'";
   J += "          +'<div style=\"background:'+bg+';height:'+hPct+'%;border-radius:2px;display:flex;align-items:center;justify-content:center;color:'+fg+';font-size:10px;font-weight:700;min-height:14px\">'+t+'</div>'";
   J += "        +'</div>';";
@@ -2052,7 +2057,7 @@ body{background:#f3f4f6;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',
   J += "    return '<div class=\"team-box\"><div class=\"team-role\">'+esc(role)+'</div><div class=\"team-name\">'+esc(name)+'</div>'+fs+fhBar+'<div class=\"stat-grid\">'+chips+'</div></div>';";
   J += "  }";
   J += "  var sigsH='<div class=\"signals\">';";
-  J += "  ['A','B','C','D'].forEach(function(k){";
+  J += "  ['A','E'].forEach(function(k){";
   J += "    var s=m.signals[k];if(!s)return;";
   J += "    sigsH+='<div class=\"sig '+(s.met?'sig-y':'sig-n')+'\">'";
   J += "      +'<div class=\"sig-dot\"></div>'+esc(k)+' \u00b7 '+esc(s.label)";
@@ -2077,7 +2082,7 @@ body{background:#f3f4f6;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',
   J += "          +'<div style=\"font-size:10px;color:#9ca3af;text-transform:uppercase;letter-spacing:.7px;margin-bottom:5px\">'+esc(m.league)+' \u00b7 '+esc(dt)+mw+'</div>'";
   J += "          +sb";
   J += "        +'</div>'";
-  J += "        +'<div style=\"display:flex;align-items:center;gap:6px\">'+betPill(m)+'<div class=\"rank-pill '+rc+'\"><div class=\"rn\">'+m.rank+'/4</div><div class=\"rl\">'+esc(m.label)+'</div></div></div>'";
+  J += "        +'<div style=\"display:flex;align-items:center;gap:6px\">'+betPill(m)+'<div class=\"rank-pill '+rc+'\"><div class=\"rn\">'+m.rank+'/2</div><div class=\"rl\">'+esc(m.label)+'</div></div></div>'";
   J += "      +'</div>'";
   J += "    +ps+rb";
   J += "    +'<div class=\"teams\">'";
@@ -2108,7 +2113,7 @@ body{background:#f3f4f6;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',
   J += "function renderBBRow(m,probKey,goalLabel,idx){";
   J += "  var rc=rankCls(m.rank);";
   J += "  var dt=m.dt?new Date(m.dt).toLocaleDateString('en-GB',{weekday:'short',day:'2-digit',month:'short'}):'';";
-  J += "  var sigs='';if(m.signals){['A','B','C','D'].forEach(function(k){if(m.signals[k]&&m.signals[k].met)sigs+=k+' ';});}";
+  J += "  var sigs='';if(m.signals){['A','E'].forEach(function(k){if(m.signals[k]&&m.signals[k].met)sigs+=k+' ';});}";
   J += "  var h='<div style=\"display:flex;align-items:center;gap:10px;padding:10px 12px;border-bottom:1px solid #f3f4f6\">';";
   J += "  h+='<div style=\"font-size:18px;font-weight:800;color:#d1d5db;width:24px;text-align:center\">'+(idx+1)+'</div>';";
   J += "  h+='<div style=\"flex:1;min-width:0\">';";
@@ -2118,7 +2123,7 @@ body{background:#f3f4f6;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',
   J += "  h+='<div style=\"display:flex;gap:4px;align-items:center;flex-shrink:0\">';";
   J += "  if(sigs)h+='<span style=\"background:#fef9c3;color:#92400e;padding:1px 6px;border-radius:10px;font-size:9px;font-weight:600\">'+sigs.trim()+'</span>';";
   J += "  h+='<span style=\"background:#eff6ff;color:#1d4ed8;padding:1px 6px;border-radius:10px;font-size:9px\">CI '+m.ci+'</span>';";
-  J += "  h+='<span class=\"rn '+rc+'\" style=\"font-size:12px;padding:2px 6px\">'+m.rank+'/4</span>';";
+  J += "  h+='<span class=\"rn '+rc+'\" style=\"font-size:12px;padding:2px 6px\">'+m.rank+'/2</span>';";
   J += "  h+='<span style=\"background:#1b5e20;color:#fff;padding:2px 8px;border-radius:12px;font-size:11px;font-weight:700\">'+m[probKey]+'%</span>';";
   J += "  h+='</div></div>';";
   J += "  return h;";
@@ -2164,7 +2169,7 @@ body{background:#f3f4f6;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',
   J += "  h+=renderBBSection('\ud83d\udd25 Top 7 \u2014 FH Over 2.5 Goals','#15803d','#a5d6a7',s25.slice(0,7),'prob25','> 2.5');";
 
   // Top 5 Value Picks — high CI but low rank (close to more signals firing)
-  J += "  var value=upcoming.filter(function(p){return p.rank>=1&&p.rank<=2&&p.ci>=3.0;}).sort(function(a,b){return b.ci-a.ci;});";
+  J += "  var value=upcoming.filter(function(p){return p.rank===1&&p.ci>=3.0;}).sort(function(a,b){return b.ci-a.ci;});";
   J += "  if(value.length){";
   J += "    h+='<div style=\"margin-bottom:24px\">';";
   J += "    h+='<div style=\"font-size:16px;font-weight:700;color:#92400e;margin-bottom:10px;padding-bottom:6px;border-bottom:2px solid #fde68a\">\ud83d\udca1 Top 5 Value Picks \u2014 High CI, Signals Developing</div>';";
@@ -2182,12 +2187,12 @@ body{background:#f3f4f6;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',
   J += "    if(!dayMatches.length)return;";
   J += "    var best=dayMatches[0];var rc=rankCls(best.rank);";
   J += "    var dt=best.dt?new Date(best.dt).toLocaleDateString('en-GB',{weekday:'short',day:'2-digit',month:'short'}):'';";
-  J += "    var sigs='';if(best.signals){['A','B','C','D'].forEach(function(k){if(best.signals[k]&&best.signals[k].met)sigs+=k+' ';});}";
+  J += "    var sigs='';if(best.signals){['A','E'].forEach(function(k){if(best.signals[k]&&best.signals[k].met)sigs+=k+' ';});}";
   J += "    h+='<div style=\"background:#fff;border:1px solid #e5e7eb;border-radius:12px;padding:12px 14px;margin-bottom:10px\">';";
   J += "    h+='<div style=\"font-size:11px;color:#7c3aed;font-weight:700;text-transform:uppercase;letter-spacing:.5px;margin-bottom:6px\">'+(DAY_LABELS[di]||d)+' \u2014 '+esc(dt)+'</div>';";
   J += "    h+='<div style=\"display:flex;justify-content:space-between;align-items:center;margin-bottom:4px\">';";
   J += "    h+='<div style=\"font-weight:700;font-size:14px\">'+esc(best.home)+' vs '+esc(best.away)+'</div>';";
-  J += "    h+='<span class=\"rn '+rc+'\" style=\"font-size:14px;padding:2px 8px\">'+best.rank+'/4</span>';";
+  J += "    h+='<span class=\"rn '+rc+'\" style=\"font-size:14px;padding:2px 8px\">'+best.rank+'/2</span>';";
   J += "    h+='</div>';";
   J += "    h+='<div style=\"font-size:11px;color:#6b7280;margin-bottom:6px\">'+esc(best.league)+'</div>';";
   J += "    h+='<div style=\"display:flex;gap:6px;flex-wrap:wrap;font-size:11px\">';";
@@ -2254,7 +2259,7 @@ body{background:#f3f4f6;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',
 <div class="body">
   ${rateLimited ? '<div style="background:#fef2f2;border:1px solid #fca5a5;border-radius:8px;padding:10px 14px;margin-bottom:14px;font-size:12px;color:#b91c1c;line-height:1.6"><strong>&#9888; API rate limit reached</strong> \u2014 showing cached data. Resets at ' + new Date(RATE_LIMITED_UNTIL).toLocaleTimeString('en-GB') + '. <a href="/cache-status" style="color:#b91c1c">View cache status</a></div>' : ''}
   <div style="background:#fffbeb;border:1px solid #fde68a;border-radius:8px;padding:10px 14px;margin-bottom:14px;font-size:12px;color:#92400e;line-height:1.6">
-    <strong>How it works:</strong> 4 recent-form signals (A&ndash;D) from each team's last-5 first halves &mdash; available pre-kickoff, no look-ahead bias. Each worth 1 point; rank = signals fired.
+    <strong>How it works:</strong> 2 pre-game signals (A &amp; E) &mdash; no look-ahead bias. Signal A: recent last-5 FH intensity. Signal E: home team historical FH profile + current season scoring. Each worth 1 point; rank = signals fired (max 2).
     A: both teams' L5 FH total &ge; 4.0 &middot; B: home L5 scored &gt;1.0 &amp; away L5 conceded &gt;1.0 &middot; C: both L5 FH scored &gt;0.8 &middot; D: both L5 FH total &gt;1.5.
     Calibrated on 24,677 look-ahead-free pre-game matches &middot; base rate 11.2% FH&gt;2.5 &middot; rank 0&ndash;4: 10.7 / 13.9 / 16.8 / 17.5 / 30.2% &mdash; see scripts/recalibrate_pregame.py.
   </div>
