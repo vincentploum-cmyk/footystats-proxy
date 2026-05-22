@@ -1539,6 +1539,7 @@ async function computePreds(tzOffset) {
 
 // ─── /preds JSON ENDPOINT — kept for potential future use ───────────────────
 app.get("/preds", async (req, res) => {
+  res.set("Cache-Control", "no-store");
   try {
     const tzOffset = parseInt(req.query.tz || "0", 10);
     const { preds } = await computePreds(tzOffset);
