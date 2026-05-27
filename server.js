@@ -805,7 +805,7 @@ app.get("/admin/load-dataset", async (req, res) => {
 
   const dryRun = req.query.dryRun === "1";
   if (dryRun) {
-    const byRank = { 0: 0, 1: 0, 2: 0, 3: 0, 4: 0 };
+    const byRank = { 0: 0, 1: 0, 2: 0 };
     const byComp = {};
     for (const r of validRows) {
       byRank[r.rank] = (byRank[r.rank] || 0) + 1;
@@ -1192,7 +1192,7 @@ app.get("/history", async (req, res) => {
       if (data.length < PAGE) break;
     }
     const byRank = {};
-    for (let r = 0; r <= 4; r++) byRank[r] = { n: 0, hit25: 0, hit15: 0, expSum25: 0, expSum15: 0 };
+    for (let r = 0; r <= 2; r++) byRank[r] = { n: 0, hit25: 0, hit15: 0, expSum25: 0, expSum15: 0 };
     let total = { n: 0, hit25: 0, hit15: 0 };
     for (const m of all) {
       const r = m.rank;
@@ -1595,10 +1595,9 @@ body{background:#f3f4f6;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',
 .card-accent{height:4px}
 .card-inner{padding:14px}
 .rank-pill{text-align:center;border-radius:10px;padding:8px 10px;min-width:76px;flex-shrink:0;border:1px solid}
-.r4{background:#e8f5e9;border-color:#a5d6a7} .r4 .rn,.r4 .rl{color:#1b5e20}
-.r3{background:#f1f8e9;border-color:#c5e1a5} .r3 .rn,.r3 .rl{color:#33691e}
-.r2{background:#fff8e1;border-color:#ffe082} .r2 .rn,.r2 .rl{color:#e65100}
-.r1,.r0{background:#f3f4f6;border-color:#e5e7eb} .r1 .rn,.r1 .rl,.r0 .rn,.r0 .rl{color:#9ca3af}
+.r2{background:#e8f5e9;border-color:#a5d6a7} .r2 .rn,.r2 .rl{color:#1b5e20}
+.r1{background:#fff8e1;border-color:#ffe082} .r1 .rn,.r1 .rl{color:#e65100}
+.r0{background:#f3f4f6;border-color:#e5e7eb} .r0 .rn,.r0 .rl{color:#9ca3af}
 .rn{font-size:24px;font-weight:700;line-height:1}
 .rl{font-size:10px;font-weight:500;margin-top:2px}
 .prob-strip{display:flex;gap:6px;margin-bottom:12px;flex-wrap:wrap}
@@ -1679,9 +1678,9 @@ body{background:#f3f4f6;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',
 
   J += "function esc(s){return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/\"/g,'&quot;');}";
   J += "function fmtDate(d){return new Date(d).toLocaleDateString('en-GB',{weekday:'long',day:'2-digit',month:'short'});}";
-  J += "function rankAccent(r){return r===4?'#2e7d32':r===3?'#558b2f':r===2?'#f9a825':r===1?'#ef6c00':'#9e9e9e';}";
-  J += "function rankCls(r){return r===4?'r4':r===3?'r3':r===2?'r2':r===1?'r1':'r0';}";
-  J += "function lgLabel(r){return r===4?'Fire \ud83d\udd25':r===3?'Prime \u26a1':r===2?'Watch \ud83d\udc40':r===1?'Signal \ud83d\udce1':'Low';}";
+  J += "function rankAccent(r){return r===2?'#2e7d32':r===1?'#e65100':'#9ca3af';}";
+  J += "function rankCls(r){return r===2?'r2':r===1?'r1':'r0';}";
+  J += "function lgLabel(r){return r===2?'Fire \ud83d\udd25':r===1?'Signal \ud83d\udce1':'Low';}";
   J += "function fLetter(r){return r==='W'?'<span class=\"fw\">W</span>':r==='L'?'<span class=\"fl\">L</span>':'<span class=\"fd\">D</span>';}";
   J += "function mkChip(lbl,val,thr,state){var cls='chip'+(state?' '+state:'');return '<div class=\"'+cls+'\">'+'<div class=\"chip-lbl\">'+esc(lbl)+'</div><div class=\"chip-val\">'+esc(val)+'</div><div class=\"chip-thr\">'+esc(thr)+'</div></div>';}";
   // betPill: EXTRA heuristic filters, NOT the calibrated model. Labelled as
@@ -1773,8 +1772,8 @@ body{background:#f3f4f6;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',
   J += "    +'<th style=\"padding:6px 8px\">Rank</th><th style=\"padding:6px 8px\">N</th>'";
   J += "    +'<th style=\"padding:6px 8px\">Pred FH&gt;2.5</th><th style=\"padding:6px 8px\">Actual</th>'";
   J += "    +'<th style=\"padding:6px 8px\">Pred FH&gt;1.5</th><th style=\"padding:6px 8px\">Actual</th></tr></thead><tbody>';";
-  J += "  for(var r=4;r>=0;r--){var b=d.byRank[r]||{n:0,predicted25:0,actual25:0,predicted15:0,actual15:0};";
-  J += "    var lbl=['Low','Signal','Watch','Prime','Fire'][r];";
+  J += "  for(var r=2;r>=0;r--){var b=d.byRank[r]||{n:0,predicted25:0,actual25:0,predicted15:0,actual15:0};";
+  J += "    var lbl=['Low','Signal','Fire'][r];";
   J += "    var c25=(b.n<10)?'#9ca3af':(b.actual25>=b.predicted25-2)?'#0f766e':'#b91c1c';";
   J += "    var c15=(b.n<10)?'#9ca3af':(b.actual15>=b.predicted15-2)?'#0f766e':'#b91c1c';";
   J += "    h+='<tr style=\"border-bottom:1px solid #f3f4f6\">'";
@@ -1788,9 +1787,7 @@ body{background:#f3f4f6;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',
   J += "  }";
   J += "  h+='</tbody></table></div>';";
   // By-combo table — same level of granularity the model actually predicts at
-  J += "  var comboMeaning={'0000':'none','1000':'only A (CI)','0100':'only B (T1)','0010':'only C (defCI)','0001':'only D (away atk)',";
-  J += "    '1100':'A+B','1010':'A+C','1001':'A+D','0110':'B+C','0101':'B+D','0011':'C+D',";
-  J += "    '1110':'A+B+C','1101':'A+B+D','1011':'A+C+D','0111':'B+C+D','1111':'ALL four'};";
+  J += "  var comboMeaning={'00':'none','10':'only A (Intensity)','01':'only E (Home Profile)','11':'A+E'};";
   J += "  var comboKeys=Object.keys(d.byCombo||{}).sort(function(a,b){return d.byCombo[b].n-d.byCombo[a].n;});";
   J += "  if(comboKeys.length){";
   J += "    h+='<div style=\"background:#fff;border:1px solid #e5e7eb;border-radius:10px;padding:14px;margin-top:14px;overflow-x:auto\">';";
