@@ -1462,6 +1462,96 @@ app.get("/signal-backtest", async (req, res) => {
   }
 });
 
+// ─── ANALYZE LAST-5 FORM PATTERNS (no fabrication) ─────────────────────────
+app.get("/analyze-l5-patterns", async (req, res) => {
+  if (!supabase) return res.status(400).json({ ok: false, error: "Supabase not enabled" });
+  try {
+    const all = [];
+    const PAGE = 1000;
+    for (let off = 0; ; off += PAGE) {
+      const { data, error } = await supabase
+        .from("match_results")
+        .select("snap, signals, hit_25, hit_15")
+        .not("hit_25", "is", null)
+        .not("snap", "is", null)
+        .not("snap->>fetchedAt", "eq", "historical-import")
+        .not("snap->>fetchedAt", "eq", "backfill")
+        .range(off, off + PAGE - 1);
+      if (error) throw error;
+      if (!data || data.length === 0) break;
+      all.push(...data);
+      if (data.length < PAGE) break;
+    }
+
+    const stats = {
+      total: all.length,
+      with_l5: 0,
+      home_last5_f: [], home_last5_a: [], home_last5_t: [],
+      away_last5_f: [], away_last5_a: [], away_last5_t: [],
+      combined_total: [],
+      signal_A_threshold: 4.0,
+      signal_B_threshold: 0.81,
+      signal_C_away_f_threshold: 1.0,
+      signal_C_home_a_threshold: 0.8,
+    };
+
+    for (const m of all) {
+      const snap = m.snap || {};
+      if (!snap.l5) continue;
+      stats.with_l5++;
+
+      const h5 = snap.l5.home || {};
+      const a5 = snap.l5.away || {};
+
+      if (h5.f !== undefined) stats.home_last5_f.push(h5.f);
+      if (h5.a !== undefined) stats.home_last5_a.push(h5.a);
+      if (h5.t !== undefined) stats.home_last5_t.push(h5.t);
+
+      if (a5.f !== undefined) stats.away_last5_f.push(a5.f);
+      if (a5.a !== undefined) stats.away_last5_a.push(a5.a);
+      if (a5.t !== undefined) stats.away_last5_t.push(a5.t);
+
+      const combined = (h5.t || 0) + (a5.t || 0);
+      stats.combined_total.push(combined);
+    }
+
+    const summarize = (arr, name) => {
+      if (arr.length === 0) return { name, n: 0 };
+      arr.sort((a, b) => a - b);
+      const sum = arr.reduce((a, b) => a + b, 0);
+      const mean = sum / arr.length;
+      const median = arr[Math.floor(arr.length / 2)];
+      const min = arr[0];
+      const max = arr[arr.length - 1];
+      const pct25 = arr[Math.floor(arr.length * 0.25)];
+      const pct75 = arr[Math.floor(arr.length * 0.75)];
+      return { name, n: arr.length, min, pct25, median, mean: +mean.toFixed(2), pct75, max };
+    };
+
+    res.json({
+      ok: true,
+      total_matches: stats.total,
+      matches_with_l5: stats.with_l5,
+      last5_distributions: {
+        home_scored_avg: summarize(stats.home_last5_f, "home avg FH scored"),
+        home_conceded_avg: summarize(stats.home_last5_a, "home avg FH conceded"),
+        home_combined_avg: summarize(stats.home_last5_t, "home combined avg"),
+        away_scored_avg: summarize(stats.away_last5_f, "away avg FH scored"),
+        away_conceded_avg: summarize(stats.away_last5_a, "away avg FH conceded"),
+        away_combined_avg: summarize(stats.away_last5_t, "away combined avg"),
+        both_teams_combined: summarize(stats.combined_total, "both teams combined FH total"),
+      },
+      signal_thresholds: {
+        A: { threshold: 4.0, description: "hT + aT >= 4.0 (combined last-5 avg)" },
+        B: { threshold: 0.81, description: "both hF >= 0.81 AND aF >= 0.81" },
+        C: { threshold: "aF >= 1.0 AND hA >= 0.8", description: "away attack AND home leak" },
+      },
+    });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
 app.get("/history", async (req, res) => {
   if (!supabase) return res.status(400).json({ ok: false, error: "Supabase not enabled" });
   const days = Math.min(7, Math.max(1, parseInt(req.query.days || "7", 10)));
