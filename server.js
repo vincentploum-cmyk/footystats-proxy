@@ -339,7 +339,7 @@ function applyLeagueProb(result, compId) {
     result.probCombo   = combo;
     // Recalculate eligibility based on league-specific probs
     result.eligible25 = result.prob25 >= 40.0;
-    result.eligible15 = result.prob15 >= 40.0;
+    result.eligible15 = result.prob15 >= 50.0;
     result.eligible = result.eligible25;  // Primary eligible
     return;
   }
@@ -353,7 +353,7 @@ function applyLeagueProb(result, compId) {
     result.probCombo   = combo;
     // Recalculate eligibility based on league-specific probs
     result.eligible25 = result.prob25 >= 40.0;
-    result.eligible15 = result.prob15 >= 40.0;
+    result.eligible15 = result.prob15 >= 50.0;
     result.eligible = result.eligible25;  // Primary eligible
     return;
   }
@@ -574,10 +574,10 @@ function computeSignals(snap, hLast5, aLast5) {
   const combo = (sigA ? "1" : "0") + (sigB ? "1" : "0") + (sigD ? "1" : "0");
   const prob25 = PROB25_BY_COMBO[combo] !== undefined ? PROB25_BY_COMBO[combo] : 11.5;
   const prob15 = PROB15_BY_COMBO[combo] !== undefined ? PROB15_BY_COMBO[combo] : 35.8;
-  // Fire (🔥): eligible when prob25 >= 40% (B+D = 50%, A+B+D = 50%)
+  // Fire (FH>2.5): eligible when prob25 >= 40% (B+D = 50%, A+B+D = 50%, A+B = 36.4%)
   const eligible25 = prob25 >= 40.0;
-  // Dart (🎯): eligible when prob15 >= 40% (A = 44.7%, D = 52.4%, B+D = 41.7%, A+B = 81.8%, A+B+D = 87.5%)
-  const eligible15 = prob15 >= 40.0;
+  // Dart (FH>1.5): eligible when prob15 >= 50% (D = 52.4%, A+B = 81.8%, A+B+D = 87.5%)
+  const eligible15 = prob15 >= 50.0;
   const rank = (sigA ? 1 : 0) + (sigB ? 1 : 0) + (sigD ? 1 : 0);
   const f2 = (v) => v.toFixed(2);
   return {
@@ -2212,8 +2212,8 @@ body{background:#f3f4f6;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',
   J += "function fLetter(r){return r==='W'?'<span class=\"fw\">W</span>':r==='L'?'<span class=\"fl\">L</span>':'<span class=\"fd\">D</span>';}";
   J += "function mkChip(lbl,val,thr,state){var cls='chip'+(state?' '+state:'');return '<div class=\"'+cls+'\">'+'<div class=\"chip-lbl\">'+esc(lbl)+'</div><div class=\"chip-val\">'+esc(val)+'</div><div class=\"chip-thr\">'+esc(thr)+'</div></div>';}";
   // betPill: Fire (🔥) and Dart (🎯) badges based on calibrated eligibility flags
-  // Fire (🔥): eligible25 = true (FH>2.5 probability ≥ 40%, B+D or A+B+D combos)
-  // Dart (🎯): eligible15 = true (FH>1.5 probability ≥ 40%, A/D/A+D/B+D/A+B/A+B+D combos)
+  // Fire (🔥): eligible25 = true (FH>2.5 probability ≥ 40%, primarily B+D or A+B+D combos)
+  // Dart (🎯): eligible15 = true (FH>1.5 probability ≥ 50%, primarily D, A+B, or A+B+D combos)
   J += "function betPill(m){if(!m)return '';";
   J += "  var h='';";
   J += "  if(m.eligible25)h+='<div style=\"display:inline-block;background:#dc2626;color:#fff;font-size:11px;font-weight:700;padding:3px 9px;border-radius:6px;margin-right:4px\" title=\"FH>2.5 candidate (prob ≥ 40%)\">🔥</div>';";
