@@ -1553,6 +1553,103 @@ app.get("/preds", async (req, res) => {
   }
 });
 
+// Mine candidate last-5 signals against the clean cohort. Reads snap.l5
+// (home/away L5 FH scored/conceded/total averages) directly, so it's
+// independent of the stored rank/signals fields and won't be polluted by
+// old captures that predate the A+E migration. Reports lift for a grid
+// of threshold combinations so we can see whether a stronger or different
+// last-5 pattern exists in data we already have.
+app.get("/last5-mine", async (req, res) => {
+  if (!supabase) return res.status(400).json({ ok: false, error: "Supabase not enabled" });
+  try {
+    const all = [];
+    const PAGE = 1000;
+    for (let off = 0; ; off += PAGE) {
+      const { data, error } = await supabase
+        .from("match_results")
+        .select("hit_25, hit_15, snap")
+        .not("hit_25", "is", null)
+        .not("snap", "is", null)
+        .not("snap->>fetchedAt", "eq", "historical-import")
+        .not("snap->>fetchedAt", "eq", "backfill")
+        .range(off, off + PAGE - 1);
+      if (error) throw error;
+      if (!data || data.length === 0) break;
+      all.push(...data);
+      if (data.length < PAGE) break;
+    }
+    const cohortAll = all.length;
+    const cohort = all.filter(m => m.snap && m.snap.l5 && m.snap.l5.home && m.snap.l5.away);
+    const n = cohort.length;
+    const base25 = n ? cohort.filter(m => m.hit_25).length / n : 0;
+    const base15 = n ? cohort.filter(m => m.hit_15).length / n : 0;
+
+    const feats = (m) => ({
+      hT: m.snap.l5.home.t || 0, aT: m.snap.l5.away.t || 0,
+      hF: m.snap.l5.home.f || 0, hA: m.snap.l5.home.a || 0,
+      aF: m.snap.l5.away.f || 0, aA: m.snap.l5.away.a || 0,
+    });
+
+    const test = (label, pred) => {
+      const fired = cohort.filter(m => pred(feats(m)));
+      const fN = fired.length;
+      if (!fN) return { label, n: 0, actual25: 0, actual15: 0, lift25: 0, lift15: 0 };
+      const h25 = fired.filter(m => m.hit_25).length;
+      const h15 = fired.filter(m => m.hit_15).length;
+      return {
+        label, n: fN,
+        actual25: +(h25 / fN * 100).toFixed(1),
+        actual15: +(h15 / fN * 100).toFixed(1),
+        lift25: base25 ? +(h25 / fN / base25).toFixed(2) : 0,
+        lift15: base15 ? +(h15 / fN / base15).toFixed(2) : 0,
+      };
+    };
+
+    const results = [];
+    results.push(test("A current: hT+aT>=4.0", x => x.hT + x.aT >= 4.0));
+    for (const t of [3.0, 3.5, 4.5, 5.0, 5.5]) results.push(test("hT+aT>=" + t, x => x.hT + x.aT >= t));
+    for (const t of [1.5, 2.0, 2.5, 3.0]) {
+      results.push(test("home.t>=" + t, x => x.hT >= t));
+      results.push(test("away.t>=" + t, x => x.aT >= t));
+    }
+    for (const af of [0.8, 1.0, 1.2]) {
+      for (const da of [0.8, 1.0, 1.2]) {
+        results.push(test("hF>=" + af + " & aA>=" + da + " (home atk vs away leak)", x => x.hF >= af && x.aA >= da));
+        results.push(test("aF>=" + af + " & hA>=" + da + " (away atk vs home leak)", x => x.aF >= af && x.hA >= da));
+      }
+    }
+    for (const t of [0.6, 0.8, 1.0]) {
+      results.push(test("hF>=" + t + " & aF>=" + t + " (both attack)", x => x.hF >= t && x.aF >= t));
+      results.push(test("hA>=" + t + " & aA>=" + t + " (both leaky)", x => x.hA >= t && x.aA >= t));
+    }
+    for (const t of [1.0, 1.2, 1.4]) {
+      results.push(test("hF>=" + t + " (home attack)", x => x.hF >= t));
+      results.push(test("aF>=" + t + " (away attack)", x => x.aF >= t));
+      results.push(test("hA>=" + t + " (home leak)", x => x.hA >= t));
+      results.push(test("aA>=" + t + " (away leak)", x => x.aA >= t));
+    }
+
+    const actionable = results.filter(r => r.n >= 20).sort((a, b) => b.lift25 - a.lift25);
+    const tight = results.filter(r => r.n >= 30).sort((a, b) => b.lift25 - a.lift25);
+
+    res.json({
+      ok: true,
+      cohortTotal: cohortAll,
+      cohortWithL5: n,
+      withoutL5: cohortAll - n,
+      baseRate25: +(base25 * 100).toFixed(1),
+      baseRate15: +(base15 * 100).toFixed(1),
+      topByLift25_n20: actionable.slice(0, 15),
+      topByLift15_n20: actionable.slice().sort((a, b) => b.lift15 - a.lift15).slice(0, 15),
+      topByLift25_n30: tight.slice(0, 10),
+      allResults: results,
+      note: "Cohort = live-captured matches with snap.l5 present. Lift > 1.5 with n>=30 is a candidate signal. Compare to current A (hT+aT>=4.0) to see if a stronger or different last-5 pattern exists.",
+    });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
 // Diagnostic: how often A and E fire on CURRENT upcoming matches (live signal
 // code, not the persisted snapshots that /signal-backtest reads). Use this to
 // tell whether Signal E is genuinely dormant or whether stored snapshots are
