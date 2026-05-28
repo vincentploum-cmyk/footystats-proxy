@@ -1272,15 +1272,20 @@ app.get("/calibration", async (req, res) => {
   try {
     const all = [];
     const PAGE = 1000;
+    const compId = req.query.competition_id ? parseInt(req.query.competition_id, 10) : null;
+    const exclude = req.query.exclude_women === "true";
+    const WOMEN_LEAGUES = [15020, 16037, 16046, 16563];
     for (let off = 0; ; off += PAGE) {
-      const { data, error } = await supabase
+      let q = supabase
         .from("match_results")
-        .select("rank, prob25, prob15, hit_25, hit_15, signals, snap")
+        .select("rank, prob25, prob15, hit_25, hit_15, signals, snap, competition_id")
         .not("hit_25", "is", null)
         .not("snap", "is", null)
         .not("snap->>fetchedAt", "eq", "historical-import")
-        .not("snap->>fetchedAt", "eq", "backfill")
-        .range(off, off + PAGE - 1);
+        .not("snap->>fetchedAt", "eq", "backfill");
+      if (compId) q = q.eq("competition_id", compId);
+      if (exclude) q = q.not("competition_id", "in", `(${WOMEN_LEAGUES.join(",")})`);
+      const { data, error } = await q.range(off, off + PAGE - 1);
       if (error) throw error;
       if (!data || data.length === 0) break;
       all.push(...data);
@@ -1324,9 +1329,14 @@ app.get("/calibration", async (req, res) => {
     }
     for (const k of Object.keys(byRank)) finalize(byRank[k]);
     for (const k of Object.keys(byCombo)) finalize(byCombo[k]);
+    const WOMEN_LEAGUE_NAMES = { 15020: "Liga MX Femenil", 16037: "Women's", 16046: "Arsenal Women / WSL", 16563: "Women's Internationals" };
     res.json({
       ok: true,
       cohortSize: total.n,
+      filter: {
+        league: compId ? `competition_id=${compId}` : (exclude ? "excluding women's leagues" : "all leagues"),
+        women_excluded: exclude || false,
+      },
       summary: {
         n: total.n,
         hit25: total.hit25, hit15: total.hit15,
@@ -1353,15 +1363,20 @@ app.get("/signal-backtest", async (req, res) => {
   try {
     const all = [];
     const PAGE = 1000;
+    const compId = req.query.competition_id ? parseInt(req.query.competition_id, 10) : null;
+    const exclude = req.query.exclude_women === "true";
+    const WOMEN_LEAGUES = [15020, 16037, 16046, 16563];
     for (let off = 0; ; off += PAGE) {
-      const { data, error } = await supabase
+      let q = supabase
         .from("match_results")
-        .select("rank, prob25, prob15, hit_25, hit_15, signals, snap")
+        .select("rank, prob25, prob15, hit_25, hit_15, signals, snap, competition_id")
         .not("hit_25", "is", null)
         .not("snap", "is", null)
         .not("snap->>fetchedAt", "eq", "historical-import")
-        .not("snap->>fetchedAt", "eq", "backfill")
-        .range(off, off + PAGE - 1);
+        .not("snap->>fetchedAt", "eq", "backfill");
+      if (compId) q = q.eq("competition_id", compId);
+      if (exclude) q = q.not("competition_id", "in", `(${WOMEN_LEAGUES.join(",")})`);
+      const { data, error } = await q.range(off, off + PAGE - 1);
       if (error) throw error;
       if (!data || data.length === 0) break;
       all.push(...data);
@@ -1431,6 +1446,10 @@ app.get("/signal-backtest", async (req, res) => {
     res.json({
       ok: true,
       cohortSize: n,
+      filter: {
+        league: compId ? `competition_id=${compId}` : (exclude ? "excluding women's leagues" : "all leagues"),
+        women_excluded: exclude || false,
+      },
       baseRate25: +(base25 * 100).toFixed(1),
       baseRate15: +(base15 * 100).toFixed(1),
       perSignal,
