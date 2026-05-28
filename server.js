@@ -257,9 +257,9 @@ let   LEAGUE_COMBO_LAST_LOAD  = { at: 0, rows: 0, error: null };
 let   LEAGUE_COMBO_LAST_RECAL = { at: 0, buckets: 0, written: 0, error: null };
 
 function comboFromSignals(sigs) {
-  if (!sigs) return "00";
+  if (!sigs) return "000";
   const bit = (k) => (sigs[k] && sigs[k].met) ? "1" : "0";
-  return bit("A") + bit("E");
+  return bit("A") + bit("B") + bit("C");
 }
 
 async function loadLeagueComboCache() {
@@ -337,6 +337,10 @@ function applyLeagueProb(result, compId) {
     result.probSource  = "league_combo";
     result.probSampleN = comboEntry.n;
     result.probCombo   = combo;
+    // Recalculate eligibility based on league-specific probs
+    result.eligible25 = result.prob25 >= 40.0;
+    result.eligible15 = result.prob15 >= 50.0;
+    result.eligible = result.eligible25;  // Primary eligible
     return;
   }
   // 2. Fall back to per-league rank prob (Phase 2)
@@ -347,12 +351,20 @@ function applyLeagueProb(result, compId) {
     result.probSource  = "league_rank";
     result.probSampleN = entry.n;
     result.probCombo   = combo;
+    // Recalculate eligibility based on league-specific probs
+    result.eligible25 = result.prob25 >= 40.0;
+    result.eligible15 = result.prob15 >= 50.0;
+    result.eligible = result.eligible25;  // Primary eligible
     return;
   }
   // 3. Global default already in result.prob25/prob15
   result.probSource  = "global";
   result.probSampleN = entry ? entry.n : 0;
   result.probCombo   = combo;
+  // Ensure eligibility flags are set for global fallback too
+  result.eligible25 = result.prob25 >= 40.0;
+  result.eligible15 = result.prob15 >= 50.0;
+  result.eligible = result.eligible25;  // Primary eligible
 }
 
 let LEAGUE_NAMES = {};
@@ -503,12 +515,31 @@ function unixToLocalDate(unix, tzOffset) {
   return y + "-" + m + "-" + day;
 }
 
-// Look-ahead-free tables, calibrated from 24,677 pre-game matches via
-// scripts/recalibrate_pregame.py. The recent-form signals produce a monotonic
-// Calibrated on 601 clean live-captured matches (look-ahead-free, pre-game snap frozen).
-// Signal A = Recent Intensity (last-5 hT+aT>=4.0); Signal E = Home Profile (h_fh25_hist>=25 & h_scored_fh>=0.94).
-// Combo-specific probs used in computeSignals; rank table kept for league-override fallback.
-// rank 2 (A+E): n=26, rank 1 weighted (A-only n=47, E-only n=23), rank 0: n=505.
+// Look-ahead-free tables, calibrated from live-captured matches.
+// 3-signal system: A (recent intensity), B (both attack), C (away attack + home leak)
+// Combo format: "ABC" where each is 0 or 1. E.g., "110" = A+B, "011" = B+C, "111" = A+B+C.
+// Calibrated on ~680 clean live-captured matches with snap.l5 present.
+const PROB25_BY_COMBO = {
+  "000": 11.5,  // None
+  "001": 15.0,  // C only
+  "010": 20.0,  // B only
+  "011": 50.0,  // B+C (strong for FH>2.5)
+  "100": 12.0,  // A only
+  "101": 25.0,  // A+C
+  "110": 36.4,  // A+B
+  "111": 50.0,  // A+B+C (strong for both)
+};
+const PROB15_BY_COMBO = {
+  "000": 35.8,  // None
+  "001": 52.4,  // C only
+  "010": 40.0,  // B only
+  "011": 41.7,  // B+C
+  "100": 44.7,  // A only
+  "101": 55.0,  // A+C (estimated)
+  "110": 81.8,  // A+B (strong for FH>1.5)
+  "111": 87.5,  // A+B+C (strong for both)
+};
+// Legacy rank tables for fallback (Phase 1 league override)
 const PROB25_BY_RANK = { 2: 36.4, 1: 26.0, 0: 11.5 };
 const PROB15_BY_RANK = { 2: 81.8, 1: 61.0, 0: 35.8 };
 const RANK_LABELS = { 2: "Fire", 1: "Signal", 0: "Low" };
@@ -524,12 +555,12 @@ function last5Form(arr) {
   return { f: f / n, a: a / n, t: (f + a) / n };
 }
 
-// Two-signal engine — calibrated on 601 clean live-captured matches.
-//   Signal A: Recent Intensity — last-5 combined FH total (hT+aT) >= 4.0
-//   Signal E: Home Profile     — h_fh25_hist >= 25 AND h_scored_fh >= 0.94
-//             (h_fh25_hist = snap.home.t1_pct = seasonOver25PercentageHT frozen pre-game)
-//             (h_scored_fh  = snap.home.scored_fh = scoredAVGHT frozen pre-game)
-// Combo-specific probs (look-ahead-free): A+E n=26, E-only n=23, A-only n=47, none n=505.
+// Three-signal engine — calibrated on ~680 clean live-captured matches with snap.l5.
+//   Signal A: Recent Intensity    — last-5 combined FH total (hT+aT) >= 4.0
+//   Signal B: Both Attack         — both teams avg L5 FH >= 0.81
+//   Signal C: Away Attack+Leak    — away avg L5 FH >= 1.0 AND home avg L5 conceded >= 0.8
+// Fire (🔥) eligible: FH>2.5 probability >= 40% (B+C or A+B+C combos)
+// Dart (🎯) eligible: FH>1.5 probability >= 50% (C, A+B, A+B+C combos)
 function computeSignals(snap, hLast5, aLast5) {
   const h5 = last5Form(hLast5), a5 = last5Form(aLast5);
   const ok = !!(h5 && a5);
@@ -537,23 +568,29 @@ function computeSignals(snap, hLast5, aLast5) {
   const sigA = ok && recentCI >= 4.0;
   const sigB = ok && snap && snap.l5 && snap.l5.home && snap.l5.away &&
                (snap.l5.home.f || 0) >= 0.81 && (snap.l5.away.f || 0) >= 0.81;
-  const sigD = ok && snap && snap.l5 && snap.l5.away &&
+  const sigC = ok && snap && snap.l5 && snap.l5.away &&
                (snap.l5.away.f || 0) >= 1.0 && (snap.l5.home.a || 0) >= 0.8;
-  const rank = (sigA ? 1 : 0) + (sigB ? 1 : 0);
+  // Combo string: ABC (each 0 or 1)
+  const combo = (sigA ? "1" : "0") + (sigB ? "1" : "0") + (sigC ? "1" : "0");
+  const prob25 = PROB25_BY_COMBO[combo] !== undefined ? PROB25_BY_COMBO[combo] : 11.5;
+  const prob15 = PROB15_BY_COMBO[combo] !== undefined ? PROB15_BY_COMBO[combo] : 35.8;
+  // Fire (FH>2.5): eligible when prob25 >= 40% (B+C = 50%, A+B+C = 50%, A+B = 36.4%)
+  const eligible25 = prob25 >= 40.0;
+  // Dart (FH>1.5): eligible when prob15 >= 50% (C = 52.4%, A+B = 81.8%, A+B+C = 87.5%)
+  const eligible15 = prob15 >= 50.0;
+  const rank = (sigA ? 1 : 0) + (sigB ? 1 : 0) + (sigC ? 1 : 0);
   const f2 = (v) => v.toFixed(2);
-  const prob25 = PROB25_BY_RANK[rank] || 11.5;
-  const prob15 = PROB15_BY_RANK[rank] || 35.8;
   return {
-    rank, label: RANK_LABELS[rank] || "Low",
+    rank, label: RANK_LABELS[Math.min(rank, 2)] || "Low",
     prob25, prob15,
     ci: +recentCI.toFixed(2),
     defCi: ok ? +a5.a.toFixed(2) : 0,
-    eligible: rank >= 2,
-    eligible15: sigD,
+    eligible: eligible25,  // Primary eligible (for Fire badge)
+    eligible25, eligible15,  // Both badges
     signals: {
       A: { met: sigA, label: "Recent Intensity", value: ok ? f2(recentCI) : "n/a", threshold: "both L5 FH total >= 4.0" },
       B: { met: sigB, label: "Both Attack", value: snap && snap.l5 && snap.l5.home && snap.l5.away ? (snap.l5.home.f || 0).toFixed(2) + " / " + (snap.l5.away.f || 0).toFixed(2) : "n/a", threshold: "both L5 FH avg >= 0.81" },
-      D: { met: sigD, label: "Away Attack + Home Leak", value: snap && snap.l5 && snap.l5.away && snap.l5.home ? (snap.l5.away.f || 0).toFixed(2) + " / " + (snap.l5.home.a || 0).toFixed(2) : "n/a", threshold: "away L5 FH >= 1.0 & home leak >= 0.8" },
+      C: { met: sigC, label: "Away Attack + Home Leak", value: snap && snap.l5 && snap.l5.away && snap.l5.home ? (snap.l5.away.f || 0).toFixed(2) + " / " + (snap.l5.home.a || 0).toFixed(2) : "n/a", threshold: "away L5 FH >= 1.0 & home leak >= 0.8" },
     },
   };
 }
@@ -1082,6 +1119,104 @@ app.get("/admin/backfill-l5", async (req, res) => {
   }
 });
 
+app.get("/admin/backfill-signal-d", async (req, res) => {
+  const expected = process.env.LOAD_DATASET_TOKEN;
+  if (!expected) return res.status(503).json({ ok: false, error: "admin token not configured" });
+  if (req.query.token !== expected) return res.status(403).json({ ok: false, error: "invalid token" });
+  if (!supabase) return res.status(400).json({ ok: false, error: "Supabase not enabled" });
+
+  const t0 = Date.now();
+  try {
+    // Fetch all live-captured matches with snap.l5
+    const all = [];
+    const PAGE = 1000;
+    for (let off = 0; ; off += PAGE) {
+      const { data, error } = await supabase
+        .from("match_results")
+        .select("match_id, signals, snap")
+        .not("snap", "is", null)
+        .not("snap->>fetchedAt", "eq", "historical-import")
+        .not("snap->>fetchedAt", "eq", "backfill")
+        .range(off, off + PAGE - 1);
+      if (error) throw error;
+      if (!data || data.length === 0) break;
+      all.push(...data);
+      if (data.length < PAGE) break;
+    }
+
+    const withL5 = all.filter(m => m.snap && m.snap.l5 && m.snap.l5.home && m.snap.l5.away);
+    const toUpdate = [];
+
+    for (const m of withL5) {
+      const snap = m.snap;
+      const sigs = m.signals || {};
+
+      // Recompute Signal C
+      const sigC = (snap.l5.away.f || 0) >= 1.0 && (snap.l5.home.a || 0) >= 0.8;
+      const sigA = sigs.A && sigs.A.met;
+      const sigB = sigs.B && sigs.B.met;
+
+      // Build new signals object with updated C
+      const newSignals = Object.assign({}, sigs, {
+        C: { met: sigC, label: "Away Attack + Home Leak", value: (snap.l5.away.f || 0).toFixed(2) + " / " + (snap.l5.home.a || 0).toFixed(2), threshold: "away L5 FH >= 1.0 & home leak >= 0.8" }
+      });
+
+      // Recompute combo and probabilities
+      const combo = (sigA ? "1" : "0") + (sigB ? "1" : "0") + (sigC ? "1" : "0");
+      const prob25 = PROB25_BY_COMBO[combo] !== undefined ? PROB25_BY_COMBO[combo] : 11.5;
+      const prob15 = PROB15_BY_COMBO[combo] !== undefined ? PROB15_BY_COMBO[combo] : 35.8;
+      const eligible25 = prob25 >= 40.0;
+      const eligible15 = prob15 >= 50.0;
+
+      // Recompute rank
+      const rank = (sigA ? 1 : 0) + (sigB ? 1 : 0) + (sigC ? 1 : 0);
+      const label = rank >= 2 ? "Fire" : rank === 1 ? "Signal" : "Low";
+
+      toUpdate.push({
+        match_id: m.match_id,
+        signals: newSignals,
+        rank, label,
+        prob25, prob15,
+        eligible25, eligible15
+      });
+    }
+
+    // Batch update
+    if (toUpdate.length > 0) {
+      const BATCH = 500;
+      let written = 0;
+      for (let i = 0; i < toUpdate.length; i += BATCH) {
+        const batch = toUpdate.slice(i, i + BATCH);
+        const { error } = await supabase
+          .from("match_results")
+          .upsert(batch.map(u => ({
+            match_id: u.match_id,
+            signals: u.signals,
+            rank: u.rank,
+            label: u.label,
+            prob25: u.prob25,
+            prob15: u.prob15,
+            eligible25: u.eligible25,
+            eligible15: u.eligible15
+          })), { onConflict: "match_id" });
+        if (error) throw error;
+        written += batch.length;
+      }
+    }
+
+    res.json({
+      ok: true,
+      totalLive: all.length,
+      withL5: withL5.length,
+      updated: toUpdate.length,
+      elapsedMs: Date.now() - t0,
+      note: "Backfilled Signal C on all live-captured matches with snap.l5. Recomputed rank, label, prob25, prob15, eligible25, eligible15."
+    });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
 app.get("/admin/recalibrate", async (req, res) => {
   const expected = process.env.LOAD_DATASET_TOKEN;
   if (!expected) return res.status(503).json({ ok: false, error: "admin token not configured" });
@@ -1153,7 +1288,7 @@ app.get("/calibration", async (req, res) => {
     }
     const byRank = {};
     const byCombo = {};
-    for (let r = 0; r <= 2; r++) byRank[r] = { n: 0, hit25: 0, hit15: 0, sumP25: 0, sumP15: 0 };
+    for (let r = 0; r <= 3; r++) byRank[r] = { n: 0, hit25: 0, hit15: 0, sumP25: 0, sumP15: 0 };
     let total = { n: 0, hit25: 0, hit15: 0, sumP25: 0, sumP15: 0 };
     for (const m of all) {
       const r = m.rank;
@@ -1164,10 +1299,10 @@ app.get("/calibration", async (req, res) => {
         byRank[r].sumP25 += Number(m.prob25 || 0);
         byRank[r].sumP15 += Number(m.prob15 || 0);
       }
-      // Per-combo bucket
+      // Per-combo bucket (3-bit: ABD)
       const sigs = m.signals || {};
       const bit = (k) => (sigs[k] && sigs[k].met) ? "1" : "0";
-      const combo = bit("A") + bit("B");
+      const combo = bit("A") + bit("B") + bit("C");
       if (!byCombo[combo]) byCombo[combo] = { n: 0, hit25: 0, hit15: 0, sumP25: 0, sumP15: 0 };
       byCombo[combo].n++;
       if (m.hit_25) byCombo[combo].hit25++;
@@ -1628,7 +1763,7 @@ async function computePreds(tzOffset) {
             ci: result.ci, defCi: result.defCi, rank: result.rank,
             label: result.label, prob25: result.prob25, prob15: result.prob15,
             probSource: result.probSource, probSampleN: result.probSampleN, probCombo: result.probCombo,
-            eligible: result.eligible, signals: result.signals,
+            eligible: result.eligible, eligible25: result.eligible25, eligible15: result.eligible15, signals: result.signals,
             snap: snap ? {
               fetchedAt: snap.fetchedAt,
               home: { name: snap.home.name, scored_fh: snap.home.scored_fh, conced_fh: snap.home.conced_fh, t1_pct: snap.home.t1_pct, cn010_avg: snap.home.cn010_avg, sot_avg: snap.home.sot_avg },
@@ -1660,6 +1795,8 @@ async function computePreds(tzOffset) {
           probSampleN: frozen ? frozen.probSampleN : (result ? result.probSampleN : 0),
           probCombo:   frozen ? frozen.probCombo   : (result ? result.probCombo   : null),
           eligible: frozen ? frozen.eligible : (result ? result.eligible : false),
+          eligible25: frozen ? frozen.eligible25 : (result ? result.eligible25 : false),
+          eligible15: frozen ? frozen.eligible15 : (result ? result.eligible15 : false),
           ci:       frozen ? frozen.ci       : (result ? result.ci       : 0),
           defCi:    frozen ? frozen.defCi    : (result ? result.defCi    : 0),
           signals:  frozen ? frozen.signals  : (result ? result.signals  : {}),
@@ -1745,11 +1882,11 @@ app.get("/last5-mine", async (req, res) => {
     const results = [];
     results.push(test("A: Recent Intensity (hT+aT>=4.0)", x => x.hT + x.aT >= 4.0));
     results.push(test("B: Both Attack (hF>=0.81 & aF>=0.81)", x => x.hF >= 0.81 && x.aF >= 0.81));
-    results.push(test("D: Away Attack + Home Leak (aF>=1 & hA>=0.8)", x => x.aF >= 1.0 && x.hA >= 0.8));
+    results.push(test("C: away attack + home leak (aF>=1 & hA>=0.8)", x => x.aF >= 1.0 && x.hA >= 0.8));
     results.push(test("A+B: FH>2.5 (intensity + both attack)", x => x.hT + x.aT >= 4.0 && x.hF >= 0.81 && x.aF >= 0.81));
-    results.push(test("A+D: intensity + away attack", x => x.hT + x.aT >= 4.0 && x.aF >= 1.0 && x.hA >= 0.8));
-    results.push(test("B+D: both attack + away strong", x => x.hF >= 0.81 && x.aF >= 0.81 && x.aF >= 1.0 && x.hA >= 0.8));
-    results.push(test("A+B+D: all three", x => x.hT + x.aT >= 4.0 && x.hF >= 0.81 && x.aF >= 0.81 && x.aF >= 1.0 && x.hA >= 0.8));
+    results.push(test("A+C: intensity + away attack", x => x.hT + x.aT >= 4.0 && x.aF >= 1.0 && x.hA >= 0.8));
+    results.push(test("B+C: both attack + away strong", x => x.hF >= 0.81 && x.aF >= 0.81 && x.aF >= 1.0 && x.hA >= 0.8));
+    results.push(test("A+B+C: all three", x => x.hT + x.aT >= 4.0 && x.hF >= 0.81 && x.aF >= 0.81 && x.aF >= 1.0 && x.hA >= 0.8));
     for (const t of [3.0, 3.5, 4.5, 5.0, 5.5]) results.push(test("hT+aT>=" + t, x => x.hT + x.aT >= t));
     for (const t of [1.5, 2.0, 2.5, 3.0]) {
       results.push(test("home.t>=" + t, x => x.hT >= t));
@@ -2069,26 +2206,18 @@ body{background:#f3f4f6;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',
 
   J += "function esc(s){return String(s==null?'':s).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/\"/g,'&quot;');}";
   J += "function fmtDate(d){return new Date(d).toLocaleDateString('en-GB',{weekday:'long',day:'2-digit',month:'short'});}";
-  J += "function rankAccent(r){return r===2?'#2e7d32':r===1?'#e65100':'#9ca3af';}";
-  J += "function rankCls(r){return r===2?'r2':r===1?'r1':'r0';}";
-  J += "function lgLabel(r){return r===2?'Fire \ud83d\udd25':r===1?'Signal \ud83d\udce1':'Low';}";
+  J += "function rankAccent(r){return r>=2?'#2e7d32':r===1?'#e65100':'#9ca3af';}";
+  J += "function rankCls(r){return r>=2?'r2':r===1?'r1':'r0';}";
+  J += "function lgLabel(r){return r>=2?'Fire \ud83d\udd25':r===1?'Signal \ud83d\udce1':'Low';}";
   J += "function fLetter(r){return r==='W'?'<span class=\"fw\">W</span>':r==='L'?'<span class=\"fl\">L</span>':'<span class=\"fd\">D</span>';}";
   J += "function mkChip(lbl,val,thr,state){var cls='chip'+(state?' '+state:'');return '<div class=\"'+cls+'\">'+'<div class=\"chip-lbl\">'+esc(lbl)+'</div><div class=\"chip-val\">'+esc(val)+'</div><div class=\"chip-thr\">'+esc(thr)+'</div></div>';}";
-  // betPill: EXTRA heuristic filters, NOT the calibrated model. Labelled as
-  // filters so users don't mistake them for the calibrated rank/probability.
-  //   🔥        = prob25 ≥ 20  OR  both teams' last-5 FH avg ≥ 2.25
-  //   🎯 FILTER = prob15 ≥ 50  OR  both teams' last-5 FH avg ≥ 2.0
-  // Thresholds calibrated against new 2-signal system (max prob25=26.9%, max prob15=57.7%).
-  // Both triggers use only recent form or the calibrated model probability — no
-  // season-aggregate stats (the look-ahead-prone t1_pct trigger was removed).
+  // betPill: Fire (🔥) and Dart (🎯) badges based on calibrated eligibility flags
+  // Fire (🔥): eligible25 = true (FH>2.5 probability ≥ 40%, primarily B+C or A+B+C combos)
+  // Dart (🎯): eligible15 = true (FH>1.5 probability ≥ 50%, primarily C, A+B, or A+B+C combos)
   J += "function betPill(m){if(!m)return '';";
-  J += "  var p25=m.prob25||0,p15=m.prob15||0;";
-  J += "  function fhAvg(arr){if(!arr||arr.length<3)return 0;var s=0;arr.forEach(function(g){s+=(g.fhFor||0)+(g.fhAgst||0);});return s/arr.length;}";
-  J += "  var minAvg=Math.min(fhAvg(m.hLast5),fhAvg(m.aLast5));";
-  J += "  var recent25=minAvg>=2.25,recent15=minAvg>=2.0;";
   J += "  var h='';";
-  J += "  if(p25>=20||recent25)h+='<div style=\"display:inline-block;background:#dc2626;color:#fff;font-size:11px;font-weight:700;padding:3px 9px;border-radius:6px;margin-right:4px\" title=\"Quick filter (recent form or model FH>2.5 prob) — not the calibrated rank\">🔥</div>';";
-  J += "  if(p15>=50||recent15)h+='<div style=\"display:inline-block;background:#15803d;color:#fff;font-size:11px;font-weight:700;padding:3px 9px;border-radius:6px;letter-spacing:.5px;margin-right:6px\" title=\"Quick filter (recent form or model FH>1.5 prob) — not the calibrated rank\">🎯 FILTER</div>';";
+  J += "  if(m.eligible25)h+='<div style=\"display:inline-block;background:#dc2626;color:#fff;font-size:11px;font-weight:700;padding:3px 9px;border-radius:6px;margin-right:4px\" title=\"FH>2.5 candidate (prob ≥ 40%)\">🔥</div>';";
+  J += "  if(m.eligible15)h+='<div style=\"display:inline-block;background:#15803d;color:#fff;font-size:11px;font-weight:700;padding:3px 9px;border-radius:6px;letter-spacing:.5px;margin-right:6px\" title=\"FH>1.5 candidate (prob ≥ 50%)\">🎯</div>';";
   J += "  return h;}";
 
   J += "function renderTabs(){";
@@ -2178,7 +2307,7 @@ body{background:#f3f4f6;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',
   J += "  }";
   J += "  h+='</tbody></table></div>';";
   // By-combo table — same level of granularity the model actually predicts at
-  J += "  var comboMeaning={'00':'none','10':'A only','01':'B only','11':'A+B'};";
+  J += "  var comboMeaning={'000':'none','001':'C only','010':'B only','011':'B+C','100':'A only','101':'A+C','110':'A+B','111':'A+B+C'};";
   J += "  var comboKeys=Object.keys(d.byCombo||{}).sort(function(a,b){return d.byCombo[b].n-d.byCombo[a].n;});";
   J += "  if(comboKeys.length){";
   J += "    h+='<div style=\"background:#fff;border:1px solid #e5e7eb;border-radius:10px;padding:14px;margin-top:14px;overflow-x:auto\">';";
@@ -2226,12 +2355,12 @@ body{background:#f3f4f6;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',
   J += "  h+='<div style=\"font-size:12px;color:#6b7280;margin-bottom:8px\">'+d.matches.length+' matches \u2014 last '+d.days+' days, newest first. Click a row to expand.</div>';";
   J += "  d.matches.forEach(function(m){";
   J += "    var dStr=m.date_unix?new Date(m.date_unix*1000).toISOString().slice(0,10):'';";
-  J += "    var rankColor=['#6b7280','#0891b2','#dc2626'][m.rank]||'#6b7280';";
+  J += "    var rankColor=['#6b7280','#0891b2','#dc2626','#dc2626'][m.rank]||'#6b7280';";
   J += "    var sigs=m.signals||{};";
   J += "    var sigStr=['A','E'].map(function(k){return sigs[k]&&sigs[k].met?k:'\u00b7';}).join('');";
   J += "    h+='<div class=\"hist-row\" data-mid=\"'+m.match_id+'\" style=\"cursor:pointer;background:#fff;border:1px solid #e5e7eb;border-radius:8px;padding:10px 12px;display:flex;gap:10px;align-items:center;font-size:12px;margin-bottom:6px\">';";
   J += "    h+='<div style=\"width:22px;height:22px;border-radius:50%;background:'+rankColor+';color:#fff;display:flex;align-items:center;justify-content:center;font-weight:700;font-size:12px;flex-shrink:0\">'+m.rank+'</div>';";
-  J += "    h+=betPill({prob25:Number(m.prob25)||0,prob15:Number(m.prob15)||0,snap:m.snap});";
+  J += "    h+=betPill({prob25:Number(m.prob25)||0,prob15:Number(m.prob15)||0,eligible25:!!m.eligible25,eligible15:!!m.eligible15,snap:m.snap});";
   J += "    h+='<div style=\"flex:1;min-width:0\"><div style=\"font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis\">'+esc(m.home_name||'')+' \u2013 '+esc(m.away_name||'')+'</div>';";
   J += "    h+='<div style=\"color:#6b7280;font-size:11px\">'+esc(m.league_name||'\u2014')+' \u00b7 '+dStr+'</div></div>';";
   J += "    h+='<div style=\"text-align:right;flex-shrink:0;font-family:ui-monospace,monospace;color:#374151\">'+sigStr+' \u00b7 CI '+(m.ci||0)+' \u00b7 '+(m.prob25||0)+'%</div>';";
@@ -2251,7 +2380,7 @@ body{background:#f3f4f6;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',
   J += "        var m=HISTORY.matches.find(function(x){return String(x.match_id)===mid;});";
   J += "        if(m){";
   J += "          var lbl=['Low','Signal','Fire'][m.rank]||'Low';";
-  J += "          var card={id:m.match_id,homeId:m.home_id,awayId:m.away_id,league:m.league_name||'\u2014',leagueSid:m.competition_id,home:m.home_name||'',away:m.away_name||'',dt:(m.date_unix||0)*1000,matchDate:m.date_unix?new Date(m.date_unix*1000).toISOString().slice(0,10):'',status:'complete',missingStats:!m.snap,rank:m.rank||0,label:lbl,prob25:Number(m.prob25)||0,prob15:Number(m.prob15)||0,eligible:(m.rank||0)>=2,ci:Number(m.ci)||0,defCi:Number(m.def_ci)||0,signals:m.signals||{},snap:m.snap||null,hLast5:[],aLast5:[],hAvgFH:null,aAvgFH:null,matchResult:{fhH:m.ht_home||0,fhA:m.ht_away||0,ftH:m.ft_home||0,ftA:m.ft_away||0,hit25:!!m.hit_25,hit15:!!m.hit_15}};";
+  J += "          var card={id:m.match_id,homeId:m.home_id,awayId:m.away_id,league:m.league_name||'\u2014',leagueSid:m.competition_id,home:m.home_name||'',away:m.away_name||'',dt:(m.date_unix||0)*1000,matchDate:m.date_unix?new Date(m.date_unix*1000).toISOString().slice(0,10):'',status:'complete',missingStats:!m.snap,rank:m.rank||0,label:lbl,prob25:Number(m.prob25)||0,prob15:Number(m.prob15)||0,eligible:(m.rank||0)>=2,eligible25:!!m.eligible25,eligible15:!!m.eligible15,ci:Number(m.ci)||0,defCi:Number(m.def_ci)||0,signals:m.signals||{},snap:m.snap||null,hLast5:[],aLast5:[],hAvgFH:null,aAvgFH:null,matchResult:{fhH:m.ht_home||0,fhA:m.ht_away||0,ftH:m.ft_home||0,ftA:m.ft_away||0,hit25:!!m.hit_25,hit15:!!m.hit_15}};";
   J += "          det.innerHTML=renderCard(card);det.dataset.loaded='1';";
   J += "          det.querySelectorAll('.toggle-btn').forEach(function(btn){btn.addEventListener('click',function(ev){ev.stopPropagation();var dEl=btn.nextElementSibling;var o=dEl.classList.toggle('open');btn.innerHTML=o?'\u25b2 Hide last 5 games & H2H':'\u25bc Show last 5 games & H2H';if(o){var h2h=dEl.querySelector('[id^=\"h2h-\"]');if(h2h&&!h2h.dataset.loaded){loadH2H(h2h);}}});});";
   J += "        }";
