@@ -1553,6 +1553,56 @@ app.get("/preds", async (req, res) => {
   }
 });
 
+// Diagnostic: how often A and E fire on CURRENT upcoming matches (live signal
+// code, not the persisted snapshots that /signal-backtest reads). Use this to
+// tell whether Signal E is genuinely dormant or whether stored snapshots are
+// just stale from before the A+E migration.
+app.get("/signal-fires", async (req, res) => {
+  try {
+    const tzOffset = parseInt(req.query.tz || "0", 10);
+    const { preds } = await computePreds(tzOffset);
+    const upcoming = preds.filter(p => p.status !== "complete" && !p.matchResult && p.snap);
+    let aFires = 0, eFires = 0, aeFires = 0;
+    const eExamples = [];
+    for (const p of upcoming) {
+      const aMet = !!(p.signals && p.signals.A && p.signals.A.met);
+      const eMet = !!(p.signals && p.signals.E && p.signals.E.met);
+      if (aMet) aFires++;
+      if (eMet) eFires++;
+      if (aMet && eMet) aeFires++;
+      if (eMet && eExamples.length < 10) {
+        eExamples.push({
+          match: p.home + " vs " + p.away, league: p.league,
+          t1_pct: p.snap.home && p.snap.home.t1_pct,
+          scored_fh: p.snap.home && p.snap.home.scored_fh,
+        });
+      }
+    }
+    const topHomeByT1 = upcoming
+      .filter(p => p.snap.home && p.snap.home.t1_pct != null)
+      .sort((a, b) => (b.snap.home.t1_pct || 0) - (a.snap.home.t1_pct || 0))
+      .slice(0, 15)
+      .map(p => ({
+        match: p.home + " vs " + p.away, league: p.league,
+        t1_pct: p.snap.home.t1_pct, scored_fh: p.snap.home.scored_fh,
+        eMet: !!(p.signals && p.signals.E && p.signals.E.met),
+      }));
+    res.json({
+      ok: true,
+      upcomingTotal: upcoming.length,
+      aFires, eFires, aeFires,
+      aFireRate: upcoming.length ? +(aFires / upcoming.length * 100).toFixed(1) : 0,
+      eFireRate: upcoming.length ? +(eFires / upcoming.length * 100).toFixed(1) : 0,
+      eExamples,
+      topHomeByT1,
+      note: "Live signals on upcoming matches. If eFires=0 but topHomeByT1 has rows above 25/0.94, signals.E is being computed but no match clears the bar. If t1_pct is generally <25, the E threshold is unreachable for this league set.",
+    });
+  } catch(e) {
+    console.error(e);
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
 // ─── MAIN ROUTE — serves shell instantly, /preds fetches data async ──────────
 app.get("/", (req, res) => {
   try {
