@@ -969,15 +969,19 @@ app.get("/admin/backfill-l5", async (req, res) => {
 
   try {
     const allLive = [];
-    const PAGE = 1000;
+    const PAGE = 300;
+    // Live captures are all recent; bound by date_unix so the planner can use
+    // the date index and skip the bulk of historical-import/backfill rows
+    // before evaluating the JSON-path NOT-IN filters.
+    const cutoffSec = Math.floor(Date.now() / 1000) - 365 * 86400;
     for (let off = 0; ; off += PAGE) {
       const { data, error } = await supabase
         .from("match_results")
         .select("match_id, competition_id, home_id, away_id, date_unix, snap")
+        .gte("date_unix", cutoffSec)
         .not("snap", "is", null)
         .not("snap->>fetchedAt", "eq", "historical-import")
         .not("snap->>fetchedAt", "eq", "backfill")
-        .order("date_unix", { ascending: false })
         .range(off, off + PAGE - 1);
       if (error) throw error;
       if (!data || data.length === 0) break;
