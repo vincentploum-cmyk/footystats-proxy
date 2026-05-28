@@ -1119,6 +1119,104 @@ app.get("/admin/backfill-l5", async (req, res) => {
   }
 });
 
+app.get("/admin/backfill-signal-d", async (req, res) => {
+  const expected = process.env.LOAD_DATASET_TOKEN;
+  if (!expected) return res.status(503).json({ ok: false, error: "admin token not configured" });
+  if (req.query.token !== expected) return res.status(403).json({ ok: false, error: "invalid token" });
+  if (!supabase) return res.status(400).json({ ok: false, error: "Supabase not enabled" });
+
+  const t0 = Date.now();
+  try {
+    // Fetch all live-captured matches with snap.l5
+    const all = [];
+    const PAGE = 1000;
+    for (let off = 0; ; off += PAGE) {
+      const { data, error } = await supabase
+        .from("match_results")
+        .select("match_id, signals, snap")
+        .not("snap", "is", null)
+        .not("snap->>fetchedAt", "eq", "historical-import")
+        .not("snap->>fetchedAt", "eq", "backfill")
+        .range(off, off + PAGE - 1);
+      if (error) throw error;
+      if (!data || data.length === 0) break;
+      all.push(...data);
+      if (data.length < PAGE) break;
+    }
+
+    const withL5 = all.filter(m => m.snap && m.snap.l5 && m.snap.l5.home && m.snap.l5.away);
+    const toUpdate = [];
+
+    for (const m of withL5) {
+      const snap = m.snap;
+      const sigs = m.signals || {};
+
+      // Recompute Signal D
+      const sigD = (snap.l5.away.f || 0) >= 1.0 && (snap.l5.home.a || 0) >= 0.8;
+      const sigA = sigs.A && sigs.A.met;
+      const sigB = sigs.B && sigs.B.met;
+
+      // Build new signals object with updated D
+      const newSignals = Object.assign({}, sigs, {
+        D: { met: sigD, label: "Away Attack + Home Leak", value: (snap.l5.away.f || 0).toFixed(2) + " / " + (snap.l5.home.a || 0).toFixed(2), threshold: "away L5 FH >= 1.0 & home leak >= 0.8" }
+      });
+
+      // Recompute combo and probabilities
+      const combo = (sigA ? "1" : "0") + (sigB ? "1" : "0") + (sigD ? "1" : "0");
+      const prob25 = PROB25_BY_COMBO[combo] !== undefined ? PROB25_BY_COMBO[combo] : 11.5;
+      const prob15 = PROB15_BY_COMBO[combo] !== undefined ? PROB15_BY_COMBO[combo] : 35.8;
+      const eligible25 = prob25 >= 40.0;
+      const eligible15 = prob15 >= 50.0;
+
+      // Recompute rank
+      const rank = (sigA ? 1 : 0) + (sigB ? 1 : 0) + (sigD ? 1 : 0);
+      const label = rank >= 2 ? "Fire" : rank === 1 ? "Signal" : "Low";
+
+      toUpdate.push({
+        match_id: m.match_id,
+        signals: newSignals,
+        rank, label,
+        prob25, prob15,
+        eligible25, eligible15
+      });
+    }
+
+    // Batch update
+    if (toUpdate.length > 0) {
+      const BATCH = 500;
+      let written = 0;
+      for (let i = 0; i < toUpdate.length; i += BATCH) {
+        const batch = toUpdate.slice(i, i + BATCH);
+        const { error } = await supabase
+          .from("match_results")
+          .upsert(batch.map(u => ({
+            match_id: u.match_id,
+            signals: u.signals,
+            rank: u.rank,
+            label: u.label,
+            prob25: u.prob25,
+            prob15: u.prob15,
+            eligible25: u.eligible25,
+            eligible15: u.eligible15
+          })), { onConflict: "match_id" });
+        if (error) throw error;
+        written += batch.length;
+      }
+    }
+
+    res.json({
+      ok: true,
+      totalLive: all.length,
+      withL5: withL5.length,
+      updated: toUpdate.length,
+      elapsedMs: Date.now() - t0,
+      note: "Backfilled Signal D on all live-captured matches with snap.l5. Recomputed rank, label, prob25, prob15, eligible25, eligible15."
+    });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
 app.get("/admin/recalibrate", async (req, res) => {
   const expected = process.env.LOAD_DATASET_TOKEN;
   if (!expected) return res.status(503).json({ ok: false, error: "admin token not configured" });
