@@ -259,7 +259,7 @@ let   LEAGUE_COMBO_LAST_RECAL = { at: 0, buckets: 0, written: 0, error: null };
 function comboFromSignals(sigs) {
   if (!sigs) return "000";
   const bit = (k) => (sigs[k] && sigs[k].met) ? "1" : "0";
-  return bit("A") + bit("B") + bit("D");
+  return bit("A") + bit("B") + bit("C");
 }
 
 async function loadLeagueComboCache() {
@@ -558,7 +558,7 @@ function last5Form(arr) {
 // Three-signal engine — calibrated on ~680 clean live-captured matches with snap.l5.
 //   Signal A: Recent Intensity    — last-5 combined FH total (hT+aT) >= 4.0
 //   Signal B: Both Attack         — both teams avg L5 FH >= 0.81
-//   Signal D: Away Attack+Leak    — away avg L5 FH >= 1.0 AND home avg L5 conceded >= 0.8
+//   Signal C: Away Attack+Leak    — away avg L5 FH >= 1.0 AND home avg L5 conceded >= 0.8
 // Fire (🔥) eligible: FH>2.5 probability >= 40% (B+D or A+B+D combos)
 // Dart (🎯) eligible: FH>1.5 probability >= 50% (D, A+B, A+B+D combos)
 function computeSignals(snap, hLast5, aLast5) {
@@ -568,17 +568,17 @@ function computeSignals(snap, hLast5, aLast5) {
   const sigA = ok && recentCI >= 4.0;
   const sigB = ok && snap && snap.l5 && snap.l5.home && snap.l5.away &&
                (snap.l5.home.f || 0) >= 0.81 && (snap.l5.away.f || 0) >= 0.81;
-  const sigD = ok && snap && snap.l5 && snap.l5.away &&
+  const sigC = ok && snap && snap.l5 && snap.l5.away &&
                (snap.l5.away.f || 0) >= 1.0 && (snap.l5.home.a || 0) >= 0.8;
   // Combo string: ABD (each 0 or 1)
-  const combo = (sigA ? "1" : "0") + (sigB ? "1" : "0") + (sigD ? "1" : "0");
+  const combo = (sigA ? "1" : "0") + (sigB ? "1" : "0") + (sigC ? "1" : "0");
   const prob25 = PROB25_BY_COMBO[combo] !== undefined ? PROB25_BY_COMBO[combo] : 11.5;
   const prob15 = PROB15_BY_COMBO[combo] !== undefined ? PROB15_BY_COMBO[combo] : 35.8;
   // Fire (FH>2.5): eligible when prob25 >= 40% (B+D = 50%, A+B+D = 50%, A+B = 36.4%)
   const eligible25 = prob25 >= 40.0;
   // Dart (FH>1.5): eligible when prob15 >= 50% (D = 52.4%, A+B = 81.8%, A+B+D = 87.5%)
   const eligible15 = prob15 >= 50.0;
-  const rank = (sigA ? 1 : 0) + (sigB ? 1 : 0) + (sigD ? 1 : 0);
+  const rank = (sigA ? 1 : 0) + (sigB ? 1 : 0) + (sigC ? 1 : 0);
   const f2 = (v) => v.toFixed(2);
   return {
     rank, label: RANK_LABELS[Math.min(rank, 2)] || "Low",
@@ -590,7 +590,7 @@ function computeSignals(snap, hLast5, aLast5) {
     signals: {
       A: { met: sigA, label: "Recent Intensity", value: ok ? f2(recentCI) : "n/a", threshold: "both L5 FH total >= 4.0" },
       B: { met: sigB, label: "Both Attack", value: snap && snap.l5 && snap.l5.home && snap.l5.away ? (snap.l5.home.f || 0).toFixed(2) + " / " + (snap.l5.away.f || 0).toFixed(2) : "n/a", threshold: "both L5 FH avg >= 0.81" },
-      D: { met: sigD, label: "Away Attack + Home Leak", value: snap && snap.l5 && snap.l5.away && snap.l5.home ? (snap.l5.away.f || 0).toFixed(2) + " / " + (snap.l5.home.a || 0).toFixed(2) : "n/a", threshold: "away L5 FH >= 1.0 & home leak >= 0.8" },
+      C: { met: sigC, label: "Away Attack + Home Leak", value: snap && snap.l5 && snap.l5.away && snap.l5.home ? (snap.l5.away.f || 0).toFixed(2) + " / " + (snap.l5.home.a || 0).toFixed(2) : "n/a", threshold: "away L5 FH >= 1.0 & home leak >= 0.8" },
     },
   };
 }
@@ -1151,25 +1151,25 @@ app.get("/admin/backfill-signal-d", async (req, res) => {
       const snap = m.snap;
       const sigs = m.signals || {};
 
-      // Recompute Signal D
-      const sigD = (snap.l5.away.f || 0) >= 1.0 && (snap.l5.home.a || 0) >= 0.8;
+      // Recompute Signal C
+      const sigC = (snap.l5.away.f || 0) >= 1.0 && (snap.l5.home.a || 0) >= 0.8;
       const sigA = sigs.A && sigs.A.met;
       const sigB = sigs.B && sigs.B.met;
 
-      // Build new signals object with updated D
+      // Build new signals object with updated C
       const newSignals = Object.assign({}, sigs, {
-        D: { met: sigD, label: "Away Attack + Home Leak", value: (snap.l5.away.f || 0).toFixed(2) + " / " + (snap.l5.home.a || 0).toFixed(2), threshold: "away L5 FH >= 1.0 & home leak >= 0.8" }
+        C: { met: sigC, label: "Away Attack + Home Leak", value: (snap.l5.away.f || 0).toFixed(2) + " / " + (snap.l5.home.a || 0).toFixed(2), threshold: "away L5 FH >= 1.0 & home leak >= 0.8" }
       });
 
       // Recompute combo and probabilities
-      const combo = (sigA ? "1" : "0") + (sigB ? "1" : "0") + (sigD ? "1" : "0");
+      const combo = (sigA ? "1" : "0") + (sigB ? "1" : "0") + (sigC ? "1" : "0");
       const prob25 = PROB25_BY_COMBO[combo] !== undefined ? PROB25_BY_COMBO[combo] : 11.5;
       const prob15 = PROB15_BY_COMBO[combo] !== undefined ? PROB15_BY_COMBO[combo] : 35.8;
       const eligible25 = prob25 >= 40.0;
       const eligible15 = prob15 >= 50.0;
 
       // Recompute rank
-      const rank = (sigA ? 1 : 0) + (sigB ? 1 : 0) + (sigD ? 1 : 0);
+      const rank = (sigA ? 1 : 0) + (sigB ? 1 : 0) + (sigC ? 1 : 0);
       const label = rank >= 2 ? "Fire" : rank === 1 ? "Signal" : "Low";
 
       toUpdate.push({
@@ -1210,7 +1210,7 @@ app.get("/admin/backfill-signal-d", async (req, res) => {
       withL5: withL5.length,
       updated: toUpdate.length,
       elapsedMs: Date.now() - t0,
-      note: "Backfilled Signal D on all live-captured matches with snap.l5. Recomputed rank, label, prob25, prob15, eligible25, eligible15."
+      note: "Backfilled Signal C on all live-captured matches with snap.l5. Recomputed rank, label, prob25, prob15, eligible25, eligible15."
     });
   } catch (e) {
     res.status(500).json({ ok: false, error: e.message });
@@ -1302,7 +1302,7 @@ app.get("/calibration", async (req, res) => {
       // Per-combo bucket (3-bit: ABD)
       const sigs = m.signals || {};
       const bit = (k) => (sigs[k] && sigs[k].met) ? "1" : "0";
-      const combo = bit("A") + bit("B") + bit("D");
+      const combo = bit("A") + bit("B") + bit("C");
       if (!byCombo[combo]) byCombo[combo] = { n: 0, hit25: 0, hit15: 0, sumP25: 0, sumP15: 0 };
       byCombo[combo].n++;
       if (m.hit_25) byCombo[combo].hit25++;
@@ -1882,7 +1882,7 @@ app.get("/last5-mine", async (req, res) => {
     const results = [];
     results.push(test("A: Recent Intensity (hT+aT>=4.0)", x => x.hT + x.aT >= 4.0));
     results.push(test("B: Both Attack (hF>=0.81 & aF>=0.81)", x => x.hF >= 0.81 && x.aF >= 0.81));
-    results.push(test("D: Away Attack + Home Leak (aF>=1 & hA>=0.8)", x => x.aF >= 1.0 && x.hA >= 0.8));
+    results.push(test("D: away attack + home leak (aF>=1 & hA>=0.8)", x => x.aF >= 1.0 && x.hA >= 0.8));
     results.push(test("A+B: FH>2.5 (intensity + both attack)", x => x.hT + x.aT >= 4.0 && x.hF >= 0.81 && x.aF >= 0.81));
     results.push(test("A+D: intensity + away attack", x => x.hT + x.aT >= 4.0 && x.aF >= 1.0 && x.hA >= 0.8));
     results.push(test("B+D: both attack + away strong", x => x.hF >= 0.81 && x.aF >= 0.81 && x.aF >= 1.0 && x.hA >= 0.8));
