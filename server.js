@@ -516,8 +516,8 @@ function unixToLocalDate(unix, tzOffset) {
 }
 
 // Look-ahead-free tables, calibrated from live-captured matches.
-// 3-signal system: A (recent intensity), B (both attack), D (away attack + home leak)
-// Combo format: "ABC" where each is 0 or 1. E.g., "110" = A+B, "011" = B+D, "111" = A+B+D.
+// 3-signal system: A (recent intensity), B (both attack), C (away attack + home leak)
+// Combo format: "ABC" where each is 0 or 1. E.g., "110" = A+B, "011" = B+C, "111" = A+B+C.
 // Calibrated on ~680 clean live-captured matches with snap.l5 present.
 const PROB25_BY_COMBO = {
   "000": 11.5,  // None
@@ -2212,8 +2212,8 @@ body{background:#f3f4f6;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',
   J += "function fLetter(r){return r==='W'?'<span class=\"fw\">W</span>':r==='L'?'<span class=\"fl\">L</span>':'<span class=\"fd\">D</span>';}";
   J += "function mkChip(lbl,val,thr,state){var cls='chip'+(state?' '+state:'');return '<div class=\"'+cls+'\">'+'<div class=\"chip-lbl\">'+esc(lbl)+'</div><div class=\"chip-val\">'+esc(val)+'</div><div class=\"chip-thr\">'+esc(thr)+'</div></div>';}";
   // betPill: Fire (🔥) and Dart (🎯) badges based on calibrated eligibility flags
-  // Fire (🔥): eligible25 = true (FH>2.5 probability ≥ 40%, primarily B+D or A+B+D combos)
-  // Dart (🎯): eligible15 = true (FH>1.5 probability ≥ 50%, primarily D, A+B, or A+B+D combos)
+  // Fire (🔥): eligible25 = true (FH>2.5 probability ≥ 40%, primarily B+C or A+B+C combos)
+  // Dart (🎯): eligible15 = true (FH>1.5 probability ≥ 50%, primarily C, A+B, or A+B+C combos)
   J += "function betPill(m){if(!m)return '';";
   J += "  var h='';";
   J += "  if(m.eligible25)h+='<div style=\"display:inline-block;background:#dc2626;color:#fff;font-size:11px;font-weight:700;padding:3px 9px;border-radius:6px;margin-right:4px\" title=\"FH>2.5 candidate (prob ≥ 40%)\">🔥</div>';";
