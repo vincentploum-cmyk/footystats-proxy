@@ -1785,6 +1785,107 @@ app.get("/last5-mine", async (req, res) => {
   }
 });
 
+// ─── RANK 0 MINING: find hidden signals within no-signal matches ────────────────
+// Tests patterns ONLY on rank 0 matches (neither A nor B fire) to find
+// asymmetric or other patterns that could extract value from the "no signal" group.
+app.get("/last5-rank0", async (req, res) => {
+  if (!supabase) return res.status(400).json({ ok: false, error: "Supabase not enabled" });
+  try {
+    const all = [];
+    const PAGE = 1000;
+    for (let off = 0; ; off += PAGE) {
+      const { data, error } = await supabase
+        .from("match_results")
+        .select("hit_25, hit_15, snap")
+        .not("hit_25", "is", null)
+        .not("snap", "is", null)
+        .not("snap->>fetchedAt", "eq", "historical-import")
+        .not("snap->>fetchedAt", "eq", "backfill")
+        .range(off, off + PAGE - 1);
+      if (error) throw error;
+      if (!data || data.length === 0) break;
+      all.push(...data);
+      if (data.length < PAGE) break;
+    }
+    const cohortAll = all.length;
+    const withL5 = all.filter(m => m.snap && m.snap.l5 && m.snap.l5.home && m.snap.l5.away);
+
+    const feats = (m) => ({
+      hT: m.snap.l5.home.t || 0, aT: m.snap.l5.away.t || 0,
+      hF: m.snap.l5.home.f || 0, hA: m.snap.l5.home.a || 0,
+      aF: m.snap.l5.away.f || 0, aA: m.snap.l5.away.a || 0,
+    });
+
+    // Filter to rank 0: neither A (hT+aT>=4.0) nor B (hF>=0.81 & aF>=0.81)
+    const rank0 = withL5.filter(m => {
+      const f = feats(m);
+      const sigA = f.hT + f.aT >= 4.0;
+      const sigB = f.hF >= 0.81 && f.aF >= 0.81;
+      return !sigA && !sigB;
+    });
+
+    const n = rank0.length;
+    const base25 = n ? rank0.filter(m => m.hit_25).length / n : 0;
+    const base15 = n ? rank0.filter(m => m.hit_15).length / n : 0;
+
+    const test = (label, pred) => {
+      const fired = rank0.filter(m => pred(feats(m)));
+      const fN = fired.length;
+      if (!fN) return { label, n: 0, actual25: 0, actual15: 0, lift25: 0, lift15: 0 };
+      const h25 = fired.filter(m => m.hit_25).length;
+      const h15 = fired.filter(m => m.hit_15).length;
+      return {
+        label, n: fN,
+        actual25: +(h25 / fN * 100).toFixed(1),
+        actual15: +(h15 / fN * 100).toFixed(1),
+        lift25: base25 ? +(h25 / fN / base25).toFixed(2) : 0,
+        lift15: base15 ? +(h15 / fN / base15).toFixed(2) : 0,
+      };
+    };
+
+    const results = [];
+    // Asymmetric patterns: one team strong, opponent weak
+    for (const hThresh of [1.5, 2.0, 2.5]) results.push(test("home.t>=" + hThresh, x => x.hT >= hThresh));
+    for (const aThresh of [1.5, 2.0, 2.5]) results.push(test("away.t>=" + aThresh, x => x.aT >= aThresh));
+
+    // One team attacking, other leaking
+    for (const atk of [0.8, 1.0, 1.2]) {
+      for (const leak of [0.8, 1.0, 1.2]) {
+        results.push(test("hF>=" + atk + " & aA>=" + leak, x => x.hF >= atk && x.aA >= leak));
+        results.push(test("aF>=" + atk + " & hA>=" + leak, x => x.aF >= atk && x.hA >= leak));
+      }
+    }
+
+    // Single-side attacks
+    for (const t of [1.0, 1.2, 1.4]) {
+      results.push(test("hF>=" + t + " (home attack only)", x => x.hF >= t));
+      results.push(test("aF>=" + t + " (away attack only)", x => x.aF >= t));
+    }
+
+    // Single-side leaks
+    for (const t of [1.0, 1.2]) {
+      results.push(test("hA>=" + t + " (home leaks)", x => x.hA >= t));
+      results.push(test("aA>=" + t + " (away leaks)", x => x.aA >= t));
+    }
+
+    const actionable = results.filter(r => r.n >= 20).sort((a, b) => b.lift25 - a.lift25);
+
+    res.json({
+      ok: true,
+      rank0Total: n,
+      rank0Pct: withL5.length ? +(n / withL5.length * 100).toFixed(1) : 0,
+      baseRate25: +(base25 * 100).toFixed(1),
+      baseRate15: +(base15 * 100).toFixed(1),
+      topByLift25_n20: actionable.slice(0, 15),
+      topByLift15_n20: actionable.slice().sort((a, b) => b.lift15 - a.lift15).slice(0, 15),
+      allResults: results,
+      note: "Rank 0 cohort = matches where neither A (hT+aT>=4.0) nor B (hF>=0.81 & aF>=0.81) fire. This is where we look for NEW signals to capture value left on the table.",
+    });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
 // Diagnostic: how often A and E fire on CURRENT upcoming matches (live signal
 // code, not the persisted snapshots that /signal-backtest reads). Use this to
 // tell whether Signal E is genuinely dormant or whether stored snapshots are
