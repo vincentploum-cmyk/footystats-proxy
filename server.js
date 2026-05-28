@@ -537,6 +537,8 @@ function computeSignals(snap, hLast5, aLast5) {
   const sigA = ok && recentCI >= 4.0;
   const sigB = ok && snap && snap.l5 && snap.l5.home && snap.l5.away &&
                (snap.l5.home.f || 0) >= 0.81 && (snap.l5.away.f || 0) >= 0.81;
+  const sigD = ok && snap && snap.l5 && snap.l5.away &&
+               (snap.l5.away.f || 0) >= 1.0 && (snap.l5.home.a || 0) >= 0.8;
   const rank = (sigA ? 1 : 0) + (sigB ? 1 : 0);
   const f2 = (v) => v.toFixed(2);
   const prob25 = PROB25_BY_RANK[rank] || 11.5;
@@ -547,9 +549,11 @@ function computeSignals(snap, hLast5, aLast5) {
     ci: +recentCI.toFixed(2),
     defCi: ok ? +a5.a.toFixed(2) : 0,
     eligible: rank >= 2,
+    eligible15: sigD,
     signals: {
       A: { met: sigA, label: "Recent Intensity", value: ok ? f2(recentCI) : "n/a", threshold: "both L5 FH total >= 4.0" },
       B: { met: sigB, label: "Both Attack", value: snap && snap.l5 && snap.l5.home && snap.l5.away ? (snap.l5.home.f || 0).toFixed(2) + " / " + (snap.l5.away.f || 0).toFixed(2) : "n/a", threshold: "both L5 FH avg >= 0.81" },
+      D: { met: sigD, label: "Away Attack + Home Leak", value: snap && snap.l5 && snap.l5.away && snap.l5.home ? (snap.l5.away.f || 0).toFixed(2) + " / " + (snap.l5.home.a || 0).toFixed(2) : "n/a", threshold: "away L5 FH >= 1.0 & home leak >= 0.8" },
     },
   };
 }
@@ -1739,13 +1743,13 @@ app.get("/last5-mine", async (req, res) => {
     };
 
     const results = [];
-    results.push(test("A current: hT+aT>=4.0", x => x.hT + x.aT >= 4.0));
-    results.push(test("B current: hF>=0.81 & aF>=0.81", x => x.hF >= 0.81 && x.aF >= 0.81));
-    results.push(test("C candidate: hF>=1.4 (home attack strong)", x => x.hF >= 1.4));
-    results.push(test("A+B: both", x => x.hT + x.aT >= 4.0 && x.hF >= 0.81 && x.aF >= 0.81));
-    results.push(test("A+C: intensity + home strong", x => x.hT + x.aT >= 4.0 && x.hF >= 1.4));
-    results.push(test("B+C: both attack + home strong", x => x.hF >= 0.81 && x.aF >= 0.81 && x.hF >= 1.4));
-    results.push(test("A+B+C: all three", x => x.hT + x.aT >= 4.0 && x.hF >= 0.81 && x.aF >= 0.81 && x.hF >= 1.4));
+    results.push(test("A: Recent Intensity (hT+aT>=4.0)", x => x.hT + x.aT >= 4.0));
+    results.push(test("B: Both Attack (hF>=0.81 & aF>=0.81)", x => x.hF >= 0.81 && x.aF >= 0.81));
+    results.push(test("D: Away Attack + Home Leak (aF>=1 & hA>=0.8)", x => x.aF >= 1.0 && x.hA >= 0.8));
+    results.push(test("A+B: FH>2.5 (intensity + both attack)", x => x.hT + x.aT >= 4.0 && x.hF >= 0.81 && x.aF >= 0.81));
+    results.push(test("A+D: intensity + away attack", x => x.hT + x.aT >= 4.0 && x.aF >= 1.0 && x.hA >= 0.8));
+    results.push(test("B+D: both attack + away strong", x => x.hF >= 0.81 && x.aF >= 0.81 && x.aF >= 1.0 && x.hA >= 0.8));
+    results.push(test("A+B+D: all three", x => x.hT + x.aT >= 4.0 && x.hF >= 0.81 && x.aF >= 0.81 && x.aF >= 1.0 && x.hA >= 0.8));
     for (const t of [3.0, 3.5, 4.5, 5.0, 5.5]) results.push(test("hT+aT>=" + t, x => x.hT + x.aT >= t));
     for (const t of [1.5, 2.0, 2.5, 3.0]) {
       results.push(test("home.t>=" + t, x => x.hT >= t));
