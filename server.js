@@ -521,23 +521,23 @@ function unixToLocalDate(unix, tzOffset) {
 // Calibrated on ~680 clean live-captured matches with snap.l5 present.
 const PROB25_BY_COMBO = {
   "000": 11.5,  // None
-  "001": 15.0,  // D only
+  "001": 15.0,  // C only
   "010": 20.0,  // B only
-  "011": 50.0,  // B+D (strong for FH>2.5)
+  "011": 50.0,  // B+C (strong for FH>2.5)
   "100": 12.0,  // A only
-  "101": 25.0,  // A+D
+  "101": 25.0,  // A+C
   "110": 36.4,  // A+B
-  "111": 50.0,  // A+B+D (strong for both)
+  "111": 50.0,  // A+B+C (strong for both)
 };
 const PROB15_BY_COMBO = {
   "000": 35.8,  // None
-  "001": 52.4,  // D only
+  "001": 52.4,  // C only
   "010": 40.0,  // B only
-  "011": 41.7,  // B+D
+  "011": 41.7,  // B+C
   "100": 44.7,  // A only
-  "101": 55.0,  // A+D (estimated)
+  "101": 55.0,  // A+C (estimated)
   "110": 81.8,  // A+B (strong for FH>1.5)
-  "111": 87.5,  // A+B+D (strong for both)
+  "111": 87.5,  // A+B+C (strong for both)
 };
 // Legacy rank tables for fallback (Phase 1 league override)
 const PROB25_BY_RANK = { 2: 36.4, 1: 26.0, 0: 11.5 };
@@ -559,8 +559,8 @@ function last5Form(arr) {
 //   Signal A: Recent Intensity    — last-5 combined FH total (hT+aT) >= 4.0
 //   Signal B: Both Attack         — both teams avg L5 FH >= 0.81
 //   Signal C: Away Attack+Leak    — away avg L5 FH >= 1.0 AND home avg L5 conceded >= 0.8
-// Fire (🔥) eligible: FH>2.5 probability >= 40% (B+D or A+B+D combos)
-// Dart (🎯) eligible: FH>1.5 probability >= 50% (D, A+B, A+B+D combos)
+// Fire (🔥) eligible: FH>2.5 probability >= 40% (B+C or A+B+C combos)
+// Dart (🎯) eligible: FH>1.5 probability >= 50% (C, A+B, A+B+C combos)
 function computeSignals(snap, hLast5, aLast5) {
   const h5 = last5Form(hLast5), a5 = last5Form(aLast5);
   const ok = !!(h5 && a5);
@@ -570,13 +570,13 @@ function computeSignals(snap, hLast5, aLast5) {
                (snap.l5.home.f || 0) >= 0.81 && (snap.l5.away.f || 0) >= 0.81;
   const sigC = ok && snap && snap.l5 && snap.l5.away &&
                (snap.l5.away.f || 0) >= 1.0 && (snap.l5.home.a || 0) >= 0.8;
-  // Combo string: ABD (each 0 or 1)
+  // Combo string: ABC (each 0 or 1)
   const combo = (sigA ? "1" : "0") + (sigB ? "1" : "0") + (sigC ? "1" : "0");
   const prob25 = PROB25_BY_COMBO[combo] !== undefined ? PROB25_BY_COMBO[combo] : 11.5;
   const prob15 = PROB15_BY_COMBO[combo] !== undefined ? PROB15_BY_COMBO[combo] : 35.8;
-  // Fire (FH>2.5): eligible when prob25 >= 40% (B+D = 50%, A+B+D = 50%, A+B = 36.4%)
+  // Fire (FH>2.5): eligible when prob25 >= 40% (B+C = 50%, A+B+C = 50%, A+B = 36.4%)
   const eligible25 = prob25 >= 40.0;
-  // Dart (FH>1.5): eligible when prob15 >= 50% (D = 52.4%, A+B = 81.8%, A+B+D = 87.5%)
+  // Dart (FH>1.5): eligible when prob15 >= 50% (C = 52.4%, A+B = 81.8%, A+B+C = 87.5%)
   const eligible15 = prob15 >= 50.0;
   const rank = (sigA ? 1 : 0) + (sigB ? 1 : 0) + (sigC ? 1 : 0);
   const f2 = (v) => v.toFixed(2);
@@ -1882,11 +1882,11 @@ app.get("/last5-mine", async (req, res) => {
     const results = [];
     results.push(test("A: Recent Intensity (hT+aT>=4.0)", x => x.hT + x.aT >= 4.0));
     results.push(test("B: Both Attack (hF>=0.81 & aF>=0.81)", x => x.hF >= 0.81 && x.aF >= 0.81));
-    results.push(test("D: away attack + home leak (aF>=1 & hA>=0.8)", x => x.aF >= 1.0 && x.hA >= 0.8));
+    results.push(test("C: away attack + home leak (aF>=1 & hA>=0.8)", x => x.aF >= 1.0 && x.hA >= 0.8));
     results.push(test("A+B: FH>2.5 (intensity + both attack)", x => x.hT + x.aT >= 4.0 && x.hF >= 0.81 && x.aF >= 0.81));
-    results.push(test("A+D: intensity + away attack", x => x.hT + x.aT >= 4.0 && x.aF >= 1.0 && x.hA >= 0.8));
-    results.push(test("B+D: both attack + away strong", x => x.hF >= 0.81 && x.aF >= 0.81 && x.aF >= 1.0 && x.hA >= 0.8));
-    results.push(test("A+B+D: all three", x => x.hT + x.aT >= 4.0 && x.hF >= 0.81 && x.aF >= 0.81 && x.aF >= 1.0 && x.hA >= 0.8));
+    results.push(test("A+C: intensity + away attack", x => x.hT + x.aT >= 4.0 && x.aF >= 1.0 && x.hA >= 0.8));
+    results.push(test("B+C: both attack + away strong", x => x.hF >= 0.81 && x.aF >= 0.81 && x.aF >= 1.0 && x.hA >= 0.8));
+    results.push(test("A+B+C: all three", x => x.hT + x.aT >= 4.0 && x.hF >= 0.81 && x.aF >= 0.81 && x.aF >= 1.0 && x.hA >= 0.8));
     for (const t of [3.0, 3.5, 4.5, 5.0, 5.5]) results.push(test("hT+aT>=" + t, x => x.hT + x.aT >= t));
     for (const t of [1.5, 2.0, 2.5, 3.0]) {
       results.push(test("home.t>=" + t, x => x.hT >= t));
@@ -2307,7 +2307,7 @@ body{background:#f3f4f6;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',
   J += "  }";
   J += "  h+='</tbody></table></div>';";
   // By-combo table — same level of granularity the model actually predicts at
-  J += "  var comboMeaning={'000':'none','001':'D only','010':'B only','011':'B+D','100':'A only','101':'A+D','110':'A+B','111':'A+B+D'};";
+  J += "  var comboMeaning={'000':'none','001':'C only','010':'B only','011':'B+C','100':'A only','101':'A+C','110':'A+B','111':'A+B+C'};";
   J += "  var comboKeys=Object.keys(d.byCombo||{}).sort(function(a,b){return d.byCombo[b].n-d.byCombo[a].n;});";
   J += "  if(comboKeys.length){";
   J += "    h+='<div style=\"background:#fff;border:1px solid #e5e7eb;border-radius:10px;padding:14px;margin-top:14px;overflow-x:auto\">';";
