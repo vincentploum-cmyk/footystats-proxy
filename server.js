@@ -516,8 +516,8 @@ function unixToLocalDate(unix, tzOffset) {
 }
 
 // Single-signal probabilities — validated on 692 live-captured matches (all fetchedAt timestamps, no backfill/historical-import).
-// Signal A: Away team last-5 FH average >= 1.0
-const PROB15_BY_RANK = { 0: 37.7, 1: 49.7 };
+// Signal A: Away team last-5 FH average >= 0.8
+const PROB15_BY_RANK = { 0: 37.7, 1: 41.5 };
 const RANK_LABELS = { 0: "Low", 1: "Signal" };
 
 // Average a team's last-5 first-half form. Goals are team-relative (fhFor =
@@ -532,14 +532,14 @@ function last5Form(arr) {
 }
 
 // Single-signal engine — validated on 692 live-captured matches.
-//   Signal A: Away Team Scoring — away team last-5 FH average >= 1.0
-// Predicts FH>1.5 at 49.7% (vs 37.7% baseline, +12 percentage points)
+//   Signal A: Away Team Scoring — away team last-5 FH average >= 0.8
+// Predicts FH>1.5 at 41.5% (vs 37.7% baseline, +3.8 percentage points)
 function computeSignals(snap, hLast5, aLast5) {
   const a5 = last5Form(aLast5);
   const ok = !!(a5);
   const awayL5Scored = snap && snap.l5 && snap.l5.away ? (snap.l5.away.f || 0) : 0;
-  const sigA = ok && awayL5Scored >= 1.0;
-  const prob15 = sigA ? 49.7 : 37.7;
+  const sigA = ok && awayL5Scored >= 0.8;
+  const prob15 = sigA ? 41.5 : 37.7;
   const f2 = (v) => v.toFixed(2);
   return {
     rank: sigA ? 1 : 0,
