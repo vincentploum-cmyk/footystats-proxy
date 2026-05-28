@@ -1744,6 +1744,8 @@ app.get("/last5-mine", async (req, res) => {
 
     const results = [];
     results.push(test("A current: hT+aT>=4.0", x => x.hT + x.aT >= 4.0));
+    results.push(test("B current: hF>=0.81 & aF>=0.81", x => x.hF >= 0.81 && x.aF >= 0.81));
+    results.push(test("A+B: both (hT+aT>=4.0 & hF>=0.81 & aF>=0.81)", x => x.hT + x.aT >= 4.0 && x.hF >= 0.81 && x.aF >= 0.81));
     for (const t of [3.0, 3.5, 4.5, 5.0, 5.5]) results.push(test("hT+aT>=" + t, x => x.hT + x.aT >= t));
     for (const t of [1.5, 2.0, 2.5, 3.0]) {
       results.push(test("home.t>=" + t, x => x.hT >= t));
