@@ -1753,7 +1753,7 @@ app.get("/last5-mine", async (req, res) => {
         results.push(test("aF>=" + af + " & hA>=" + da + " (away atk vs home leak)", x => x.aF >= af && x.hA >= da));
       }
     }
-    for (const t of [0.6, 0.8, 1.0]) {
+    for (const t of [0.6, 0.8, 0.9, 1.0]) {
       results.push(test("hF>=" + t + " & aF>=" + t + " (both attack)", x => x.hF >= t && x.aF >= t));
       results.push(test("hA>=" + t + " & aA>=" + t + " (both leaky)", x => x.hA >= t && x.aA >= t));
     }
