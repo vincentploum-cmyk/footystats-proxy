@@ -509,9 +509,9 @@ function unixToLocalDate(unix, tzOffset) {
 // Signal A = Recent Intensity (last-5 hT+aT>=4.0); Signal E = Home Profile (h_fh25_hist>=25 & h_scored_fh>=0.94).
 // Combo-specific probs used in computeSignals; rank table kept for league-override fallback.
 // rank 2 (A+E): n=26, rank 1 weighted (A-only n=47, E-only n=23), rank 0: n=505.
-const PROB25_BY_RANK = { 3: 30.0, 2: 24.0, 1: 15.0, 0: 11.5 };
-const PROB15_BY_RANK = { 3: 60.0, 2: 52.0, 1: 46.0, 0: 35.8 };
-const RANK_LABELS = { 3: "Blaze", 2: "Fire", 1: "Signal", 0: "Low" };
+const PROB25_BY_RANK = { 2: 36.4, 1: 26.0, 0: 11.5 };
+const PROB15_BY_RANK = { 2: 81.8, 1: 61.0, 0: 35.8 };
+const RANK_LABELS = { 2: "Fire", 1: "Signal", 0: "Low" };
 
 // Average a team's last-5 first-half form. Goals are team-relative (fhFor =
 // scored, fhAgst = conceded). Returns null if fewer than 3 recent games.
@@ -537,10 +537,7 @@ function computeSignals(snap, hLast5, aLast5) {
   const sigA = ok && recentCI >= 4.0;
   const sigB = ok && snap && snap.l5 && snap.l5.home && snap.l5.away &&
                (snap.l5.home.f || 0) >= 0.81 && (snap.l5.away.f || 0) >= 0.81;
-  const sigE = !!(snap && snap.home &&
-                  (snap.home.t1_pct    || 0) >= 25 &&
-                  (snap.home.scored_fh || 0) >= 0.94);
-  const rank = (sigA ? 1 : 0) + (sigB ? 1 : 0) + (sigE ? 1 : 0);
+  const rank = (sigA ? 1 : 0) + (sigB ? 1 : 0);
   const f2 = (v) => v.toFixed(2);
   const prob25 = PROB25_BY_RANK[rank] || 11.5;
   const prob15 = PROB15_BY_RANK[rank] || 35.8;
@@ -553,7 +550,6 @@ function computeSignals(snap, hLast5, aLast5) {
     signals: {
       A: { met: sigA, label: "Recent Intensity", value: ok ? f2(recentCI) : "n/a", threshold: "both L5 FH total >= 4.0" },
       B: { met: sigB, label: "Both Attack", value: snap && snap.l5 && snap.l5.home && snap.l5.away ? (snap.l5.home.f || 0).toFixed(2) + " / " + (snap.l5.away.f || 0).toFixed(2) : "n/a", threshold: "both L5 FH avg >= 0.81" },
-      E: { met: sigE, label: "Home Profile",     value: snap && snap.home ? (snap.home.t1_pct || 0).toFixed(0) + "% / " + (snap.home.scored_fh || 0).toFixed(2) : "n/a", threshold: "h_fh25_hist >= 25 & h_scored_fh >= 0.94" },
     },
   };
 }
@@ -1153,7 +1149,7 @@ app.get("/calibration", async (req, res) => {
     }
     const byRank = {};
     const byCombo = {};
-    for (let r = 0; r <= 3; r++) byRank[r] = { n: 0, hit25: 0, hit15: 0, sumP25: 0, sumP15: 0 };
+    for (let r = 0; r <= 2; r++) byRank[r] = { n: 0, hit25: 0, hit15: 0, sumP25: 0, sumP15: 0 };
     let total = { n: 0, hit25: 0, hit15: 0, sumP25: 0, sumP15: 0 };
     for (const m of all) {
       const r = m.rank;
@@ -1167,7 +1163,7 @@ app.get("/calibration", async (req, res) => {
       // Per-combo bucket
       const sigs = m.signals || {};
       const bit = (k) => (sigs[k] && sigs[k].met) ? "1" : "0";
-      const combo = bit("A") + bit("B") + bit("E");
+      const combo = bit("A") + bit("B");
       if (!byCombo[combo]) byCombo[combo] = { n: 0, hit25: 0, hit15: 0, sumP25: 0, sumP15: 0 };
       byCombo[combo].n++;
       if (m.hit_25) byCombo[combo].hit25++;
@@ -1238,7 +1234,7 @@ app.get("/signal-backtest", async (req, res) => {
     const met = (m, k) => !!(m.signals && m.signals[k] && m.signals[k].met);
 
     const perSignal = {};
-    for (const k of ["A", "B", "E"]) {
+    for (const k of ["A", "B"]) {
       const fired = all.filter(m => met(m, k));
       const quiet = all.filter(m => !met(m, k));
       const fHit = fired.length ? fired.filter(m => m.hit_25).length / fired.length : 0;
@@ -1254,7 +1250,7 @@ app.get("/signal-backtest", async (req, res) => {
     }
 
     const byRank = {};
-    for (let r = 0; r <= 3; r++) byRank[r] = { n: 0, hit25: 0, hit15: 0, sumP25: 0, sumP15: 0 };
+    for (let r = 0; r <= 2; r++) byRank[r] = { n: 0, hit25: 0, hit15: 0, sumP25: 0, sumP15: 0 };
     for (const m of all) {
       const b = byRank[m.rank];
       if (!b) continue;
@@ -2058,8 +2054,8 @@ body{background:#f3f4f6;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',
   J += "    +'<th style=\"padding:6px 8px\">Rank</th><th style=\"padding:6px 8px\">N</th>'";
   J += "    +'<th style=\"padding:6px 8px\">Pred FH&gt;2.5</th><th style=\"padding:6px 8px\">Actual</th>'";
   J += "    +'<th style=\"padding:6px 8px\">Pred FH&gt;1.5</th><th style=\"padding:6px 8px\">Actual</th></tr></thead><tbody>';";
-  J += "  for(var r=3;r>=0;r--){var b=d.byRank[r]||{n:0,predicted25:0,actual25:0,predicted15:0,actual15:0};";
-  J += "    var lbl=['Low','Signal','Fire','Blaze'][r];";
+  J += "  for(var r=2;r>=0;r--){var b=d.byRank[r]||{n:0,predicted25:0,actual25:0,predicted15:0,actual15:0};";
+  J += "    var lbl=['Low','Signal','Fire'][r];";
   J += "    var c25=(b.n<10)?'#9ca3af':(b.actual25>=b.predicted25-2)?'#0f766e':'#b91c1c';";
   J += "    var c15=(b.n<10)?'#9ca3af':(b.actual15>=b.predicted15-2)?'#0f766e':'#b91c1c';";
   J += "    h+='<tr style=\"border-bottom:1px solid #f3f4f6\">'";
@@ -2073,7 +2069,7 @@ body{background:#f3f4f6;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',
   J += "  }";
   J += "  h+='</tbody></table></div>';";
   // By-combo table — same level of granularity the model actually predicts at
-  J += "  var comboMeaning={'000':'none','001':'E only','010':'B only','011':'B+E','100':'A only','101':'A+E','110':'A+B','111':'A+B+E'};";
+  J += "  var comboMeaning={'00':'none','10':'A only','01':'B only','11':'A+B'};";
   J += "  var comboKeys=Object.keys(d.byCombo||{}).sort(function(a,b){return d.byCombo[b].n-d.byCombo[a].n;});";
   J += "  if(comboKeys.length){";
   J += "    h+='<div style=\"background:#fff;border:1px solid #e5e7eb;border-radius:10px;padding:14px;margin-top:14px;overflow-x:auto\">';";
