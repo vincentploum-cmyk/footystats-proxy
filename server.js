@@ -515,34 +515,10 @@ function unixToLocalDate(unix, tzOffset) {
   return y + "-" + m + "-" + day;
 }
 
-// Look-ahead-free tables, calibrated from live-captured matches.
-// 3-signal system: A (recent intensity), B (both attack), C (away attack + home leak)
-// Combo format: "ABC" where each is 0 or 1. E.g., "110" = A+B, "011" = B+C, "111" = A+B+C.
-// Calibrated on ~680 clean live-captured matches with snap.l5 present.
-const PROB25_BY_COMBO = {
-  "000": 11.5,  // None
-  "001": 15.0,  // C only
-  "010": 20.0,  // B only
-  "011": 50.0,  // B+C (strong for FH>2.5)
-  "100": 12.0,  // A only
-  "101": 25.0,  // A+C
-  "110": 36.4,  // A+B
-  "111": 50.0,  // A+B+C (strong for both)
-};
-const PROB15_BY_COMBO = {
-  "000": 35.8,  // None
-  "001": 52.4,  // C only
-  "010": 40.0,  // B only
-  "011": 41.7,  // B+C
-  "100": 44.7,  // A only
-  "101": 55.0,  // A+C (estimated)
-  "110": 81.8,  // A+B (strong for FH>1.5)
-  "111": 87.5,  // A+B+C (strong for both)
-};
-// Legacy rank tables for fallback (Phase 1 league override)
-const PROB25_BY_RANK = { 2: 36.4, 1: 26.0, 0: 11.5 };
-const PROB15_BY_RANK = { 2: 81.8, 1: 61.0, 0: 35.8 };
-const RANK_LABELS = { 2: "Fire", 1: "Signal", 0: "Low" };
+// Single-signal probabilities — validated on 692 live-captured matches (all fetchedAt timestamps, no backfill/historical-import).
+// Signal A: Away team last-5 FH average >= 1.0
+const PROB15_BY_RANK = { 0: 37.7, 1: 49.7 };
+const RANK_LABELS = { 0: "Low", 1: "Signal" };
 
 // Average a team's last-5 first-half form. Goals are team-relative (fhFor =
 // scored, fhAgst = conceded). Returns null if fewer than 3 recent games.
@@ -555,42 +531,25 @@ function last5Form(arr) {
   return { f: f / n, a: a / n, t: (f + a) / n };
 }
 
-// Three-signal engine — calibrated on ~680 clean live-captured matches with snap.l5.
-//   Signal A: Recent Intensity    — last-5 combined FH total (hT+aT) >= 4.0
-//   Signal B: Both Attack         — both teams avg L5 FH >= 0.81
-//   Signal C: Away Attack+Leak    — away avg L5 FH >= 1.0 AND home avg L5 conceded >= 0.8
-// Fire (🔥) eligible: FH>2.5 probability >= 40% (B+C or A+B+C combos)
-// Dart (🎯) eligible: FH>1.5 probability >= 50% (C, A+B, A+B+C combos)
+// Single-signal engine — validated on 692 live-captured matches.
+//   Signal A: Away Team Scoring — away team last-5 FH average >= 1.0
+// Predicts FH>1.5 at 49.7% (vs 37.7% baseline, +12 percentage points)
 function computeSignals(snap, hLast5, aLast5) {
-  const h5 = last5Form(hLast5), a5 = last5Form(aLast5);
-  const ok = !!(h5 && a5);
-  const recentCI = ok ? (h5.t + a5.t) : 0;
-  const sigA = ok && recentCI >= 4.0;
-  const sigB = ok && snap && snap.l5 && snap.l5.home && snap.l5.away &&
-               (snap.l5.home.f || 0) >= 0.81 && (snap.l5.away.f || 0) >= 0.81;
-  const sigC = ok && snap && snap.l5 && snap.l5.away &&
-               (snap.l5.away.f || 0) >= 1.0 && (snap.l5.home.a || 0) >= 0.8;
-  // Combo string: ABC (each 0 or 1)
-  const combo = (sigA ? "1" : "0") + (sigB ? "1" : "0") + (sigC ? "1" : "0");
-  const prob25 = PROB25_BY_COMBO[combo] !== undefined ? PROB25_BY_COMBO[combo] : 11.5;
-  const prob15 = PROB15_BY_COMBO[combo] !== undefined ? PROB15_BY_COMBO[combo] : 35.8;
-  // Fire (FH>2.5): eligible when prob25 >= 40% (B+C = 50%, A+B+C = 50%, A+B = 36.4%)
-  const eligible25 = prob25 >= 40.0;
-  // Dart (FH>1.5): eligible when prob15 >= 50% (C = 52.4%, A+B = 81.8%, A+B+C = 87.5%)
-  const eligible15 = prob15 >= 50.0;
-  const rank = (sigA ? 1 : 0) + (sigB ? 1 : 0) + (sigC ? 1 : 0);
+  const a5 = last5Form(aLast5);
+  const ok = !!(a5);
+  const awayL5Scored = snap && snap.l5 && snap.l5.away ? (snap.l5.away.f || 0) : 0;
+  const sigA = ok && awayL5Scored >= 1.0;
+  const prob15 = sigA ? 49.7 : 37.7;
   const f2 = (v) => v.toFixed(2);
   return {
-    rank, label: RANK_LABELS[Math.min(rank, 2)] || "Low",
-    prob25, prob15,
-    ci: +recentCI.toFixed(2),
-    defCi: ok ? +a5.a.toFixed(2) : 0,
-    eligible: eligible25,  // Primary eligible (for Fire badge)
-    eligible25, eligible15,  // Both badges
+    rank: sigA ? 1 : 0,
+    label: sigA ? "Signal" : "Low",
+    prob15,
+    ci: 0,
+    defCi: 0,
+    eligible: sigA,
     signals: {
-      A: { met: sigA, label: "Recent Intensity", value: ok ? f2(recentCI) : "n/a", threshold: "both L5 FH total >= 4.0" },
-      B: { met: sigB, label: "Both Attack", value: snap && snap.l5 && snap.l5.home && snap.l5.away ? (snap.l5.home.f || 0).toFixed(2) + " / " + (snap.l5.away.f || 0).toFixed(2) : "n/a", threshold: "both L5 FH avg >= 0.81" },
-      C: { met: sigC, label: "Away Attack + Home Leak", value: snap && snap.l5 && snap.l5.away && snap.l5.home ? (snap.l5.away.f || 0).toFixed(2) + " / " + (snap.l5.home.a || 0).toFixed(2) : "n/a", threshold: "away L5 FH >= 1.0 & home leak >= 0.8" },
+      A: { met: sigA, label: "Away Team Scoring", value: f2(awayL5Scored), threshold: "away L5 FH avg >= 1.0" },
     },
   };
 }
