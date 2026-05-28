@@ -945,6 +945,137 @@ app.get("/admin/backfill", async (req, res) => {
   res.json({ ok: errors.length === 0, dates: dates.length, fixtures: fixtures.length, valid: rows.length, skipped, written, errors, elapsedMs: Date.now() - t0 });
 });
 
+// Backfill snap.l5 (per-team last-5 FH form) on live-captured rows that were
+// persisted before commit 9499687 added the field. For each row, fetches the
+// match's competition_id season matches (cached), then reconstructs the
+// home/away team's last 5 *as of that match's kickoff* by filtering games to
+// date_unix < row.date_unix. Skips rows where fewer than 3 prior games exist
+// for either team (insufficient sample, same null-rule as last5Form).
+//
+//   GET /admin/backfill-l5?token=<TOKEN>&dryRun=1     -> report counts only
+//   GET /admin/backfill-l5?token=<TOKEN>&limit=200    -> process up to 200 rows
+//
+// Idempotent: only touches rows where snap.l5 is null/missing. Uses regular
+// UPDATE (not the ignoreDuplicates upsert), so it can patch existing rows.
+app.get("/admin/backfill-l5", async (req, res) => {
+  const expected = process.env.LOAD_DATASET_TOKEN;
+  if (!expected) return res.status(503).json({ ok: false, error: "admin token not configured" });
+  if (req.query.token !== expected) return res.status(403).json({ ok: false, error: "invalid token" });
+  if (!supabase) return res.status(400).json({ ok: false, error: "Supabase not enabled" });
+
+  const dryRun = req.query.dryRun === "1";
+  const limit = Math.max(1, Math.min(1000, parseInt(req.query.limit || "200", 10)));
+  const t0 = Date.now();
+
+  try {
+    const allLive = [];
+    const PAGE = 1000;
+    for (let off = 0; ; off += PAGE) {
+      const { data, error } = await supabase
+        .from("match_results")
+        .select("match_id, competition_id, home_id, away_id, date_unix, snap")
+        .not("snap", "is", null)
+        .not("snap->>fetchedAt", "eq", "historical-import")
+        .not("snap->>fetchedAt", "eq", "backfill")
+        .order("date_unix", { ascending: false })
+        .range(off, off + PAGE - 1);
+      if (error) throw error;
+      if (!data || data.length === 0) break;
+      allLive.push(...data);
+      if (data.length < PAGE) break;
+    }
+    const missing = allLive.filter(r => r.snap && !r.snap.l5 && r.home_id && r.away_id && r.competition_id && r.date_unix);
+
+    if (dryRun) {
+      const byComp = {};
+      for (const r of missing) byComp[r.competition_id] = (byComp[r.competition_id] || 0) + 1;
+      return res.json({
+        ok: true, dryRun: true,
+        totalLive: allLive.length, missingL5: missing.length,
+        skippedNoIds: allLive.filter(r => r.snap && !r.snap.l5).length - missing.length,
+        distinctCompetitions: Object.keys(byComp).length,
+        topComps: Object.entries(byComp).sort((a, b) => b[1] - a[1]).slice(0, 10).map(([c, n]) => ({ competition_id: +c, n })),
+      });
+    }
+
+    const work = missing.slice(0, limit);
+    // Group by competition_id so each league season is fetched once
+    const byComp = {};
+    for (const r of work) {
+      if (!byComp[r.competition_id]) byComp[r.competition_id] = [];
+      byComp[r.competition_id].push(r);
+    }
+
+    const teamL5 = (matches, tid, beforeUnix) => {
+      const games = matches
+        .filter(m => (m.homeID === tid || m.awayID === tid) && (m.date_unix || 0) < beforeUnix && (m.status === "complete" || m.status === "incomplete"))
+        .sort((a, b) => (b.date_unix || 0) - (a.date_unix || 0))
+        .slice(0, 5);
+      if (games.length < 3) return null;
+      let f = 0, a = 0;
+      for (const m of games) {
+        const isHome = m.homeID === tid;
+        f += parseInt((isHome ? m.ht_goals_team_a : m.ht_goals_team_b) || 0, 10);
+        a += parseInt((isHome ? m.ht_goals_team_b : m.ht_goals_team_a) || 0, 10);
+      }
+      const n = games.length;
+      return { f: +(f / n).toFixed(2), a: +(a / n).toFixed(2), t: +((f + a) / n).toFixed(2) };
+    };
+
+    let processed = 0, written = 0, skippedThin = 0, errs = 0;
+    const errors = [];
+
+    for (const [compId, rs] of Object.entries(byComp)) {
+      if (Date.now() < RATE_LIMITED_UNTIL) {
+        errors.push({ compId, error: "rate-limited; aborting batch" });
+        break;
+      }
+      let matches;
+      try {
+        const matchRes = await fetchLeagueMatches(compId);
+        matches = matchRes.data || [];
+        // Also pull previous season if mapped — last-5 near season boundary
+        const prevSid = PREV_SEASON[compId];
+        if (prevSid) {
+          try {
+            const prev = await fetchLeagueMatches(prevSid);
+            if (prev && prev.data) matches = matches.concat(prev.data);
+          } catch (_) { /* best-effort */ }
+        }
+      } catch (e) {
+        errors.push({ compId, error: "fetch failed: " + e.message });
+        continue;
+      }
+      for (const r of rs) {
+        processed++;
+        const hL5 = teamL5(matches, r.home_id, r.date_unix);
+        const aL5 = teamL5(matches, r.away_id, r.date_unix);
+        if (!hL5 || !aL5) { skippedThin++; continue; }
+        const newSnap = Object.assign({}, r.snap, { l5: { home: hL5, away: aL5 } });
+        const { error } = await supabase.from("match_results").update({ snap: newSnap }).eq("match_id", r.match_id);
+        if (error) {
+          errs++;
+          if (errors.length < 10) errors.push({ match_id: r.match_id, error: error.message });
+        } else {
+          written++;
+        }
+      }
+    }
+
+    res.json({
+      ok: errs === 0,
+      totalLive: allLive.length,
+      missingL5: missing.length,
+      processed, written, skippedThin, errs,
+      remaining: missing.length - processed,
+      elapsedMs: Date.now() - t0,
+      errors,
+    });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
 app.get("/admin/recalibrate", async (req, res) => {
   const expected = process.env.LOAD_DATASET_TOKEN;
   if (!expected) return res.status(503).json({ ok: false, error: "admin token not configured" });
