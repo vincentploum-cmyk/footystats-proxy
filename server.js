@@ -2179,6 +2179,86 @@ app.get("/signal-fires", async (req, res) => {
   }
 });
 
+// ─── PATTERN CANDIDATE TESTING ─────────────────────────────────────────────
+// Test Tier 1 pattern candidates against live FH>2.5 matches
+app.get("/test-pattern-candidates", async (req, res) => {
+  if (!supabase) return res.status(400).json({ ok: false, error: "Supabase not enabled" });
+  try {
+    const { data: matches, error } = await supabase
+      .from("match_results")
+      .select("match_id, home_name, away_name, ht_home, ht_away, snap")
+      .not("snap", "is", null)
+      .not("snap->>fetchedAt", "eq", "historical-import")
+      .not("snap->>fetchedAt", "eq", "backfill");
+    if (error) throw error;
+
+    const fh25 = (matches || [])
+      .filter(m => m.snap && m.snap.l5 && m.snap.l5.home && m.snap.l5.away && (parseInt(m.ht_home || 0, 10) + parseInt(m.ht_away || 0, 10)) > 2.5);
+
+    const patterns = {
+      "Passive-Passive Exclusion (both < 1.0)": m => {
+        const ht = m.snap.l5.home.t || 0;
+        const at = m.snap.l5.away.t || 0;
+        return !(ht < 1.0 && at < 1.0);
+      },
+      "Combined Conceding >= 1.4": m => {
+        const hc = m.snap.l5.home.a || 0;
+        const ac = m.snap.l5.away.a || 0;
+        return (hc + ac) >= 1.4;
+      },
+      "Combined Conceding >= 1.6": m => {
+        const hc = m.snap.l5.home.a || 0;
+        const ac = m.snap.l5.away.a || 0;
+        return (hc + ac) >= 1.6;
+      },
+      "Combined Conceding >= 1.8": m => {
+        const hc = m.snap.l5.home.a || 0;
+        const ac = m.snap.l5.away.a || 0;
+        return (hc + ac) >= 1.8;
+      },
+      "Explosion (combined >= 4.0)": m => {
+        const ht = m.snap.l5.home.t || 0;
+        const at = m.snap.l5.away.t || 0;
+        return (ht + at) >= 4.0;
+      },
+      "Explosion (strict: home >= 2.0 AND away >= 1.8)": m => {
+        const ht = m.snap.l5.home.t || 0;
+        const at = m.snap.l5.away.t || 0;
+        return ht >= 2.0 && at >= 1.8;
+      },
+      "Dominant-Side Imbalance (max >= 2.0 AND min <= 1.2)": m => {
+        const ht = m.snap.l5.home.t || 0;
+        const at = m.snap.l5.away.t || 0;
+        const max_t = Math.max(ht, at);
+        const min_t = Math.min(ht, at);
+        return max_t >= 2.0 && min_t <= 1.2;
+      },
+    };
+
+    const results = {};
+    for (const [name, test] of Object.entries(patterns)) {
+      const hits = fh25.filter(m => test(m));
+      results[name] = {
+        count: hits.length,
+        total_fh25: fh25.length,
+        hit_rate: fh25.length ? +(hits.length / fh25.length * 100).toFixed(1) : 0,
+        lift: fh25.length ? +(hits.length / fh25.length / 1.0).toFixed(2) : 0,
+        examples: hits.slice(0, 3).map(m => m.home_name + " vs " + m.away_name),
+      };
+    }
+
+    res.json({
+      ok: true,
+      fh25_total: fh25.length,
+      patterns: results,
+      note: "Testing Tier 1 pattern candidates against live FH>2.5 matches. Hit rate = % of FH>2.5 matches this pattern catches. Lift = hit_rate vs baseline.",
+    });
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
 // ─── MAIN ROUTE — serves shell instantly, /preds fetches data async ──────────
 app.get("/", (req, res) => {
   try {
