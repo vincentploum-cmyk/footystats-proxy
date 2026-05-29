@@ -2773,14 +2773,14 @@ body{background:#f3f4f6;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',
   J += "function lgLabel(r){return r>=2?'Fire \ud83d\udd25':r===1?'Signal \ud83d\udce1':'Low';}";
   J += "function fLetter(r){return r==='W'?'<span class=\"fw\">W</span>':r==='L'?'<span class=\"fl\">L</span>':'<span class=\"fd\">D</span>';}";
   J += "function mkChip(lbl,val,thr,state){var cls='chip'+(state?' '+state:'');return '<div class=\"'+cls+'\">'+'<div class=\"chip-lbl\">'+esc(lbl)+'</div><div class=\"chip-val\">'+esc(val)+'</div><div class=\"chip-thr\">'+esc(thr)+'</div></div>';}";
-  // betPill: Fire (🔥) for Signal A, Dart (🎯) for Signal B
-  // Fire (🔥): Signal A fires — Mutual Instability (home L5 ≥ 1.6 AND away L5 ≥ 1.4)
-  // Dart (🎯): Signal B fires — Away Team Scoring (away L5 FH ≥ 0.8)
+  // betPill: Fire (🔥) for Signal A+B, Dart (🎯) for Signal B
+  // 🔥 Fire: only when BOTH A and B fire (A alone is noise)
+  // 🎯 Dart: whenever B fires (alone or with A)
   J += "function betPill(m){if(!m)return '';";
   J += "  var h='';";
   J += "  var sigA=m.signals&&m.signals.A&&m.signals.A.met;";
   J += "  var sigB=m.signals&&m.signals.B&&m.signals.B.met;";
-  J += "  if(sigA)h+='<div style=\"display:inline-block;background:#dc2626;color:#fff;font-size:11px;font-weight:700;padding:3px 9px;border-radius:6px;margin-right:4px\" title=\"Signal A: Mutual Instability\">🔥</div>';";
+  J += "  if(sigA&&sigB)h+='<div style=\"display:inline-block;background:#dc2626;color:#fff;font-size:11px;font-weight:700;padding:3px 9px;border-radius:6px;margin-right:4px\" title=\"Signal A+B: Mutual Instability + Away Scoring\">🔥</div>';";
   J += "  if(sigB)h+='<div style=\"display:inline-block;background:#15803d;color:#fff;font-size:11px;font-weight:700;padding:3px 9px;border-radius:6px;letter-spacing:.5px;margin-right:6px\" title=\"Signal B: Away Team Scoring\">🎯</div>';";
   J += "  return h;}";
 
