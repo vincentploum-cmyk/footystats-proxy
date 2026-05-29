@@ -520,8 +520,8 @@ function unixToLocalDate(unix, tzOffset) {
 // Signal A: Mutual Instability (home L5 total >= 1.6 AND away L5 total >= 1.4) — environment signal
 // Signal B: Away Team Scoring (away L5 FH >= 0.8) — tempo/participation signal
 // Interaction: A+B (19.5%) >> A only (8.6%) > B only (~9.5%) > baseline (9.2%)
-const PROB15_BY_RANK = { 0: 35.8, 1: 35.8, 2: 47.0 };  // TODO: recalibrate FH>1.5 separately
-const PROB25_BY_RANK = { 0: 0.075, 1: 0.095, 2: 0.195 };  // empirical: neither, single signal, A+B interaction
+const PROB15_BY_RANK = { 0: 31.6, 1: 45.0, 2: 50.7 };  // empirical FH>1.5 from calibration
+const PROB25_BY_RANK = { 0: 7.5, 1: 9.5, 2: 19.5 };  // empirical FH>2.5: neither, single signal, A+B interaction
 const RANK_LABELS = { 0: "Low", 1: "Signal", 2: "Fire" };
 
 // Average a team's last-5 first-half form. Goals are team-relative (fhFor =
@@ -2382,7 +2382,8 @@ app.get("/calibration-test", async (req, res) => {
     const buckets = ["0-10", "10-20", "20-30", "30-40", "40-50", "50+"];
     for (const bucket of buckets) byProb[bucket] = { n: 0, hits25: 0, hits15: 0 };
     for (const m of viable) {
-      const p = (m.prob25 || 0) * 100;  // convert to percentage
+      const pRaw = Number(m.prob25 || 0);
+      const p = pRaw > 0 && pRaw < 1 ? pRaw * 100 : pRaw;  // normalize decimal/percentage
       const fh = parseInt(m.ht_home || 0, 10) + parseInt(m.ht_away || 0, 10);
       let bucket;
       if (p < 10) bucket = "0-10";
