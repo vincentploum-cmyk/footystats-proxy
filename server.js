@@ -2928,7 +2928,7 @@ body{background:#f3f4f6;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',
   J += "    h+=betPill({prob25:Number(m.prob25)||0,prob15:Number(m.prob15)||0,eligible25:!!m.eligible25,eligible15:!!m.eligible15,snap:m.snap,signals:m.signals});";
   J += "    h+='<div style=\"flex:1;min-width:0\"><div style=\"font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis\">'+esc(m.home_name||'')+' \u2013 '+esc(m.away_name||'')+'</div>';";
   J += "    h+='<div style=\"color:#6b7280;font-size:11px\">'+esc(m.league_name||'\u2014')+' \u00b7 '+dStr+'</div></div>';";
-  J += "    h+='<div style=\"text-align:right;flex-shrink:0;font-family:ui-monospace,monospace;color:#374151\">'+sigStr+' \u00b7 CI '+(m.ci||0)+' \u00b7 '+(m.prob25||0)+'%</div>';";
+  J += "    h+='<div style=\"text-align:right;flex-shrink:0;font-family:ui-monospace,monospace;color:#374151\">'+sigStr+' \u00b7 CI '+(Number(m.ci)||0).toFixed(1)+' \u00b7 '+(Number(m.prob25)||0).toFixed(1)+'%</div>';";
   J += "    h+='<div style=\"text-align:right;flex-shrink:0\"><div style=\"font-weight:700\">HT '+(m.ht_home||0)+'\u2013'+(m.ht_away||0)+'</div><div style=\"font-size:11px;color:#6b7280\">FT '+(m.ft_home||0)+'\u2013'+(m.ft_away||0)+'</div></div>';";
   J += "    h+='<div class=\"hist-chev\" style=\"margin-left:6px;color:#9ca3af;font-size:13px;flex-shrink:0\">\u25bc</div>';";
   J += "    h+='</div>';";
@@ -3211,7 +3211,7 @@ body{background:#f3f4f6;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',
   J += "  h+='</div>';";
   J += "  h+='<div style=\"display:flex;gap:4px;align-items:center;flex-shrink:0\">';";
   J += "  if(sigs)h+='<span style=\"background:#fef9c3;color:#92400e;padding:1px 6px;border-radius:10px;font-size:9px;font-weight:600\">'+sigs.trim()+'</span>';";
-  J += "  h+='<span style=\"background:#eff6ff;color:#1d4ed8;padding:1px 6px;border-radius:10px;font-size:9px\">CI '+m.ci+'</span>';";
+  J += "  h+='<span style=\"background:#eff6ff;color:#1d4ed8;padding:1px 6px;border-radius:10px;font-size:9px\">CI '+(Number(m.ci)||0).toFixed(1)+'</span>';";
   J += "  h+='<span class=\"rn '+rc+'\" style=\"font-size:12px;padding:2px 6px\">'+m.rank+'/2</span>';";
   J += "  h+='<span style=\"background:#1b5e20;color:#fff;padding:2px 8px;border-radius:12px;font-size:11px;font-weight:700\">'+m[probKey]+'%</span>';";
   J += "  h+='</div></div>';";
