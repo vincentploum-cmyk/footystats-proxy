@@ -2695,13 +2695,15 @@ body{background:#f3f4f6;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',
   J += "function lgLabel(r){return r>=2?'Fire \ud83d\udd25':r===1?'Signal \ud83d\udce1':'Low';}";
   J += "function fLetter(r){return r==='W'?'<span class=\"fw\">W</span>':r==='L'?'<span class=\"fl\">L</span>':'<span class=\"fd\">D</span>';}";
   J += "function mkChip(lbl,val,thr,state){var cls='chip'+(state?' '+state:'');return '<div class=\"'+cls+'\">'+'<div class=\"chip-lbl\">'+esc(lbl)+'</div><div class=\"chip-val\">'+esc(val)+'</div><div class=\"chip-thr\">'+esc(thr)+'</div></div>';}";
-  // betPill: Fire (🔥) and Dart (🎯) badges based on calibrated eligibility flags
-  // Fire (🔥): eligible25 = true (FH>2.5 probability ≥ 40%, primarily B+C or A+B+C combos)
-  // Dart (🎯): eligible15 = true (FH>1.5 probability ≥ 50%, primarily C, A+B, or A+B+C combos)
+  // betPill: Fire (🔥) for Signal A, Dart (🎯) for Signal B
+  // Fire (🔥): Signal A fires — Mutual Instability (home L5 ≥ 1.6 AND away L5 ≥ 1.4)
+  // Dart (🎯): Signal B fires — Away Team Scoring (away L5 FH ≥ 0.8)
   J += "function betPill(m){if(!m)return '';";
   J += "  var h='';";
-  J += "  if(m.eligible25)h+='<div style=\"display:inline-block;background:#dc2626;color:#fff;font-size:11px;font-weight:700;padding:3px 9px;border-radius:6px;margin-right:4px\" title=\"FH>2.5 candidate (prob ≥ 40%)\">🔥</div>';";
-  J += "  if(m.eligible15)h+='<div style=\"display:inline-block;background:#15803d;color:#fff;font-size:11px;font-weight:700;padding:3px 9px;border-radius:6px;letter-spacing:.5px;margin-right:6px\" title=\"FH>1.5 candidate (prob ≥ 50%)\">🎯</div>';";
+  J += "  var sigA=m.signals&&m.signals.A&&m.signals.A.met;";
+  J += "  var sigB=m.signals&&m.signals.B&&m.signals.B.met;";
+  J += "  if(sigA)h+='<div style=\"display:inline-block;background:#dc2626;color:#fff;font-size:11px;font-weight:700;padding:3px 9px;border-radius:6px;margin-right:4px\" title=\"Signal A: Mutual Instability\">🔥</div>';";
+  J += "  if(sigB)h+='<div style=\"display:inline-block;background:#15803d;color:#fff;font-size:11px;font-weight:700;padding:3px 9px;border-radius:6px;letter-spacing:.5px;margin-right:6px\" title=\"Signal B: Away Team Scoring\">🎯</div>';";
   J += "  return h;}";
 
   J += "function renderTabs(){";
@@ -2844,7 +2846,7 @@ body{background:#f3f4f6;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',
   J += "    var sigStr=['A','E'].map(function(k){return sigs[k]&&sigs[k].met?k:'\u00b7';}).join('');";
   J += "    h+='<div class=\"hist-row\" data-mid=\"'+m.match_id+'\" style=\"cursor:pointer;background:#fff;border:1px solid #e5e7eb;border-radius:8px;padding:10px 12px;display:flex;gap:10px;align-items:center;font-size:12px;margin-bottom:6px\">';";
   J += "    h+='<div style=\"width:22px;height:22px;border-radius:50%;background:'+rankColor+';color:#fff;display:flex;align-items:center;justify-content:center;font-weight:700;font-size:12px;flex-shrink:0\">'+m.rank+'</div>';";
-  J += "    h+=betPill({prob25:Number(m.prob25)||0,prob15:Number(m.prob15)||0,eligible25:!!m.eligible25,eligible15:!!m.eligible15,snap:m.snap});";
+  J += "    h+=betPill({prob25:Number(m.prob25)||0,prob15:Number(m.prob15)||0,eligible25:!!m.eligible25,eligible15:!!m.eligible15,snap:m.snap,signals:m.signals});";
   J += "    h+='<div style=\"flex:1;min-width:0\"><div style=\"font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis\">'+esc(m.home_name||'')+' \u2013 '+esc(m.away_name||'')+'</div>';";
   J += "    h+='<div style=\"color:#6b7280;font-size:11px\">'+esc(m.league_name||'\u2014')+' \u00b7 '+dStr+'</div></div>';";
   J += "    h+='<div style=\"text-align:right;flex-shrink:0;font-family:ui-monospace,monospace;color:#374151\">'+sigStr+' \u00b7 CI '+(m.ci||0)+' \u00b7 '+(m.prob25||0)+'%</div>';";
