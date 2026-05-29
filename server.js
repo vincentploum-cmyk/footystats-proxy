@@ -2921,7 +2921,7 @@ body{background:#f3f4f6;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',
   J += "    var dStr=m.date_unix?new Date(m.date_unix*1000).toISOString().slice(0,10):'';";
   J += "    var rankColor=['#6b7280','#0891b2','#dc2626','#dc2626'][m.rank]||'#6b7280';";
   J += "    var sigs=m.signals||{};";
-  J += "    var sigStr=['A','E'].map(function(k){return sigs[k]&&sigs[k].met?k:'\u00b7';}).join('');";
+  J += "    var sigStr=['A','B'].map(function(k){return sigs[k]&&sigs[k].met?k:'\u00b7';}).join('');";
   J += "    h+='<div class=\"hist-row\" data-mid=\"'+m.match_id+'\" style=\"cursor:pointer;background:#fff;border:1px solid #e5e7eb;border-radius:8px;padding:10px 12px;display:flex;gap:10px;align-items:center;font-size:12px;margin-bottom:6px\">';";
   J += "    h+='<div style=\"width:22px;height:22px;border-radius:50%;background:'+rankColor+';color:#fff;display:flex;align-items:center;justify-content:center;font-weight:700;font-size:12px;flex-shrink:0\">'+m.rank+'</div>';";
   J += "    h+=betPill({prob25:Number(m.prob25)||0,prob15:Number(m.prob15)||0,eligible25:!!m.eligible25,eligible15:!!m.eligible15,snap:m.snap,signals:m.signals});";
@@ -3126,20 +3126,25 @@ body{background:#f3f4f6;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',
   J += "    var chips='';";
   J += "    if(sn){";
   J += "      var sfx=role==='Home'?'(home)':'(away)';";
+  J += "      var l5=m.snap&&m.snap.l5?(role==='Home'?m.snap.l5.home:m.snap.l5.away):null;";
+  J += "      if(l5){";
+  J += "        var tThr=role==='Home'?1.6:1.4;";
+  J += "        var tState=l5.t>=tThr?'g-bright':l5.t>=tThr*0.85?'g-light':'';";
+  J += "        chips+=mkChip('L5 FH total '+sfx,l5.t.toFixed(2),(role==='Home'?'\u2265 1.6':'\u2265 1.4')+' \u2192 sig A',tState);";
+  J += "        var fState=l5.f>=0.8?'g-bright':l5.f>=0.5?'g-light':'';";
+  J += "        if(role==='Away'){chips+=mkChip('L5 FH scored (away)',l5.f.toFixed(2),'\u2265 0.8 \u2192 sig B',fState);}";
+  J += "        else{chips+=mkChip('L5 FH scored (home)',l5.f.toFixed(2),'info only',fState);}";
+  J += "        chips+=mkChip('L5 FH conceded '+sfx,l5.a.toFixed(2),'info only','');";
+  J += "      }";
   J += "      var scState=sn.scored_fh>=1.5?'g-bright':sn.scored_fh>=1.0?'g-light':'';" ;
-  J += "      chips+=mkChip('FH Scored '+sfx,sn.scored_fh.toFixed(2),'away \u2265 1.25 \u2192 sig D',scState);";
+  J += "      chips+=mkChip('Season FH scored '+sfx,sn.scored_fh.toFixed(2),'season avg','');";
   J += "      var coState=sn.conced_fh>=1.1?'r-bright':sn.conced_fh>=0.7?'r-light':'';" ;
-  J += "      chips+=mkChip('FH Conceded '+sfx,sn.conced_fh.toFixed(2),'\u2265 2.25 combined \u2192 sig C',coState);";
-  J += "      var t1State=sn.t1_pct>=25?'g-bright':sn.t1_pct>=15?'g-light':'';" ;
-  J += "      chips+=mkChip('FH>2.5 hist '+sfx,sn.t1_pct.toFixed(0)+'%','\u2265 25% \u2192 sig B',t1State);";
-  J += "      var cnState=sn.cn010_avg>=0.25?'r-light':'';" ;
-  J += "      chips+=mkChip('Early conceded',sn.cn010_avg.toFixed(2),'info only',cnState);";
-  J += "      if(sn.sot_avg>0){var sotState=sn.sot_avg>=4?'g-bright':sn.sot_avg>=2.5?'g-light':'';chips+=mkChip('Shots on target '+sfx,(sn.sot_avg).toFixed(1)+'/g','per game',sotState);}";
+  J += "      chips+=mkChip('Season FH conceded '+sfx,sn.conced_fh.toFixed(2),'season avg','');";
   J += "    }";
   J += "    return '<div class=\"team-box\"><div class=\"team-role\">'+esc(role)+'</div><div class=\"team-name\">'+esc(name)+'</div>'+fs+fhBar+'<div class=\"stat-grid\">'+chips+'</div></div>';";
   J += "  }";
   J += "  var sigsH='<div class=\"signals\">';";
-  J += "  ['A','E'].forEach(function(k){";
+  J += "  ['A','B'].forEach(function(k){";
   J += "    var s=m.signals[k];if(!s)return;";
   J += "    sigsH+='<div class=\"sig '+(s.met?'sig-y':'sig-n')+'\">'";
   J += "      +'<div class=\"sig-dot\"></div>'+esc(k)+' \u00b7 '+esc(s.label)";
@@ -3148,9 +3153,9 @@ body{background:#f3f4f6;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',
   J += "  });";
   J += "  sigsH+='</div>';";
   J += "  var ciVal=m.ci||0;";
-  J += "  var ciCls=ciVal>=4.0?'ci-bar ci-bright':ciVal>=3.0?'ci-bar ci-light':'ci-bar ci-cold';";
-  J += "  var ciValCol=ciVal>=4.0?'#69f0ae':ciVal>=3.0?'#2e7d32':'#111827';";
-  J += "  var ciCheck=ciVal>=4.0?'\u2713':ciVal>=3.0?'\u25d1':'\u2717';";
+  J += "  var ciCls=ciVal>=3.0?'ci-bar ci-bright':ciVal>=2.0?'ci-bar ci-light':'ci-bar ci-cold';";
+  J += "  var ciValCol=ciVal>=3.0?'#69f0ae':ciVal>=2.0?'#2e7d32':'#111827';";
+  J += "  var ciCheck=ciVal>=3.0?'\u2713':ciVal>=2.0?'\u25d1':'\u2717';";
   J += "  var ciH='<div class=\"'+ciCls+'\">'";
   J += "    +'<span>Recent FH intensity \u00b7 both teams\u2019 last 5</span>'";
   J += "    +'<span style=\"font-size:18px;font-weight:700;color:'+ciValCol+'\">'+ciVal.toFixed(2)+' '+ciCheck+'</span>'";
@@ -3341,9 +3346,8 @@ body{background:#f3f4f6;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',
 <div class="body">
   ${rateLimited ? '<div style="background:#fef2f2;border:1px solid #fca5a5;border-radius:8px;padding:10px 14px;margin-bottom:14px;font-size:12px;color:#b91c1c;line-height:1.6"><strong>&#9888; API rate limit reached</strong> \u2014 showing cached data. Resets at ' + new Date(RATE_LIMITED_UNTIL).toLocaleTimeString('en-GB') + '. <a href="/cache-status" style="color:#b91c1c">View cache status</a></div>' : ''}
   <div style="background:#fffbeb;border:1px solid #fde68a;border-radius:8px;padding:10px 14px;margin-bottom:14px;font-size:12px;color:#92400e;line-height:1.6">
-    <strong>How it works:</strong> 2 pre-game signals (A &amp; E) &mdash; no look-ahead bias. Signal A: recent last-5 FH intensity. Signal E: home team historical FH profile + current season scoring. Each worth 1 point; rank = signals fired (max 2).
-    A: both teams' L5 FH total &ge; 4.0 &middot; B: home L5 scored &gt;1.0 &amp; away L5 conceded &gt;1.0 &middot; C: both L5 FH scored &gt;0.8 &middot; D: both L5 FH total &gt;1.5.
-    Calibrated on 24,677 look-ahead-free pre-game matches &middot; base rate 11.2% FH&gt;2.5 &middot; rank 0&ndash;4: 10.7 / 13.9 / 16.8 / 17.5 / 30.2% &mdash; see scripts/recalibrate_pregame.py.
+    <strong>How it works:</strong> 2 pre-game signals (A &amp; B) &mdash; no look-ahead bias. Signal A &#128293;: Mutual Instability (home L5 FH total &ge; 1.6 AND away L5 FH total &ge; 1.4). Signal B &#127919;: Away Team Scoring (away L5 FH scored &ge; 0.8). Rank = signals fired (max 2). &#128293; shown only when both A+B fire; &#127919; shown when B fires.
+    Empirically calibrated on 860 live-captured matches: rank 0 = 7.5% FH&gt;2.5 &middot; rank 1 (single signal) = 9.5% &middot; rank 2 (A+B) = 19.5% (~2.1x baseline). FH&gt;1.5: 31.6% / 45% / 50.7%.
   </div>
   <div id="mainView"></div>
 </div>
