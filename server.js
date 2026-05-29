@@ -869,6 +869,83 @@ app.get("/admin/load-dataset", async (req, res) => {
   });
 });
 
+// Recompute stored rank/signals/prob25/prob15 on existing rows using current
+// computeSignals logic. Run after threshold/model changes to align historical
+// rows with the live model. snap.l5 must already be present.
+app.get("/admin/recompute-signals", async (req, res) => {
+  const expected = process.env.LOAD_DATASET_TOKEN;
+  if (!expected) return res.status(503).json({ ok: false, error: "admin token not configured" });
+  if (req.query.token !== expected) return res.status(403).json({ ok: false, error: "invalid token" });
+  if (!supabase) return res.status(400).json({ ok: false, error: "Supabase not enabled" });
+
+  const t0 = Date.now();
+  try {
+    const all = [];
+    const PAGE = 1000;
+    for (let off = 0; ; off += PAGE) {
+      const { data, error } = await supabase
+        .from("match_results")
+        .select("match_id, snap")
+        .not("snap", "is", null)
+        .not("snap->>fetchedAt", "eq", "historical-import")
+        .not("snap->>fetchedAt", "eq", "backfill")
+        .range(off, off + PAGE - 1);
+      if (error) throw error;
+      if (!data || data.length === 0) break;
+      all.push(...data);
+      if (data.length < PAGE) break;
+    }
+
+    const updates = [];
+    let skippedNoL5 = 0;
+    for (const m of all) {
+      if (!m.snap || !m.snap.l5 || !m.snap.l5.home || !m.snap.l5.away) {
+        skippedNoL5++;
+        continue;
+      }
+      const result = computeSignals(m.snap, [], []);
+      updates.push({
+        match_id: m.match_id,
+        rank: result.rank,
+        ci: result.ci,
+        def_ci: result.defCi,
+        prob25: result.prob25,
+        prob15: result.prob15,
+        signals: result.signals,
+      });
+    }
+
+    let written = 0, errs = 0;
+    const errors = [];
+    const BATCH = 200;
+    for (let i = 0; i < updates.length; i += BATCH) {
+      const batch = updates.slice(i, i + BATCH);
+      for (const u of batch) {
+        const { match_id, ...patch } = u;
+        const { error } = await supabase.from("match_results").update(patch).eq("match_id", match_id);
+        if (error) {
+          errs++;
+          if (errors.length < 10) errors.push({ match_id, error: error.message });
+        } else {
+          written++;
+        }
+      }
+    }
+
+    res.json({
+      ok: errs === 0,
+      totalLive: all.length,
+      skippedNoL5,
+      processed: updates.length,
+      written, errs,
+      elapsedMs: Date.now() - t0,
+      errors,
+    });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
 app.get("/admin/backfill", async (req, res) => {
   const expected = process.env.LOAD_DATASET_TOKEN;
   if (!expected) return res.status(503).json({ ok: false, error: "admin token not configured" });
