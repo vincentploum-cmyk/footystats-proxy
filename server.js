@@ -538,13 +538,16 @@ function last5Form(arr) {
 // Hard filter: Reject if both teams passive (both L5 total < 1.0) — 92% of FH>2.5 pass.
 //   Signal A: Mutual Instability (home L5 total >= 1.8 AND away L5 total >= 1.6) — FH>2.5 at 35.5%
 //   Signal B: Away Team Scoring (away L5 FH >= 0.8) — FH>1.5 at 41.5%
+//   Conceding Escalator: Combined L5 conceding >= 1.6 boosts prob25 confidence (amplifier, not trigger)
 function computeSignals(snap, hLast5, aLast5) {
   const f2 = (v) => v.toFixed(2);
 
   // Extract L5 metrics from snap
   const homeL5Total = snap && snap.l5 && snap.l5.home ? (snap.l5.home.t || 0) : 0;
+  const homeL5Conceded = snap && snap.l5 && snap.l5.home ? (snap.l5.home.a || 0) : 0;
   const awayL5Scored = snap && snap.l5 && snap.l5.away ? (snap.l5.away.f || 0) : 0;
   const awayL5Total = snap && snap.l5 && snap.l5.away ? (snap.l5.away.t || 0) : 0;
+  const awayL5Conceded = snap && snap.l5 && snap.l5.away ? (snap.l5.away.a || 0) : 0;
 
   // Check if we have L5 data
   const hasL5 = !!(snap && snap.l5 && snap.l5.home && snap.l5.away);
@@ -565,8 +568,17 @@ function computeSignals(snap, hLast5, aLast5) {
   const rank = Math.min(signalCount, 2);
 
   // Get probabilities from rank tables (use baseline if match fails viability filter)
-  const prob15 = viable ? (PROB15_BY_RANK[rank] || 35.8) : 35.8;
-  const prob25 = viable ? (PROB25_BY_RANK[rank] || 11.4) : 11.4;
+  let prob15 = viable ? (PROB15_BY_RANK[rank] || 35.8) : 35.8;
+  let prob25 = viable ? (PROB25_BY_RANK[rank] || 11.4) : 11.4;
+
+  // Confidence escalator: combined conceding boosts prob25 (amplifier, not eligibility trigger)
+  const combinedConceding = homeL5Conceded + awayL5Conceded;
+  let concedingEscalator = false;
+  if (viable && combinedConceding >= 1.6) {
+    const boost = combinedConceding >= 1.8 ? 0.08 : 0.05;
+    prob25 = Math.min(prob25 + boost, 0.60);  // cap at 60% to prevent weak matches becoming false positives
+    concedingEscalator = true;
+  }
 
   return {
     rank,
@@ -576,6 +588,7 @@ function computeSignals(snap, hLast5, aLast5) {
     ci: homeL5Total + awayL5Total,  // combined intensity
     defCi: awayL5Total,              // away activity
     eligible: rank >= 2,
+    concedingEscalator,  // separate confidence flag
     signals: {
       A: { met: sigA, label: "Mutual Instability", value: f2(homeL5Total) + " / " + f2(awayL5Total), threshold: "home L5 total >= 1.8 & away L5 total >= 1.6" },
       B: { met: sigB, label: "Away Team Scoring", value: f2(awayL5Scored), threshold: "away L5 FH >= 0.8" },
