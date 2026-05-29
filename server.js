@@ -2292,91 +2292,113 @@ app.get("/calibration-test", async (req, res) => {
       .not("snap->>fetchedAt", "eq", "backfill");
     if (error) throw error;
 
-    // Split by outcome threshold
-    const fh25 = (allMatches || [])
-      .filter(m => m.snap && m.snap.l5 && (parseInt(m.ht_home || 0, 10) + parseInt(m.ht_away || 0, 10)) > 2.5);
-    const fh15 = (allMatches || [])
-      .filter(m => m.snap && m.snap.l5 && (parseInt(m.ht_home || 0, 10) + parseInt(m.ht_away || 0, 10)) > 1.5);
+    // Filter to viable matches (snap + L5 data), but keep ALL outcomes
+    const viable = (allMatches || []).filter(m => m.snap && m.snap.l5);
 
-    // 1. Hit rate by rank (validates structure)
-    const byRank = { 0: { n: 0, hits: 0 }, 1: { n: 0, hits: 0 }, 2: { n: 0, hits: 0 } };
-    for (const m of fh25) {
+    // Mark outcomes
+    const fh25Total = viable.filter(m => (parseInt(m.ht_home || 0, 10) + parseInt(m.ht_away || 0, 10)) > 2.5).length;
+    const fh15Total = viable.filter(m => (parseInt(m.ht_home || 0, 10) + parseInt(m.ht_away || 0, 10)) > 1.5).length;
+
+    // 1. Hit rate by rank (CORRECT: evaluate ALL matches grouped by rank)
+    const byRank = { 0: { n: 0, hits25: 0, hits15: 0 }, 1: { n: 0, hits25: 0, hits15: 0 }, 2: { n: 0, hits25: 0, hits15: 0 } };
+    for (const m of viable) {
       const r = m.rank || 0;
+      const fh = parseInt(m.ht_home || 0, 10) + parseInt(m.ht_away || 0, 10);
       if (byRank[r]) {
         byRank[r].n++;
-        if ((parseInt(m.ht_home || 0, 10) + parseInt(m.ht_away || 0, 10)) > 2.5) byRank[r].hits++;
+        if (fh > 2.5) byRank[r].hits25++;
+        if (fh > 1.5) byRank[r].hits15++;
       }
     }
     for (const r of Object.keys(byRank)) {
       const b = byRank[r];
-      b.hit_rate = b.n ? +(b.hits / b.n * 100).toFixed(1) : 0;
+      b.hit_rate_fh25 = b.n ? +(b.hits25 / b.n * 100).toFixed(1) : 0;
+      b.hit_rate_fh15 = b.n ? +(b.hits15 / b.n * 100).toFixed(1) : 0;
     }
 
-    // 2. Hit rate by prob25 bucket (validates calibration)
+    // 2. Hit rate by prob25 bucket (CORRECT: ALL matches, not just FH>2.5)
     const byProb = {};
     const buckets = ["0-10", "10-20", "20-30", "30-40", "40-50", "50+"];
-    for (const bucket of buckets) byProb[bucket] = { n: 0, hits: 0 };
-    for (const m of fh25) {
-      const p = m.prob25 || 0;
+    for (const bucket of buckets) byProb[bucket] = { n: 0, hits25: 0, hits15: 0 };
+    for (const m of viable) {
+      const p = (m.prob25 || 0) * 100;  // convert to percentage
+      const fh = parseInt(m.ht_home || 0, 10) + parseInt(m.ht_away || 0, 10);
       let bucket;
-      if (p < 0.1) bucket = "0-10";
-      else if (p < 0.2) bucket = "10-20";
-      else if (p < 0.3) bucket = "20-30";
-      else if (p < 0.4) bucket = "30-40";
-      else if (p < 0.5) bucket = "40-50";
+      if (p < 10) bucket = "0-10";
+      else if (p < 20) bucket = "10-20";
+      else if (p < 30) bucket = "20-30";
+      else if (p < 40) bucket = "30-40";
+      else if (p < 50) bucket = "40-50";
       else bucket = "50+";
       byProb[bucket].n++;
-      byProb[bucket].hits++;
+      if (fh > 2.5) byProb[bucket].hits25++;
+      if (fh > 1.5) byProb[bucket].hits15++;
     }
     for (const bucket of Object.keys(byProb)) {
       const b = byProb[bucket];
-      b.hit_rate = b.n ? +(b.hits / b.n * 100).toFixed(1) : 0;
-      b.expected_pct = bucket.split("-")[0];  // e.g. "20-30" → expect 25%
+      b.hit_rate_fh25 = b.n ? +(b.hits25 / b.n * 100).toFixed(1) : 0;
+      b.hit_rate_fh15 = b.n ? +(b.hits15 / b.n * 100).toFixed(1) : 0;
     }
 
-    // 3. Conceding escalator quality (false positives check)
-    // Compare hit rate of matches with escalator vs without
-    const withEscalator = fh25.filter(m => {
+    // 3. Conceding escalator quality (CORRECT: ALL matches)
+    const withEscalator = viable.filter(m => {
       const hc = (m.snap.l5?.home?.a || 0);
       const ac = (m.snap.l5?.away?.a || 0);
       return (hc + ac) >= 1.6;
     });
-    const withoutEscalator = fh25.filter(m => {
+    const withoutEscalator = viable.filter(m => {
       const hc = (m.snap.l5?.home?.a || 0);
       const ac = (m.snap.l5?.away?.a || 0);
       return (hc + ac) < 1.6;
     });
     const escalatorMetrics = {
-      with: { n: withEscalator.length, hit_rate: 100 },
-      without: { n: withoutEscalator.length, hit_rate: 100 },
+      with: {
+        n: withEscalator.length,
+        hits25: withEscalator.filter(m => (parseInt(m.ht_home || 0, 10) + parseInt(m.ht_away || 0, 10)) > 2.5).length,
+        hit_rate_fh25: 0,
+      },
+      without: {
+        n: withoutEscalator.length,
+        hits25: withoutEscalator.filter(m => (parseInt(m.ht_home || 0, 10) + parseInt(m.ht_away || 0, 10)) > 2.5).length,
+        hit_rate_fh25: 0,
+      },
     };
+    escalatorMetrics.with.hit_rate_fh25 = escalatorMetrics.with.n ? +(escalatorMetrics.with.hits25 / escalatorMetrics.with.n * 100).toFixed(1) : 0;
+    escalatorMetrics.without.hit_rate_fh25 = escalatorMetrics.without.n ? +(escalatorMetrics.without.hits25 / escalatorMetrics.without.n * 100).toFixed(1) : 0;
 
-    // 4. Passive-passive filter precision
-    const bothPassive = (allMatches || []).filter(m => {
+    // 4. Passive-passive filter precision (on viable matches)
+    const bothPassive = viable.filter(m => {
       const ht = (m.snap?.l5?.home?.t || 0);
       const at = (m.snap?.l5?.away?.t || 0);
       return ht < 1.0 && at < 1.0;
     });
-    const filtered = (allMatches || []).length - bothPassive.length;
+    const viableAndNotPassive = viable.filter(m => {
+      const ht = (m.snap?.l5?.home?.t || 0);
+      const at = (m.snap?.l5?.away?.t || 0);
+      return !(ht < 1.0 && at < 1.0);
+    });
+    const bothPassiveFh25 = bothPassive.filter(m => (parseInt(m.ht_home || 0, 10) + parseInt(m.ht_away || 0, 10)) > 2.5).length;
     const filterMetrics = {
-      total_matches: (allMatches || []).length,
+      total_viable: viable.length,
       both_passive_count: bothPassive.length,
-      both_passive_pct: (allMatches || []).length ? +(bothPassive.length / (allMatches || []).length * 100).toFixed(1) : 0,
-      passed_filter: filtered,
-      fh25_in_filtered: fh25.length,
-      fh25_coverage: filtered ? +(fh25.length / filtered * 100).toFixed(1) : 0,
+      both_passive_pct: viable.length ? +(bothPassive.length / viable.length * 100).toFixed(1) : 0,
+      both_passive_fh25_hits: bothPassiveFh25,
+      passed_filter_count: viableAndNotPassive.length,
+      fh25_in_passed: viableAndNotPassive.filter(m => (parseInt(m.ht_home || 0, 10) + parseInt(m.ht_away || 0, 10)) > 2.5).length,
     };
 
     // 5. Distribution stability (sample sizes, time range)
     const now = Date.now();
-    const oldestMatch = fh25.reduce((min, m) => Math.min(min, m.date_unix || now / 1000), now / 1000);
+    const oldestMatch = viable.reduce((min, m) => Math.min(min, m.date_unix || now / 1000), now / 1000);
     const daysOfData = (now / 1000 - oldestMatch) / (24 * 3600);
 
     res.json({
       ok: true,
       summary: {
-        fh25_total: fh25.length,
-        fh15_total: fh15.length,
+        total_matches: (allMatches || []).length,
+        viable_matches: viable.length,
+        fh25_total: fh25Total,
+        fh15_total: fh15Total,
         days_of_data: +(daysOfData || 0).toFixed(1),
       },
       by_rank: byRank,
