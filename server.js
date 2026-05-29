@@ -534,6 +534,8 @@ function last5Form(arr) {
 }
 
 // Multi-signal engine — validated on live-captured matches.
+// Philosophy: FH>2.5 is a baseline-interaction-survival problem, not extreme-event detection.
+// Hard filter: Reject if both teams passive (both L5 total < 1.0) — 92% of FH>2.5 pass.
 //   Signal A: Mutual Instability (home L5 total >= 1.8 AND away L5 total >= 1.6) — FH>2.5 at 35.5%
 //   Signal B: Away Team Scoring (away L5 FH >= 0.8) — FH>1.5 at 41.5%
 function computeSignals(snap, hLast5, aLast5) {
@@ -547,19 +549,24 @@ function computeSignals(snap, hLast5, aLast5) {
   // Check if we have L5 data
   const hasL5 = !!(snap && snap.l5 && snap.l5.home && snap.l5.away);
 
+  // Hard filter: both teams must have baseline activity
+  // Reject if both L5 totals < 1.0 (both passive) — eliminates toxic baseline-failure cases
+  const bothPassive = homeL5Total < 1.0 && awayL5Total < 1.0;
+  const viable = hasL5 && !bothPassive;
+
   // Signal A: Mutual Instability (both teams in upper-half of range)
-  const sigA = hasL5 && homeL5Total >= 1.8 && awayL5Total >= 1.6;
+  const sigA = viable && homeL5Total >= 1.8 && awayL5Total >= 1.6;
 
   // Signal B: Away Team Scoring (away team moderately active)
-  const sigB = hasL5 && awayL5Scored >= 0.8;
+  const sigB = viable && awayL5Scored >= 0.8;
 
   // Compute rank (0-2) based on how many signals fire
   const signalCount = (sigA ? 1 : 0) + (sigB ? 1 : 0);
   const rank = Math.min(signalCount, 2);
 
-  // Get probabilities from rank tables
-  const prob15 = PROB15_BY_RANK[rank] || 35.8;
-  const prob25 = PROB25_BY_RANK[rank] || 11.4;
+  // Get probabilities from rank tables (use baseline if match fails viability filter)
+  const prob15 = viable ? (PROB15_BY_RANK[rank] || 35.8) : 35.8;
+  const prob25 = viable ? (PROB25_BY_RANK[rank] || 11.4) : 11.4;
 
   return {
     rank,
