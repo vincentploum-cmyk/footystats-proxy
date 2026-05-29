@@ -533,52 +533,35 @@ function last5Form(arr) {
   return { f: f / n, a: a / n, t: (f + a) / n };
 }
 
-// Multi-signal engine — validated on live-captured matches.
-// Philosophy: FH>2.5 is a baseline-interaction-survival problem, not extreme-event detection.
-// Hard filter: Reject if both teams passive (both L5 total < 1.0) — 92% of FH>2.5 pass.
-//   Signal A: Mutual Instability (home L5 total >= 1.8 AND away L5 total >= 1.6) — FH>2.5 at 35.5%
-//   Signal B: Away Team Scoring (away L5 FH >= 0.8) — FH>1.5 at 41.5%
-//   Conceding Escalator: Combined L5 conceding >= 1.6 boosts prob25 confidence (amplifier, not trigger)
+// Multi-signal engine — core signals only.
+// Under investigation: whether Signal B adds predictive lift or overconstrains.
+//   Signal A: Mutual Instability (home L5 total >= 1.8 AND away L5 total >= 1.6)
+//   Signal B: Away Team Scoring (away L5 FH >= 0.8)
+// Removed: hard filter (rejected high-quality matches), conceding escalator (hurt precision)
 function computeSignals(snap, hLast5, aLast5) {
   const f2 = (v) => v.toFixed(2);
 
   // Extract L5 metrics from snap
   const homeL5Total = snap && snap.l5 && snap.l5.home ? (snap.l5.home.t || 0) : 0;
-  const homeL5Conceded = snap && snap.l5 && snap.l5.home ? (snap.l5.home.a || 0) : 0;
   const awayL5Scored = snap && snap.l5 && snap.l5.away ? (snap.l5.away.f || 0) : 0;
   const awayL5Total = snap && snap.l5 && snap.l5.away ? (snap.l5.away.t || 0) : 0;
-  const awayL5Conceded = snap && snap.l5 && snap.l5.away ? (snap.l5.away.a || 0) : 0;
 
   // Check if we have L5 data
   const hasL5 = !!(snap && snap.l5 && snap.l5.home && snap.l5.away);
 
-  // Hard filter: both teams must have baseline activity
-  // Reject if both L5 totals < 1.0 (both passive) — eliminates toxic baseline-failure cases
-  const bothPassive = homeL5Total < 1.0 && awayL5Total < 1.0;
-  const viable = hasL5 && !bothPassive;
-
   // Signal A: Mutual Instability (both teams in upper-half of range)
-  const sigA = viable && homeL5Total >= 1.8 && awayL5Total >= 1.6;
+  const sigA = hasL5 && homeL5Total >= 1.8 && awayL5Total >= 1.6;
 
   // Signal B: Away Team Scoring (away team moderately active)
-  const sigB = viable && awayL5Scored >= 0.8;
+  const sigB = hasL5 && awayL5Scored >= 0.8;
 
   // Compute rank (0-2) based on how many signals fire
   const signalCount = (sigA ? 1 : 0) + (sigB ? 1 : 0);
   const rank = Math.min(signalCount, 2);
 
-  // Get probabilities from rank tables (use baseline if match fails viability filter)
-  let prob15 = viable ? (PROB15_BY_RANK[rank] || 35.8) : 35.8;
-  let prob25 = viable ? (PROB25_BY_RANK[rank] || 11.4) : 11.4;
-
-  // Confidence escalator: combined conceding boosts prob25 (amplifier, not eligibility trigger)
-  const combinedConceding = homeL5Conceded + awayL5Conceded;
-  let concedingEscalator = false;
-  if (viable && combinedConceding >= 1.6) {
-    const boost = combinedConceding >= 1.8 ? 0.08 : 0.05;
-    prob25 = Math.min(prob25 + boost, 0.60);  // cap at 60% to prevent weak matches becoming false positives
-    concedingEscalator = true;
-  }
+  // Get probabilities from rank tables
+  const prob15 = PROB15_BY_RANK[rank] || 35.8;
+  const prob25 = PROB25_BY_RANK[rank] || 11.4;
 
   return {
     rank,
@@ -588,7 +571,6 @@ function computeSignals(snap, hLast5, aLast5) {
     ci: homeL5Total + awayL5Total,  // combined intensity
     defCi: awayL5Total,              // away activity
     eligible: rank >= 2,
-    concedingEscalator,  // separate confidence flag
     signals: {
       A: { met: sigA, label: "Mutual Instability", value: f2(homeL5Total) + " / " + f2(awayL5Total), threshold: "home L5 total >= 1.8 & away L5 total >= 1.6" },
       B: { met: sigB, label: "Away Team Scoring", value: f2(awayL5Scored), threshold: "away L5 FH >= 0.8" },
@@ -2406,6 +2388,94 @@ app.get("/calibration-test", async (req, res) => {
       conceding_escalator: escalatorMetrics,
       passive_passive_filter: filterMetrics,
       note: "Calibration validation metrics. Hit rate by rank tests structure. Hit rate by prob25 tests calibration accuracy. Escalator metrics check for false positives. Filter metrics validate hard filter. Distribution drift checks robustness over time.",
+    });
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
+// ─── SIGNAL CONTRIBUTION TEST ──────────────────────────────────────────────
+// Measures independent contribution of Signal A and Signal B
+app.get("/signal-contribution-test", async (req, res) => {
+  if (!supabase) return res.status(400).json({ ok: false, error: "Supabase not enabled" });
+  try {
+    const { data: allMatches, error } = await supabase
+      .from("match_results")
+      .select("match_id, home_name, away_name, ht_home, ht_away, snap")
+      .not("snap", "is", null)
+      .not("snap->>fetchedAt", "eq", "historical-import")
+      .not("snap->>fetchedAt", "eq", "backfill");
+    if (error) throw error;
+
+    // Filter to viable (snap + L5 data)
+    const viable = (allMatches || []).filter(m => m.snap && m.snap.l5);
+
+    // Compute signals for each match
+    const withSignals = viable.map(m => {
+      const ht = m.snap.l5.home?.t || 0;
+      const at = m.snap.l5.away?.t || 0;
+      const af = m.snap.l5.away?.f || 0;
+      const fh = parseInt(m.ht_home || 0, 10) + parseInt(m.ht_away || 0, 10);
+
+      const sigA = ht >= 1.8 && at >= 1.6;  // Mutual Instability
+      const sigB = af >= 0.8;                // Away Scoring
+
+      return {
+        match_id: m.match_id,
+        fh_total: fh,
+        is_fh25: fh > 2.5,
+        sigA, sigB,
+      };
+    });
+
+    // Group by signal state
+    const groups = {
+      "A only": { n: 0, hits: 0 },
+      "B only": { n: 0, hits: 0 },
+      "A + B": { n: 0, hits: 0 },
+      "Neither": { n: 0, hits: 0 },
+    };
+
+    for (const m of withSignals) {
+      let group;
+      if (m.sigA && m.sigB) group = "A + B";
+      else if (m.sigA) group = "A only";
+      else if (m.sigB) group = "B only";
+      else group = "Neither";
+
+      groups[group].n++;
+      if (m.is_fh25) groups[group].hits++;
+    }
+
+    // Calculate metrics
+    const results = {};
+    for (const [name, data] of Object.entries(groups)) {
+      results[name] = {
+        matches: data.n,
+        fh25_hits: data.hits,
+        hit_rate_pct: data.n ? +(data.hits / data.n * 100).toFixed(1) : 0,
+      };
+    }
+
+    // Calculate baseline for reference
+    const baselineFh25 = withSignals.filter(m => m.is_fh25).length;
+    const baselineRate = withSignals.length ? +(baselineFh25 / withSignals.length * 100).toFixed(1) : 0;
+
+    res.json({
+      ok: true,
+      baseline: {
+        total_matches: withSignals.length,
+        fh25_matches: baselineFh25,
+        baseline_rate_pct: baselineRate,
+      },
+      signal_states: results,
+      interpretation: {
+        note: "Signal A alone should show highest hit rate if it's the core engine. Signal B degrading A+B suggests overconstraining.",
+        "A > A+B": "Signal B may be hurting calibration",
+        "A ≈ baseline": "Signal A may need threshold adjustment",
+        "B alone strong": "Signal B might work better as primary",
+      },
     });
   } catch (e) {
     console.error(e);
