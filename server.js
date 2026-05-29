@@ -1277,32 +1277,36 @@ app.get("/calibration", async (req, res) => {
     }
     const byRank = {};
     const byCombo = {};
-    for (let r = 0; r <= 3; r++) byRank[r] = { n: 0, hit25: 0, hit15: 0, sumP25: 0, sumP15: 0 };
+    for (let r = 0; r <= 2; r++) byRank[r] = { n: 0, hit25: 0, hit15: 0, sumP25: 0, sumP15: 0 };
     let total = { n: 0, hit25: 0, hit15: 0, sumP25: 0, sumP15: 0 };
+    // Normalize prob to percentage: old rows stored as 11.5, new rows as 0.115
+    const toPct = (v) => { const n = Number(v || 0); return n > 0 && n < 1 ? n * 100 : n; };
     for (const m of all) {
       const r = m.rank;
+      const p25 = toPct(m.prob25);
+      const p15 = toPct(m.prob15);
       if (byRank[r] !== undefined) {
         byRank[r].n++;
         if (m.hit_25) byRank[r].hit25++;
         if (m.hit_15) byRank[r].hit15++;
-        byRank[r].sumP25 += Number(m.prob25 || 0);
-        byRank[r].sumP15 += Number(m.prob15 || 0);
+        byRank[r].sumP25 += p25;
+        byRank[r].sumP15 += p15;
       }
-      // Per-combo bucket (3-bit: ABD)
+      // Per-combo bucket (2-bit: A+B)
       const sigs = m.signals || {};
       const bit = (k) => (sigs[k] && sigs[k].met) ? "1" : "0";
-      const combo = bit("A") + bit("B") + bit("C");
+      const combo = bit("A") + bit("B");
       if (!byCombo[combo]) byCombo[combo] = { n: 0, hit25: 0, hit15: 0, sumP25: 0, sumP15: 0 };
       byCombo[combo].n++;
       if (m.hit_25) byCombo[combo].hit25++;
       if (m.hit_15) byCombo[combo].hit15++;
-      byCombo[combo].sumP25 += Number(m.prob25 || 0);
-      byCombo[combo].sumP15 += Number(m.prob15 || 0);
+      byCombo[combo].sumP25 += p25;
+      byCombo[combo].sumP15 += p15;
       total.n++;
       if (m.hit_25) total.hit25++;
       if (m.hit_15) total.hit15++;
-      total.sumP25 += Number(m.prob25 || 0);
-      total.sumP15 += Number(m.prob15 || 0);
+      total.sumP25 += p25;
+      total.sumP15 += p15;
     }
     function finalize(b) {
       b.predicted25 = b.n ? +(b.sumP25 / b.n).toFixed(1) : 0;
