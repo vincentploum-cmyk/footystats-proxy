@@ -515,11 +515,12 @@ function unixToLocalDate(unix, tzOffset) {
   return y + "-" + m + "-" + day;
 }
 
-// Multi-signal probabilities — validated on live-captured matches.
-// Signal A: Mutual Instability (home L5 total >= 1.8 AND away L5 total >= 1.6) — FH>2.5 at 35.5%
-// Signal B: Away Team Scoring (away L5 FH >= 0.8) — FH>1.5 at 41.5%
-const PROB15_BY_RANK = { 0: 37.7, 1: 41.5, 2: 47.0 };
-const PROB25_BY_RANK = { 0: 11.4, 1: 23.0, 2: 35.5 };
+// Multi-signal probabilities — empirically calibrated on 860 viable matches.
+// Interaction is synergistic: A+B (26.8%) >> A only (6.7%) >> baseline (9.2%)
+// Signal A: Mutual Instability (home L5 total >= 1.8 AND away L5 total >= 1.6) — environment signal
+// Signal B: Away Team Scoring (away L5 FH >= 0.8) — tempo/participation signal
+const PROB15_BY_RANK = { 0: 35.8, 1: 35.8, 2: 47.0 };  // TODO: recalibrate after A threshold grid-search
+const PROB25_BY_RANK = { 0: 0.075, 1: 0.095, 2: 0.268 };  // empirical: neither, single signal, A+B interaction
 const RANK_LABELS = { 0: "Low", 1: "Signal", 2: "Fire" };
 
 // Average a team's last-5 first-half form. Goals are team-relative (fhFor =
@@ -2476,6 +2477,87 @@ app.get("/signal-contribution-test", async (req, res) => {
         "A ≈ baseline": "Signal A may need threshold adjustment",
         "B alone strong": "Signal B might work better as primary",
       },
+    });
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
+// ─── SIGNAL A THRESHOLD GRID SEARCH ────────────────────────────────────────
+// Tests Signal A threshold variations to see if A-alone and A+B rates can be improved
+app.get("/signal-a-grid-search", async (req, res) => {
+  if (!supabase) return res.status(400).json({ ok: false, error: "Supabase not enabled" });
+  try {
+    const { data: allMatches, error } = await supabase
+      .from("match_results")
+      .select("match_id, ht_home, ht_away, snap")
+      .not("snap", "is", null)
+      .not("snap->>fetchedAt", "eq", "historical-import")
+      .not("snap->>fetchedAt", "eq", "backfill");
+    if (error) throw error;
+
+    const viable = (allMatches || []).filter(m => m.snap && m.snap.l5);
+
+    // Grid of Signal A thresholds to test
+    const thresholds = [
+      { home: 1.6, away: 1.4, label: "1.6/1.4" },
+      { home: 1.6, away: 1.5, label: "1.6/1.5" },
+      { home: 1.7, away: 1.5, label: "1.7/1.5" },
+      { home: 1.8, away: 1.6, label: "1.8/1.6 (current)" },
+      { home: 1.9, away: 1.7, label: "1.9/1.7" },
+      { home: 2.0, away: 1.8, label: "2.0/1.8" },
+    ];
+
+    const results = {};
+
+    for (const threshold of thresholds) {
+      const states = {
+        "A only": { n: 0, hits: 0 },
+        "A + B": { n: 0, hits: 0 },
+      };
+
+      for (const m of viable) {
+        const ht = m.snap.l5.home?.t || 0;
+        const at = m.snap.l5.away?.t || 0;
+        const af = m.snap.l5.away?.f || 0;
+        const fh = parseInt(m.ht_home || 0, 10) + parseInt(m.ht_away || 0, 10);
+
+        const sigA = ht >= threshold.home && at >= threshold.away;
+        const sigB = af >= 0.8;
+        const isFh25 = fh > 2.5;
+
+        if (sigA && !sigB) {
+          states["A only"].n++;
+          if (isFh25) states["A only"].hits++;
+        }
+        if (sigA && sigB) {
+          states["A + B"].n++;
+          if (isFh25) states["A + B"].hits++;
+        }
+      }
+
+      results[threshold.label] = {
+        threshold: `home >= ${threshold.home}, away >= ${threshold.away}`,
+        "A only": {
+          matches: states["A only"].n,
+          fh25_hits: states["A only"].hits,
+          hit_rate_pct: states["A only"].n ? +(states["A only"].hits / states["A only"].n * 100).toFixed(1) : 0,
+        },
+        "A + B": {
+          matches: states["A + B"].n,
+          fh25_hits: states["A + B"].hits,
+          hit_rate_pct: states["A + B"].n ? +(states["A + B"].hits / states["A + B"].n * 100).toFixed(1) : 0,
+        },
+      };
+    }
+
+    res.json({
+      ok: true,
+      note: "Grid search for Signal A thresholds. Goal: maximize both A-only and A+B hit rates.",
+      baseline_fh25: viable.filter(m => (parseInt(m.ht_home || 0, 10) + parseInt(m.ht_away || 0, 10)) > 2.5).length,
+      baseline_rate_pct: 9.2,
+      results,
     });
   } catch (e) {
     console.error(e);
