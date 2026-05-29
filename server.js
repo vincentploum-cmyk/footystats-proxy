@@ -3135,12 +3135,13 @@ body{background:#f3f4f6;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',
   J += "        var fState=l5.f>=0.8?'g-bright':l5.f>=0.5?'g-light':'';";
   J += "        if(role==='Away'){chips+=mkChip('L5 FH scored (away)',l5.f.toFixed(2),'\u2265 0.8 \u2192 sig B',fState);}";
   J += "        else{chips+=mkChip('L5 FH scored (home)',l5.f.toFixed(2),'info only',fState);}";
-  J += "        chips+=mkChip('L5 FH conceded '+sfx,l5.a.toFixed(2),'info only','');";
+  J += "        var l5coState=l5.a>=1.0?'r-bright':l5.a>=0.6?'r-light':'r-light';";
+  J += "        chips+=mkChip('L5 FH conceded '+sfx,l5.a.toFixed(2),'info only',l5coState);";
   J += "      }";
   J += "      var scState=sn.scored_fh>=1.5?'g-bright':sn.scored_fh>=1.0?'g-light':'';" ;
-  J += "      chips+=mkChip('Season FH scored '+sfx,sn.scored_fh.toFixed(2),'season avg','');";
-  J += "      var coState=sn.conced_fh>=1.1?'r-bright':sn.conced_fh>=0.7?'r-light':'';" ;
-  J += "      chips+=mkChip('Season FH conceded '+sfx,sn.conced_fh.toFixed(2),'season avg','');";
+  J += "      chips+=mkChip('Season FH scored '+sfx,sn.scored_fh.toFixed(2),'season avg',scState);";
+  J += "      var coState=sn.conced_fh>=1.1?'r-bright':sn.conced_fh>=0.7?'r-light':'r-light';";
+  J += "      chips+=mkChip('Season FH conceded '+sfx,sn.conced_fh.toFixed(2),'season avg',coState);";
   J += "    }";
   J += "    return '<div class=\"team-box\"><div class=\"team-role\">'+esc(role)+'</div><div class=\"team-name\">'+esc(name)+'</div>'+fs+fhBar+'<div class=\"stat-grid\">'+chips+'</div></div>';";
   J += "  }";
