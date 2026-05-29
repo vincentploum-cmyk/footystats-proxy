@@ -515,10 +515,13 @@ function unixToLocalDate(unix, tzOffset) {
   return y + "-" + m + "-" + day;
 }
 
-// Single-signal probabilities — validated on 692 live-captured matches (all fetchedAt timestamps, no backfill/historical-import).
-// Signal A: Away team last-5 FH average >= 0.8
-const PROB15_BY_RANK = { 0: 37.7, 1: 41.5 };
-const RANK_LABELS = { 0: "Low", 1: "Signal" };
+// Multi-signal probabilities — validated on live-captured matches.
+// Signal A: Mutual Instability (home L5 total >= 1.8 AND away L5 total >= 1.6) — high-scoring indicator, FH>2.5
+// Signal B: Away Team Scoring (away L5 FH >= 0.8) — elevated away activity, FH>1.5
+// Signal C: Away Attack + Home Leak (away L5 FH >= 1.0 AND home L5 FH conceded >= 0.8) — asymmetric pattern
+const PROB15_BY_RANK = { 0: 37.7, 1: 41.5, 2: 47.0 };
+const PROB25_BY_RANK = { 0: 11.4, 1: 23.0, 2: 35.5 };
+const RANK_LABELS = { 0: "Low", 1: "Signal", 2: "Fire" };
 
 // Average a team's last-5 first-half form. Goals are team-relative (fhFor =
 // scored, fhAgst = conceded). Returns null if fewer than 3 recent games.
@@ -531,25 +534,51 @@ function last5Form(arr) {
   return { f: f / n, a: a / n, t: (f + a) / n };
 }
 
-// Single-signal engine — validated on 692 live-captured matches.
-//   Signal A: Away Team Scoring — away team last-5 FH average >= 0.8
-// Predicts FH>1.5 at 41.5% (vs 37.7% baseline, +3.8 percentage points)
+// Multi-signal engine — validated on live-captured matches.
+//   Signal A: Mutual Instability (home L5 total >= 1.8 AND away L5 total >= 1.6) — strongest predictor
+//   Signal B: Away Team Scoring (away L5 FH >= 0.8) — medium predictor
+//   Signal C: Away Attack + Home Leak (away L5 FH >= 1.0 AND home L5 FH conceded >= 0.8) — additional pattern
 function computeSignals(snap, hLast5, aLast5) {
-  const a5 = last5Form(aLast5);
-  const ok = !!(a5);
-  const awayL5Scored = snap && snap.l5 && snap.l5.away ? (snap.l5.away.f || 0) : 0;
-  const sigA = ok && awayL5Scored >= 0.8;
-  const prob15 = sigA ? 41.5 : 37.7;
   const f2 = (v) => v.toFixed(2);
+
+  // Extract L5 totals from snap
+  const homeL5Total = snap && snap.l5 && snap.l5.home ? (snap.l5.home.t || 0) : 0;
+  const awayL5Scored = snap && snap.l5 && snap.l5.away ? (snap.l5.away.f || 0) : 0;
+  const awayL5Total = snap && snap.l5 && snap.l5.away ? (snap.l5.away.t || 0) : 0;
+  const homeL5Conceded = snap && snap.l5 && snap.l5.home ? (snap.l5.home.a || 0) : 0;
+
+  // Check if we have L5 data
+  const hasL5 = !!(snap && snap.l5 && snap.l5.home && snap.l5.away);
+
+  // Signal A: Mutual Instability (high combined activity)
+  const sigA = hasL5 && homeL5Total >= 1.8 && awayL5Total >= 1.6;
+
+  // Signal B: Away Team Scoring
+  const sigB = hasL5 && awayL5Scored >= 0.8;
+
+  // Signal C: Away Attack + Home Leak
+  const sigC = hasL5 && awayL5Scored >= 1.0 && homeL5Conceded >= 0.8;
+
+  // Compute rank (0-2)
+  const signalCount = (sigA ? 1 : 0) + (sigB ? 1 : 0) + (sigC ? 1 : 0);
+  const rank = Math.min(signalCount, 2);
+
+  // Get probabilities from rank tables
+  const prob15 = PROB15_BY_RANK[rank] || 35.8;
+  const prob25 = PROB25_BY_RANK[rank] || 11.4;
+
   return {
-    rank: sigA ? 1 : 0,
-    label: sigA ? "Signal" : "Low",
+    rank,
+    label: RANK_LABELS[rank] || "Low",
     prob15,
-    ci: 0,
-    defCi: 0,
-    eligible: sigA,
+    prob25,
+    ci: homeL5Total + awayL5Total,  // combined intensity
+    defCi: awayL5Total,              // away activity
+    eligible: rank >= 2,
     signals: {
-      A: { met: sigA, label: "Away Team Scoring", value: f2(awayL5Scored), threshold: "away L5 FH avg >= 1.0" },
+      A: { met: sigA, label: "Mutual Instability", value: f2(homeL5Total) + " / " + f2(awayL5Total), threshold: "home L5 total >= 1.8 & away L5 total >= 1.6" },
+      B: { met: sigB, label: "Away Team Scoring", value: f2(awayL5Scored), threshold: "away L5 FH avg >= 0.8" },
+      C: { met: sigC, label: "Away Attack + Home Leak", value: f2(awayL5Scored) + " / " + f2(homeL5Conceded), threshold: "away L5 FH >= 1.0 & home L5 FH conceded >= 0.8" },
     },
   };
 }
@@ -1782,10 +1811,17 @@ async function computePreds(tzOffset) {
 
         let snap = null, result = null;
         const missing = !homeTeam || !awayTeam;
+
+        // Build L5 aggregates from last5 arrays
+        const hL5 = last5Form(hLast5);
+        const aL5 = last5Form(aLast5);
+        const l5Data = (hL5 && aL5) ? { home: hL5, away: aL5 } : null;
+
         if (!missing) {
           const hStats = extractStats(homeTeam, "home");
           const aStats = extractStats(awayTeam, "away");
           snap   = { fetchedAt, home: hStats, away: aStats };
+          if (l5Data) snap.l5 = l5Data;
           result = computeSignals(snap, hLast5, aLast5);
         } else if (hLast5.length >= 1 && aLast5.length >= 1) {
           // Synthetic stats from match history when API stats are missing
@@ -1803,6 +1839,7 @@ async function computePreds(tzOffset) {
           const hStats = { name: fix.home_name || "", scored_fh: hScored, conced_fh: hConced, t1_pct: hT1pct, cn010_avg: 0, sot_avg: 0, mp: hGames.length, mpRole: hGames.length };
           const aStats = { name: fix.away_name || "", scored_fh: aScored, conced_fh: aConced, t1_pct: aT1pct, cn010_avg: 0, sot_avg: 0, mp: aGames.length, mpRole: aGames.length };
           snap   = { fetchedAt: fetchedAt + " (from history)", home: hStats, away: aStats };
+          if (l5Data) snap.l5 = l5Data;
           result = computeSignals(snap, hLast5, aLast5);
         }
 
