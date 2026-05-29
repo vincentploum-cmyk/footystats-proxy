@@ -917,18 +917,15 @@ app.get("/admin/recompute-signals", async (req, res) => {
 
     let written = 0, errs = 0;
     const errors = [];
-    const BATCH = 200;
+    const BATCH = 500;
     for (let i = 0; i < updates.length; i += BATCH) {
       const batch = updates.slice(i, i + BATCH);
-      for (const u of batch) {
-        const { match_id, ...patch } = u;
-        const { error } = await supabase.from("match_results").update(patch).eq("match_id", match_id);
-        if (error) {
-          errs++;
-          if (errors.length < 10) errors.push({ match_id, error: error.message });
-        } else {
-          written++;
-        }
+      const { error } = await supabase.from("match_results").upsert(batch, { onConflict: "match_id" });
+      if (error) {
+        errs += batch.length;
+        if (errors.length < 10) errors.push({ batchStart: i, error: error.message });
+      } else {
+        written += batch.length;
       }
     }
 
