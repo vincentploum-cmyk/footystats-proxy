@@ -516,9 +516,8 @@ function unixToLocalDate(unix, tzOffset) {
 }
 
 // Multi-signal probabilities — validated on live-captured matches.
-// Signal A: Mutual Instability (home L5 total >= 1.8 AND away L5 total >= 1.6) — high-scoring indicator, FH>2.5
-// Signal B: Away Team Scoring (away L5 FH >= 0.8) — elevated away activity, FH>1.5
-// Signal C: Away Attack + Home Leak (away L5 FH >= 1.0 AND home L5 FH conceded >= 0.8) — asymmetric pattern
+// Signal A: Mutual Instability (home L5 total >= 1.8 AND away L5 total >= 1.6) — FH>2.5 at 35.5%
+// Signal B: Away Team Scoring (away L5 FH >= 0.8) — FH>1.5 at 41.5%
 const PROB15_BY_RANK = { 0: 37.7, 1: 41.5, 2: 47.0 };
 const PROB25_BY_RANK = { 0: 11.4, 1: 23.0, 2: 35.5 };
 const RANK_LABELS = { 0: "Low", 1: "Signal", 2: "Fire" };
@@ -535,32 +534,27 @@ function last5Form(arr) {
 }
 
 // Multi-signal engine — validated on live-captured matches.
-//   Signal A: Mutual Instability (home L5 total >= 1.8 AND away L5 total >= 1.6) — strongest predictor
-//   Signal B: Away Team Scoring (away L5 FH >= 0.8) — medium predictor
-//   Signal C: Away Attack + Home Leak (away L5 FH >= 1.0 AND home L5 FH conceded >= 0.8) — additional pattern
+//   Signal A: Mutual Instability (home L5 total >= 1.8 AND away L5 total >= 1.6) — FH>2.5 at 35.5%
+//   Signal B: Away Team Scoring (away L5 FH >= 0.8) — FH>1.5 at 41.5%
 function computeSignals(snap, hLast5, aLast5) {
   const f2 = (v) => v.toFixed(2);
 
-  // Extract L5 totals from snap
+  // Extract L5 metrics from snap
   const homeL5Total = snap && snap.l5 && snap.l5.home ? (snap.l5.home.t || 0) : 0;
   const awayL5Scored = snap && snap.l5 && snap.l5.away ? (snap.l5.away.f || 0) : 0;
   const awayL5Total = snap && snap.l5 && snap.l5.away ? (snap.l5.away.t || 0) : 0;
-  const homeL5Conceded = snap && snap.l5 && snap.l5.home ? (snap.l5.home.a || 0) : 0;
 
   // Check if we have L5 data
   const hasL5 = !!(snap && snap.l5 && snap.l5.home && snap.l5.away);
 
-  // Signal A: Mutual Instability (high combined activity)
+  // Signal A: Mutual Instability (both teams in upper-half of range)
   const sigA = hasL5 && homeL5Total >= 1.8 && awayL5Total >= 1.6;
 
-  // Signal B: Away Team Scoring
+  // Signal B: Away Team Scoring (away team moderately active)
   const sigB = hasL5 && awayL5Scored >= 0.8;
 
-  // Signal C: Away Attack + Home Leak
-  const sigC = hasL5 && awayL5Scored >= 1.0 && homeL5Conceded >= 0.8;
-
-  // Compute rank (0-2)
-  const signalCount = (sigA ? 1 : 0) + (sigB ? 1 : 0) + (sigC ? 1 : 0);
+  // Compute rank (0-2) based on how many signals fire
+  const signalCount = (sigA ? 1 : 0) + (sigB ? 1 : 0);
   const rank = Math.min(signalCount, 2);
 
   // Get probabilities from rank tables
@@ -577,8 +571,7 @@ function computeSignals(snap, hLast5, aLast5) {
     eligible: rank >= 2,
     signals: {
       A: { met: sigA, label: "Mutual Instability", value: f2(homeL5Total) + " / " + f2(awayL5Total), threshold: "home L5 total >= 1.8 & away L5 total >= 1.6" },
-      B: { met: sigB, label: "Away Team Scoring", value: f2(awayL5Scored), threshold: "away L5 FH avg >= 0.8" },
-      C: { met: sigC, label: "Away Attack + Home Leak", value: f2(awayL5Scored) + " / " + f2(homeL5Conceded), threshold: "away L5 FH >= 1.0 & home L5 FH conceded >= 0.8" },
+      B: { met: sigB, label: "Away Team Scoring", value: f2(awayL5Scored), threshold: "away L5 FH >= 0.8" },
     },
   };
 }
