@@ -516,11 +516,12 @@ function unixToLocalDate(unix, tzOffset) {
 }
 
 // Multi-signal probabilities — empirically calibrated on 860 viable matches.
-// Interaction is synergistic: A+B (26.8%) >> A only (6.7%) >> baseline (9.2%)
-// Signal A: Mutual Instability (home L5 total >= 1.8 AND away L5 total >= 1.6) — environment signal
+// Production thresholds: loose for sample stability + out-of-sample robustness.
+// Signal A: Mutual Instability (home L5 total >= 1.6 AND away L5 total >= 1.4) — environment signal
 // Signal B: Away Team Scoring (away L5 FH >= 0.8) — tempo/participation signal
-const PROB15_BY_RANK = { 0: 35.8, 1: 35.8, 2: 47.0 };  // TODO: recalibrate after A threshold grid-search
-const PROB25_BY_RANK = { 0: 0.075, 1: 0.095, 2: 0.268 };  // empirical: neither, single signal, A+B interaction
+// Interaction: A+B (19.5%) >> A only (8.6%) > B only (~9.5%) > baseline (9.2%)
+const PROB15_BY_RANK = { 0: 35.8, 1: 35.8, 2: 47.0 };  // TODO: recalibrate FH>1.5 separately
+const PROB25_BY_RANK = { 0: 0.075, 1: 0.095, 2: 0.195 };  // empirical: neither, single signal, A+B interaction
 const RANK_LABELS = { 0: "Low", 1: "Signal", 2: "Fire" };
 
 // Average a team's last-5 first-half form. Goals are team-relative (fhFor =
@@ -534,11 +535,10 @@ function last5Form(arr) {
   return { f: f / n, a: a / n, t: (f + a) / n };
 }
 
-// Multi-signal engine — core signals only.
-// Under investigation: whether Signal B adds predictive lift or overconstrains.
-//   Signal A: Mutual Instability (home L5 total >= 1.8 AND away L5 total >= 1.6)
+// Multi-signal engine — production thresholds from grid-search calibration.
+//   Signal A: Mutual Instability (home L5 total >= 1.6 AND away L5 total >= 1.4)
 //   Signal B: Away Team Scoring (away L5 FH >= 0.8)
-// Removed: hard filter (rejected high-quality matches), conceding escalator (hurt precision)
+// A+B is the predictive engine (19.5% vs 9.2% baseline = 2.1x lift, 82 matches).
 function computeSignals(snap, hLast5, aLast5) {
   const f2 = (v) => v.toFixed(2);
 
@@ -550,8 +550,8 @@ function computeSignals(snap, hLast5, aLast5) {
   // Check if we have L5 data
   const hasL5 = !!(snap && snap.l5 && snap.l5.home && snap.l5.away);
 
-  // Signal A: Mutual Instability (both teams in upper-half of range)
-  const sigA = hasL5 && homeL5Total >= 1.8 && awayL5Total >= 1.6;
+  // Signal A: Mutual Instability (looser thresholds for sample stability)
+  const sigA = hasL5 && homeL5Total >= 1.6 && awayL5Total >= 1.4;
 
   // Signal B: Away Team Scoring (away team moderately active)
   const sigB = hasL5 && awayL5Scored >= 0.8;
@@ -573,7 +573,7 @@ function computeSignals(snap, hLast5, aLast5) {
     defCi: awayL5Total,              // away activity
     eligible: rank >= 2,
     signals: {
-      A: { met: sigA, label: "Mutual Instability", value: f2(homeL5Total) + " / " + f2(awayL5Total), threshold: "home L5 total >= 1.8 & away L5 total >= 1.6" },
+      A: { met: sigA, label: "Mutual Instability", value: f2(homeL5Total) + " / " + f2(awayL5Total), threshold: "home L5 total >= 1.6 & away L5 total >= 1.4" },
       B: { met: sigB, label: "Away Team Scoring", value: f2(awayL5Scored), threshold: "away L5 FH >= 0.8" },
     },
   };
