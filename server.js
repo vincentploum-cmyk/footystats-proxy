@@ -2476,6 +2476,103 @@ app.get("/calibration-test", async (req, res) => {
 });
 
 // ─── SIGNAL CONTRIBUTION TEST ──────────────────────────────────────────────
+// Day-by-day calibration over recent N days — diagnoses drift vs random variance
+app.get("/daily-drift", async (req, res) => {
+  if (!supabase) return res.status(400).json({ ok: false, error: "Supabase not enabled" });
+  const days = Math.min(30, Math.max(1, parseInt(req.query.days || "10", 10)));
+  const cutoffSec = Math.floor(Date.now() / 1000) - days * 86400;
+  try {
+    const all = [];
+    const PAGE = 1000;
+    for (let off = 0; ; off += PAGE) {
+      const { data, error } = await supabase
+        .from("match_results")
+        .select("match_id, date_unix, ht_home, ht_away, hit_25, hit_15, rank, signals, snap")
+        .gte("date_unix", cutoffSec)
+        .not("hit_25", "is", null)
+        .not("snap", "is", null)
+        .not("snap->>fetchedAt", "eq", "historical-import")
+        .not("snap->>fetchedAt", "eq", "backfill")
+        .range(off, off + PAGE - 1);
+      if (error) throw error;
+      if (!data || data.length === 0) break;
+      all.push(...data);
+      if (data.length < PAGE) break;
+    }
+
+    const byDay = {};
+    for (const m of all) {
+      const day = new Date(m.date_unix * 1000).toISOString().slice(0, 10);
+      if (!byDay[day]) byDay[day] = { total: 0, fh25: 0, fh15: 0, ab: 0, ab_hits25: 0, ab_hits15: 0, single: 0, single_hits25: 0, neither: 0, neither_hits25: 0 };
+      const d = byDay[day];
+      d.total++;
+      if (m.hit_25) d.fh25++;
+      if (m.hit_15) d.fh15++;
+      const sigA = m.signals && m.signals.A && m.signals.A.met;
+      const sigB = m.signals && m.signals.B && m.signals.B.met;
+      if (sigA && sigB) {
+        d.ab++;
+        if (m.hit_25) d.ab_hits25++;
+        if (m.hit_15) d.ab_hits15++;
+      } else if (sigA || sigB) {
+        d.single++;
+        if (m.hit_25) d.single_hits25++;
+      } else {
+        d.neither++;
+        if (m.hit_25) d.neither_hits25++;
+      }
+    }
+
+    const dayList = Object.keys(byDay).sort().reverse();
+    const rows = dayList.map(day => {
+      const d = byDay[day];
+      return {
+        date: day,
+        total: d.total,
+        fh25_rate: d.total ? +(d.fh25 / d.total * 100).toFixed(1) : 0,
+        ab_fires: d.ab,
+        ab_hits25: d.ab_hits25,
+        ab_hit_rate: d.ab ? +(d.ab_hits25 / d.ab * 100).toFixed(1) : null,
+        single_fires: d.single,
+        single_hit_rate: d.single ? +(d.single_hits25 / d.single * 100).toFixed(1) : null,
+        neither_fires: d.neither,
+        neither_hit_rate: d.neither ? +(d.neither_hits25 / d.neither * 100).toFixed(1) : null,
+      };
+    });
+
+    // Rolling totals across all days
+    const total = { matches: 0, ab: 0, ab_hits: 0, single: 0, single_hits: 0, neither: 0, neither_hits: 0 };
+    for (const d of Object.values(byDay)) {
+      total.matches += d.total;
+      total.ab += d.ab;
+      total.ab_hits += d.ab_hits25;
+      total.single += d.single;
+      total.single_hits += d.single_hits25;
+      total.neither += d.neither;
+      total.neither_hits += d.neither_hits25;
+    }
+
+    res.json({
+      ok: true,
+      days_requested: days,
+      summary: {
+        matches: total.matches,
+        ab_fires: total.ab,
+        ab_hit_rate_pct: total.ab ? +(total.ab_hits / total.ab * 100).toFixed(1) : 0,
+        single_fires: total.single,
+        single_hit_rate_pct: total.single ? +(total.single_hits / total.single * 100).toFixed(1) : 0,
+        neither_fires: total.neither,
+        neither_hit_rate_pct: total.neither ? +(total.neither_hits / total.neither * 100).toFixed(1) : 0,
+      },
+      expected: { ab: 19.5, single: 9.5, neither: 7.5 },
+      by_day: rows,
+      note: "Use 5+ days to distinguish drift from noise. A+B fires rarely (~5-8% of matches).",
+    });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
 // Measures independent contribution of Signal A and Signal B
 app.get("/signal-contribution-test", async (req, res) => {
   if (!supabase) return res.status(400).json({ ok: false, error: "Supabase not enabled" });
