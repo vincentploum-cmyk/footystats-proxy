@@ -2476,6 +2476,70 @@ app.get("/calibration-test", async (req, res) => {
 });
 
 // ─── SIGNAL CONTRIBUTION TEST ──────────────────────────────────────────────
+// Inspect a single match by team names or match_id — shows snap, signals, outcome
+app.get("/inspect-match", async (req, res) => {
+  if (!supabase) return res.status(400).json({ ok: false, error: "Supabase not enabled" });
+  const q = (req.query.q || "").trim();
+  if (!q) return res.status(400).json({ ok: false, error: "pass ?q=TeamName or ?q=match_id" });
+  try {
+    let query = supabase
+      .from("match_results")
+      .select("match_id, home_name, away_name, date_unix, ht_home, ht_away, ft_home, ft_away, hit_25, hit_15, rank, prob25, prob15, ci, signals, snap, league_name");
+    if (/^\d+$/.test(q)) {
+      query = query.eq("match_id", parseInt(q, 10));
+    } else {
+      query = query.or(`home_name.ilike.%${q}%,away_name.ilike.%${q}%`);
+    }
+    const { data, error } = await query.order("date_unix", { ascending: false }).limit(20);
+    if (error) throw error;
+    if (!data || data.length === 0) return res.json({ ok: true, matches: [], note: "no matches found" });
+
+    const matches = data.map(m => {
+      const sigA = m.signals && m.signals.A && m.signals.A.met;
+      const sigB = m.signals && m.signals.B && m.signals.B.met;
+      const l5h = m.snap && m.snap.l5 && m.snap.l5.home;
+      const l5a = m.snap && m.snap.l5 && m.snap.l5.away;
+      // Recompute what the signals SHOULD have fired based on stored L5
+      const shouldA = l5h && l5a && (l5h.t || 0) >= 1.6 && (l5a.t || 0) >= 1.4;
+      const shouldB = l5a && (l5a.f || 0) >= 0.8;
+      return {
+        match_id: m.match_id,
+        date: m.date_unix ? new Date(m.date_unix * 1000).toISOString() : null,
+        league: m.league_name,
+        teams: `${m.home_name} vs ${m.away_name}`,
+        ht_score: `${m.ht_home || 0}-${m.ht_away || 0}`,
+        ft_score: `${m.ft_home || 0}-${m.ft_away || 0}`,
+        fh_total: (m.ht_home || 0) + (m.ht_away || 0),
+        hit_15: m.hit_15,
+        hit_25: m.hit_25,
+        stored_rank: m.rank,
+        stored_prob25: m.prob25,
+        stored_prob15: m.prob15,
+        stored_ci: m.ci,
+        stored_signals: {
+          A: { met: !!sigA, value: m.signals?.A?.value, threshold: m.signals?.A?.threshold },
+          B: { met: !!sigB, value: m.signals?.B?.value, threshold: m.signals?.B?.threshold },
+        },
+        l5_data: {
+          home: l5h ? { scored: l5h.f, conceded: l5h.a, total: l5h.t } : null,
+          away: l5a ? { scored: l5a.f, conceded: l5a.a, total: l5a.t } : null,
+        },
+        recomputed_signals: {
+          A_should_fire: shouldA,
+          B_should_fire: shouldB,
+          A_matches_stored: shouldA === !!sigA,
+          B_matches_stored: shouldB === !!sigB,
+        },
+        fetched_at: m.snap?.fetchedAt,
+      };
+    });
+
+    res.json({ ok: true, count: matches.length, matches });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
 // Day-by-day calibration over recent N days — diagnoses drift vs random variance
 app.get("/daily-drift", async (req, res) => {
   if (!supabase) return res.status(400).json({ ok: false, error: "Supabase not enabled" });
