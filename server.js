@@ -2476,6 +2476,39 @@ app.get("/calibration-test", async (req, res) => {
 });
 
 // ─── SIGNAL CONTRIBUTION TEST ──────────────────────────────────────────────
+// List all matches from the last N days — useful when team-name search fails
+app.get("/list-recent-matches", async (req, res) => {
+  if (!supabase) return res.status(400).json({ ok: false, error: "Supabase not enabled" });
+  const days = Math.min(7, Math.max(1, parseInt(req.query.days || "2", 10)));
+  const cutoffSec = Math.floor(Date.now() / 1000) - days * 86400;
+  try {
+    const { data, error } = await supabase
+      .from("match_results")
+      .select("match_id, home_name, away_name, date_unix, ht_home, ht_away, hit_25, hit_15, rank, signals, snap, league_name")
+      .gte("date_unix", cutoffSec)
+      .order("date_unix", { ascending: false })
+      .limit(200);
+    if (error) throw error;
+    const rows = (data || []).map(m => ({
+      match_id: m.match_id,
+      date: m.date_unix ? new Date(m.date_unix * 1000).toISOString().slice(0, 16).replace("T", " ") : null,
+      teams: `${m.home_name} vs ${m.away_name}`,
+      league: m.league_name,
+      ht: m.ht_home !== null ? `${m.ht_home}-${m.ht_away}` : "pending",
+      fh_total: m.ht_home !== null ? (m.ht_home + m.ht_away) : null,
+      hit_15: m.hit_15,
+      hit_25: m.hit_25,
+      rank: m.rank,
+      sigA: !!(m.signals && m.signals.A && m.signals.A.met),
+      sigB: !!(m.signals && m.signals.B && m.signals.B.met),
+      has_l5: !!(m.snap && m.snap.l5),
+    }));
+    res.json({ ok: true, count: rows.length, days, matches: rows });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
 // Inspect a single match by team names or match_id — shows snap, signals, outcome
 app.get("/inspect-match", async (req, res) => {
   if (!supabase) return res.status(400).json({ ok: false, error: "Supabase not enabled" });
