@@ -2573,6 +2573,26 @@ app.get("/inspect-match", async (req, res) => {
   }
 });
 
+// Clear all in-memory caches (use after changing FootyStats league selection)
+app.get("/admin/flush-caches", async (req, res) => {
+  const expected = process.env.LOAD_DATASET_TOKEN;
+  if (!expected) return res.status(503).json({ ok: false, error: "admin token not configured" });
+  if (req.query.token !== expected) return res.status(403).json({ ok: false, error: "invalid token" });
+  const before = {
+    fixtures: Object.keys(FIXTURE_CACHE).length,
+    leagueMatches: Object.keys(LEAGUE_MATCHES_CACHE).length,
+    teamStats: Object.keys(TEAM_STATS_CACHE).length,
+    leagueNames: Object.keys(LEAGUE_NAMES).length,
+  };
+  for (const k of Object.keys(FIXTURE_CACHE)) delete FIXTURE_CACHE[k];
+  for (const k of Object.keys(LEAGUE_MATCHES_CACHE)) delete LEAGUE_MATCHES_CACHE[k];
+  for (const k of Object.keys(TEAM_STATS_CACHE)) delete TEAM_STATS_CACHE[k];
+  LEAGUE_NAMES = {};
+  // Re-fetch the league list (async, non-blocking)
+  fetchLeagueList();
+  res.json({ ok: true, cleared: before, note: "league list re-fetching in background" });
+});
+
 // Day-by-day calibration over recent N days — diagnoses drift vs random variance
 app.get("/daily-drift", async (req, res) => {
   if (!supabase) return res.status(400).json({ ok: false, error: "Supabase not enabled" });
