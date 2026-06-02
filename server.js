@@ -3003,7 +3003,7 @@ body{background:#f3f4f6;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',
   J += "  var el=document.getElementById('dayTabs');var h='';";
   J += "  for(var i=0;i<DATES.length;i++){";
   J += "    var d=DATES[i];";
-  J += "    var cnt=ALL.filter(function(p){return p.matchDate===d;}).length;";
+  J += "    var cnt=ALL.filter(function(p){return p.matchDate===d && !p.missingStats;}).length;";
   J += "    h+='<button class=\"tab'+(activeView==='days'&&d===activeDate?' active':'')+'\" data-di=\"'+i+'\">'+esc(DAY_LABELS[i]||d)+' <span style=\"font-size:10px;opacity:.7\">('+cnt+')</span></button>';";
   J += "  }";
   J += "  h+='<button class=\"tab'+(activeView==='bestbets'?' active':'')+'\" data-view=\"bestbets\" style=\"background:'+(activeView==='bestbets'?'#ff6b35':'#1b5e20')+';color:#fff;font-weight:700\">\ud83c\udfaf Best Bets</button>';";
@@ -3172,7 +3172,7 @@ body{background:#f3f4f6;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',
   J += "function renderLeagueList(){";
   J += "  var main=document.getElementById('mainView');";
   J += "  if(!activeDate){main.innerHTML='';return;}";
-  J += "  var dp=ALL.filter(function(p){return p.matchDate===activeDate;});";
+  J += "  var dp=ALL.filter(function(p){return p.matchDate===activeDate && !p.missingStats;});";
   J += "  var lmap={};dp.forEach(function(p){if(!lmap[p.league])lmap[p.league]=[];lmap[p.league].push(p);});";
   J += "  var ll=Object.entries(lmap).sort(function(a,b){return a[0].localeCompare(b[0]);});";
   J += "  if(!ll.length){main.innerHTML='<p style=\"color:#6b7280;text-align:center;padding:40px\">No matches found.</p>';return;}";
