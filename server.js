@@ -2573,6 +2573,36 @@ app.get("/inspect-match", async (req, res) => {
   }
 });
 
+// List distinct leagues/competition IDs from the next 5 days of fixtures
+app.get("/current-leagues", async (req, res) => {
+  try {
+    const tzOffset = parseInt(req.query.tz || "0", 10);
+    const dates = getDates(tzOffset);
+    const seen = {};
+    for (const d of dates) {
+      const raw = await fetchFixtures(d);
+      const fixtures = raw.data || [];
+      for (const f of fixtures) {
+        const cid = f.competition_id;
+        if (!cid) continue;
+        if (!seen[cid]) {
+          seen[cid] = {
+            competition_id: cid,
+            league_name: LEAGUE_NAMES[cid] || "(unknown)",
+            fixture_count: 0,
+            sample_match: f.home_name + " vs " + f.away_name,
+          };
+        }
+        seen[cid].fixture_count++;
+      }
+    }
+    const leagues = Object.values(seen).sort((a, b) => b.fixture_count - a.fixture_count);
+    res.json({ ok: true, dates, league_count: leagues.length, leagues });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
 // Debug what FootyStats actually returns for a given season_id
 app.get("/debug-raw-api", async (req, res) => {
   const sid = req.query.sid;
