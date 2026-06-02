@@ -2573,6 +2573,74 @@ app.get("/inspect-match", async (req, res) => {
   }
 });
 
+// Deep debug: pick a fixture, trace through the whole signal computation
+app.get("/trace-fixture", async (req, res) => {
+  const cid = req.query.cid ? parseInt(req.query.cid, 10) : null;
+  if (!cid) return res.status(400).json({ ok: false, error: "pass ?cid=<competition_id>" });
+  try {
+    const tzOffset = parseInt(req.query.tz || "0", 10);
+    const dates = getDates(tzOffset);
+    // Find a fixture in the requested league
+    let fix = null;
+    for (const d of dates) {
+      const raw = await fetchFixtures(d);
+      const found = (raw.data || []).find(f => f.competition_id === cid);
+      if (found) { fix = found; break; }
+    }
+    if (!fix) return res.json({ ok: true, found: false, note: "no upcoming fixtures for that competition_id" });
+
+    const homeId = fix.homeID || fix.home_id;
+    const awayId = fix.awayID || fix.away_id;
+
+    // Fetch team stats + matches for this league
+    const teamRes = await fetchTeamStats(cid);
+    const matchRes = await fetchLeagueMatches(cid);
+    const teamMap = {};
+    for (const t of (teamRes.data || [])) teamMap[t.id] = t;
+
+    const homeTeam = teamMap[homeId];
+    const awayTeam = teamMap[awayId];
+
+    // Try building L5
+    const mergedCache = (tid) => (SERVER_MATCH_CACHE[tid] || []);
+    const hLast5 = buildLast5(homeId, { [homeId]: mergedCache(homeId), [awayId]: mergedCache(awayId) });
+    const aLast5 = buildLast5(awayId, { [homeId]: mergedCache(homeId), [awayId]: mergedCache(awayId) });
+
+    res.json({
+      ok: true,
+      found: true,
+      fixture: {
+        id: fix.id, status: fix.status,
+        home_name: fix.home_name, away_name: fix.away_name,
+        homeID_raw: fix.homeID, home_id_raw: fix.home_id,
+        awayID_raw: fix.awayID, away_id_raw: fix.away_id,
+        homeID_type: typeof (fix.homeID || fix.home_id),
+        resolved_homeId: homeId, resolved_awayId: awayId,
+      },
+      teamMap: {
+        total_teams: Object.keys(teamMap).length,
+        sample_team_ids: Object.keys(teamMap).slice(0, 5),
+        sample_team_id_types: Object.keys(teamMap).slice(0, 3).map(k => typeof k),
+        home_lookup_hit: !!homeTeam,
+        away_lookup_hit: !!awayTeam,
+        home_team_name: homeTeam ? homeTeam.name : null,
+        away_team_name: awayTeam ? awayTeam.name : null,
+      },
+      l5: {
+        home_l5_count: hLast5.length,
+        away_l5_count: aLast5.length,
+        home_l5_first: hLast5[0] || null,
+        away_l5_first: aLast5[0] || null,
+      },
+      league_matches_cached: !!LEAGUE_MATCHES_CACHE[cid],
+      league_matches_count: LEAGUE_MATCHES_CACHE[cid] ? (LEAGUE_MATCHES_CACHE[cid].data.data || []).length : 0,
+    });
+  } catch (e) {
+    console.error(e);
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
 // List distinct leagues/competition IDs from the next 5 days of fixtures
 app.get("/current-leagues", async (req, res) => {
   try {
