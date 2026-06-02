@@ -2573,6 +2573,46 @@ app.get("/inspect-match", async (req, res) => {
   }
 });
 
+// Debug what FootyStats actually returns for a given season_id
+app.get("/debug-raw-api", async (req, res) => {
+  const sid = req.query.sid;
+  if (!sid) return res.status(400).json({ ok: false, error: "pass ?sid=<season_id>" });
+  try {
+    const matches = await safeFetch(BASE + "/league-matches?season_id=" + sid + "&max_per_page=10&page=1&sort=date_unix&order=desc&key=" + KEY);
+    const teams = await safeFetch(BASE + "/league-teams?season_id=" + sid + "&include=stats&key=" + KEY);
+    const sampleMatch = matches && matches.data && matches.data[0] ? matches.data[0] : null;
+    const sampleTeam = teams && teams.data && teams.data[0] ? teams.data[0] : null;
+    res.json({
+      ok: true,
+      season_id: sid,
+      sample_match: sampleMatch ? {
+        id: sampleMatch.id,
+        date_unix: sampleMatch.date_unix,
+        home: sampleMatch.home_name,
+        away: sampleMatch.away_name,
+        status: sampleMatch.status,
+        ht_goals_team_a: sampleMatch.ht_goals_team_a,
+        ht_goals_team_b: sampleMatch.ht_goals_team_b,
+        homeGoalCount: sampleMatch.homeGoalCount,
+        awayGoalCount: sampleMatch.awayGoalCount,
+        all_keys: Object.keys(sampleMatch),
+      } : null,
+      sample_team: sampleTeam ? {
+        id: sampleTeam.id,
+        name: sampleTeam.name,
+        has_stats: !!sampleTeam.stats,
+        stats_keys: sampleTeam.stats ? Object.keys(sampleTeam.stats).slice(0, 30) : [],
+        scoredAVGHT_overall: sampleTeam.stats?.scoredAVGHT_overall,
+        concededAVGHT_overall: sampleTeam.stats?.concededAVGHT_overall,
+      } : null,
+      match_count: matches && matches.data ? matches.data.length : 0,
+      team_count: teams && teams.data ? teams.data.length : 0,
+    });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
 // Clear all in-memory caches (use after changing FootyStats league selection)
 app.get("/admin/flush-caches", async (req, res) => {
   const expected = process.env.LOAD_DATASET_TOKEN;
