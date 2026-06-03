@@ -3221,10 +3221,61 @@ app.get("/debug-raw-api", async (req, res) => {
       };
     }
 
+    // FILL-RATE SCAN across ALL completed matches in this season's sample, so we
+    // can see which per-match fields are actually populated (not just present as a
+    // key). Focus on first-half-specific fields — those are the only recent-form
+    // candidates worth building, since full-match xG/shots don't target FH goals.
+    const completedAll = all.filter(m => m.status === "complete");
+    const numFields = [
+      "ht_goals_team_a", "ht_goals_team_b",          // baseline (what L5 uses)
+      "team_a_fh_corners", "team_b_fh_corners",      // FH corners (FH-specific)
+      "team_a_0_10_min_goals", "team_b_0_10_min_goals", // early goals (FH-specific)
+      "team_a_corners", "team_b_corners",            // full-match corners
+      "team_a_shotsOnTarget", "team_b_shotsOnTarget", // full-match SoT
+      "team_a_xg", "team_b_xg",                       // full-match xG
+      "team_a_dangerous_attacks", "team_b_dangerous_attacks",
+    ];
+    const fillRates = {};
+    for (const f of numFields) {
+      let present = 0, nonzero = 0;
+      const samples = [];
+      for (const m of completedAll) {
+        const v = m[f];
+        if (v !== undefined && v !== null && v !== -1) {
+          present++;
+          if (Number(v) > 0) nonzero++;
+          if (samples.length < 5) samples.push(v);
+        }
+      }
+      fillRates[f] = {
+        present: present, nonzero: nonzero, of: completedAll.length,
+        pctPresent: completedAll.length ? +(present / completedAll.length * 100).toFixed(0) : 0,
+        samples,
+      };
+    }
+    // Goal-timing arrays: are per-match goal minutes recorded? (would let us derive
+    // FH goal counts precisely and any minute-window feature).
+    const timingScan = { homeGoals_timings_nonEmpty: 0, awayGoals_timings_nonEmpty: 0, of: completedAll.length, sampleHome: null };
+    for (const m of completedAll) {
+      const ht = m.homeGoals_timings, at = m.awayGoals_timings;
+      if (Array.isArray(ht) && ht.length) { timingScan.homeGoals_timings_nonEmpty++; if (!timingScan.sampleHome) timingScan.sampleHome = ht; }
+      if (Array.isArray(at) && at.length) timingScan.awayGoals_timings_nonEmpty++;
+    }
+    const recentFormFeasibility = {
+      completedMatchesScanned: completedAll.length,
+      fillRates,
+      timingScan,
+      note: "Build last-5 versions ONLY of fields with high pctPresent AND nonzero spread. FH-specific fields (fh_corners, 0_10_min_goals, goal timings) are the ones worth testing vs L5; full-match xG/shots are not FH-targeted.",
+    };
+
+    // Default response is lean (pasteable). Add ?full=1 for the giant key dumps.
+    const full = req.query.full === "1";
+    if (perMatchRecon && !full) delete perMatchRecon.all_match_keys;
     res.json({
       ok: true,
       season_id: sid,
       verdict,
+      recentFormFeasibility,
       perMatchRecon,
       sample_match: sampleMatch ? {
         id: sampleMatch.id,
@@ -3239,8 +3290,8 @@ app.get("/debug-raw-api", async (req, res) => {
         name: sampleTeam.name,
         has_stats: !!sampleTeam.stats,
         total_stats_keys: st ? Object.keys(st).length : 0,
-        ht_form_fields: formish,
-        all_stats_keys: st ? Object.keys(st) : [],
+        ht_form_fields: full ? formish : undefined,
+        all_stats_keys: full && st ? Object.keys(st) : undefined,
       } : null,
       match_count: all.length,
       team_count: teams && teams.data ? teams.data.length : 0,
