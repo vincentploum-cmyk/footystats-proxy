@@ -2749,10 +2749,39 @@ app.get("/debug-raw-api", async (req, res) => {
   const sid = req.query.sid;
   if (!sid) return res.status(400).json({ ok: false, error: "pass ?sid=<season_id>" });
   try {
-    const matches = await safeFetch(BASE + "/league-matches?season_id=" + sid + "&max_per_page=10&page=1&sort=date_unix&order=desc&key=" + KEY);
+    const matches = await safeFetch(BASE + "/league-matches?season_id=" + sid + "&max_per_page=50&page=1&sort=date_unix&order=desc&key=" + KEY);
     const teams = await safeFetch(BASE + "/league-teams?season_id=" + sid + "&include=stats&key=" + KEY);
-    const sampleMatch = matches && matches.data && matches.data[0] ? matches.data[0] : null;
+    const all = (matches && matches.data) ? matches.data : [];
+    // Prefer an upcoming/incomplete match — its *_potential/_prematch/odds fields are
+    // the live pre-game predictors we'd actually capture.
+    const sampleMatch = all.find(m => m.status === "incomplete") || all[0] || null;
     const sampleTeam = teams && teams.data && teams.data[0] ? teams.data[0] : null;
+
+    // Pull the pre-match first-half predictor VALUES FootyStats already gives us.
+    const preMatchFH = sampleMatch ? {
+      o05HT_potential:     sampleMatch.o05HT_potential,
+      o15HT_potential:     sampleMatch.o15HT_potential,
+      btts_fhg_potential:  sampleMatch.btts_fhg_potential,
+      team_a_xg_prematch:  sampleMatch.team_a_xg_prematch,
+      team_b_xg_prematch:  sampleMatch.team_b_xg_prematch,
+      total_xg_prematch:   sampleMatch.total_xg_prematch,
+      pre_match_home_ppg:  sampleMatch.pre_match_home_ppg,
+      pre_match_away_ppg:  sampleMatch.pre_match_away_ppg,
+      odds_1st_half_over05: sampleMatch.odds_1st_half_over05,
+      odds_1st_half_over15: sampleMatch.odds_1st_half_over15,
+      odds_1st_half_over25: sampleMatch.odds_1st_half_over25,
+      avg_potential:       sampleMatch.avg_potential,
+    } : null;
+
+    // Surface every team-stats key that looks HT/first-half/form/last-x related,
+    // with values, so we can see what recent-form data the API actually carries.
+    const st = sampleTeam && sampleTeam.stats ? sampleTeam.stats : null;
+    const formish = st ? Object.fromEntries(
+      Object.keys(st)
+        .filter(k => /ht|fh|first_half|last|form|recent|_5|_6|_10/i.test(k))
+        .map(k => [k, st[k]])
+    ) : {};
+
     res.json({
       ok: true,
       season_id: sid,
@@ -2762,21 +2791,17 @@ app.get("/debug-raw-api", async (req, res) => {
         home: sampleMatch.home_name,
         away: sampleMatch.away_name,
         status: sampleMatch.status,
-        ht_goals_team_a: sampleMatch.ht_goals_team_a,
-        ht_goals_team_b: sampleMatch.ht_goals_team_b,
-        homeGoalCount: sampleMatch.homeGoalCount,
-        awayGoalCount: sampleMatch.awayGoalCount,
-        all_keys: Object.keys(sampleMatch),
+        preMatchFH,
       } : null,
       sample_team: sampleTeam ? {
         id: sampleTeam.id,
         name: sampleTeam.name,
         has_stats: !!sampleTeam.stats,
-        stats_keys: sampleTeam.stats ? Object.keys(sampleTeam.stats).slice(0, 30) : [],
-        scoredAVGHT_overall: sampleTeam.stats?.scoredAVGHT_overall,
-        concededAVGHT_overall: sampleTeam.stats?.concededAVGHT_overall,
+        total_stats_keys: st ? Object.keys(st).length : 0,
+        ht_form_fields: formish,
+        all_stats_keys: st ? Object.keys(st) : [],
       } : null,
-      match_count: matches && matches.data ? matches.data.length : 0,
+      match_count: all.length,
       team_count: teams && teams.data ? teams.data.length : 0,
     });
   } catch (e) {
