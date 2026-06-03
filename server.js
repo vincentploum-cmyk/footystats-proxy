@@ -618,16 +618,21 @@ function extractStats(teamObj, role) {
     if (fv !== null && fv !== undefined) return fv;
     return 0;
   };
+  // Native last-5 HT stats from FootyStats team API (role-specific, fallback to overall).
+  // Used as snap.l5 fallback when self-reconstruction from match cache fails (thin leagues).
+  const nvL5fRaw = s["scoredAVGHT" + sfx + "_5"] ?? s["scoredAVGHT_overall_5"];
+  const nvL5aRaw = s["concededAVGHT" + sfx + "_5"] ?? s["concededAVGHT_overall_5"];
+  const hasNvL5  = nvL5fRaw != null && nvL5aRaw != null;
   return {
     name:      teamObj.name || teamObj.cleanName || "",
     scored_fh: safe(pick("scoredAVGHT"   + sfx, "scoredAVGHT_overall")),
     conced_fh: safe(pick("concededAVGHT" + sfx, "concededAVGHT_overall")),
     t1_pct:    safe(pick("seasonOver25PercentageHT" + sfx, "seasonOver25PercentageHT_overall")),
     cn010_avg: safe((s["goals_conceded_min_0_to_10" + sfx] || 0) / mpR),
-    // Shots on target per game (role-specific, fallback to overall)
     sot_avg:   safe((s["shotsOnTarget" + sfx] || s["shotsOnTarget_overall"] || 0) / mpR),
     mp:        safe(s.seasonMatchesPlayed_overall || 0),
     mpRole:    mpR,
+    nvL5: hasNvL5 ? { f: safe(nvL5fRaw), a: safe(nvL5aRaw), t: +(safe(nvL5fRaw) + safe(nvL5aRaw)).toFixed(2) } : null,
   };
 }
 
@@ -1938,10 +1943,14 @@ async function computePreds(tzOffset) {
 
       const teamMap = {};
       for (const t of (teamRes.data || [])) teamMap[t.id] = t;
-      return { sid, leagueName, teamMap, fixtures: leagueFixtures[sid] };
+      // Index full match objects by ID so the inner loop can read pre-match fields
+      // (o15HT_potential, xg, etc.) that exist on /league-matches but not /fixtures.
+      const matchMap = new Map();
+      for (const m of allMatches) if (m.id) matchMap.set(m.id, m);
+      return { sid, leagueName, teamMap, fixtures: leagueFixtures[sid], matchMap };
     }));
 
-    for (const { sid, leagueName, teamMap, fixtures } of leagueData) {
+    for (const { sid, leagueName, teamMap, fixtures, matchMap } of leagueData) {
       for (const fix of fixtures) {
         const homeId   = fix.homeID || fix.home_id;
         const awayId   = fix.awayID || fix.away_id;
@@ -1966,8 +1975,26 @@ async function computePreds(tzOffset) {
         if (!missing) {
           const hStats = extractStats(homeTeam, "home");
           const aStats = extractStats(awayTeam, "away");
-          snap   = { fetchedAt, home: hStats, away: aStats };
-          if (l5Data) snap.l5 = l5Data;
+          snap = { fetchedAt, home: hStats, away: aStats };
+          if (l5Data) {
+            snap.l5 = l5Data;
+          } else if (hStats.nvL5 && aStats.nvL5) {
+            // FootyStats native last-5 HT team stats — used when self-reconstruction
+            // fails (thin-coverage leagues like USL2/WPSL with few cached games).
+            snap.l5 = { home: hStats.nvL5, away: aStats.nvL5, nativeApi: true };
+          }
+          // Capture pre-match fixture-level predictors from /league-matches
+          // (not present on /fixtures endpoint used to build leagueFixtures).
+          const fullFix = matchMap.get(fix.id);
+          if (fullFix) {
+            const pm = {};
+            if (fullFix.o15HT_potential    != null) pm.o15HT   = fullFix.o15HT_potential;
+            if (fullFix.o05HT_potential    != null) pm.o05HT   = fullFix.o05HT_potential;
+            if (fullFix.team_a_xg_prematch != null) pm.xgHome  = fullFix.team_a_xg_prematch;
+            if (fullFix.team_b_xg_prematch != null) pm.xgAway  = fullFix.team_b_xg_prematch;
+            if (fullFix.btts_fhg_potential != null) pm.btts_fhg = fullFix.btts_fhg_potential;
+            if (Object.keys(pm).length) snap.prematch = pm;
+          }
           result = computeSignals(snap, hLast5, aLast5);
         } else if (hLast5.length >= 1 && aLast5.length >= 1) {
           // Synthetic stats from match history when API stats are missing
@@ -1998,14 +2025,8 @@ async function computePreds(tzOffset) {
         const ftH = parseInt(fix.homeGoalCount   || 0, 10);
         const ftA = parseInt(fix.awayGoalCount   || 0, 10);
 
-        // Freeze the last-5 FH form the signals used, so the recent-form inputs
-        // can be re-validated on live data later (snapshots previously kept only
-        // season stats, leaving the new signals impossible to backtest live).
-        const h5snap = last5Form(hLast5), a5snap = last5Form(aLast5);
-        const l5snap = (h5snap && a5snap) ? {
-          home: { f: +h5snap.f.toFixed(2), a: +h5snap.a.toFixed(2), t: +h5snap.t.toFixed(2) },
-          away: { f: +a5snap.f.toFixed(2), a: +a5snap.a.toFixed(2), t: +a5snap.t.toFixed(2) },
-        } : null;
+        // l5snap = whatever snap.l5 was set to: self-reconstructed or native API fallback.
+        const l5snap = snap ? snap.l5 : null;
 
         // Snapshot pre-match prediction values before match completes
         const matchId = fix.id;
@@ -2020,6 +2041,7 @@ async function computePreds(tzOffset) {
               home: { name: snap.home.name, scored_fh: snap.home.scored_fh, conced_fh: snap.home.conced_fh, t1_pct: snap.home.t1_pct, cn010_avg: snap.home.cn010_avg, sot_avg: snap.home.sot_avg },
               away: { name: snap.away.name, scored_fh: snap.away.scored_fh, conced_fh: snap.away.conced_fh, t1_pct: snap.away.t1_pct, cn010_avg: snap.away.cn010_avg, sot_avg: snap.away.sot_avg },
               l5: l5snap,
+              ...(snap.prematch ? { prematch: snap.prematch } : {}),
             } : null,
           };
         }
@@ -2037,6 +2059,7 @@ async function computePreds(tzOffset) {
             home: { name: snap.home.name, scored_fh: snap.home.scored_fh, conced_fh: snap.home.conced_fh, t1_pct: snap.home.t1_pct, cn010_avg: snap.home.cn010_avg, sot_avg: snap.home.sot_avg },
             away: { name: snap.away.name, scored_fh: snap.away.scored_fh, conced_fh: snap.away.conced_fh, t1_pct: snap.away.t1_pct, cn010_avg: snap.away.cn010_avg, sot_avg: snap.away.sot_avg },
             l5: l5snap,
+            ...(snap.prematch ? { prematch: snap.prematch } : {}),
           } : null),
           rank:     frozen ? frozen.rank     : (result ? result.rank     : 0),
           label:    frozen ? frozen.label    : (result ? result.label    : "Low"),
@@ -2782,9 +2805,44 @@ app.get("/debug-raw-api", async (req, res) => {
         .map(k => [k, st[k]])
     ) : {};
 
+    // VERDICT: run the real extractStats -> computeSignals path on this match's
+    // ACTUAL home/away teams, so one hit tells us whether the native-L5 fallback
+    // produces usable signals for this league (vs. l5 staying null/zero).
+    let verdict = null;
+    if (sampleMatch && teams && teams.data) {
+      const tmap = {};
+      for (const t of teams.data) if (t && t.id) tmap[t.id] = t;
+      const hId = sampleMatch.homeID, aId = sampleMatch.awayID;
+      const hTeam = tmap[hId], aTeam = tmap[aId];
+      if (hTeam && aTeam) {
+        const hStats = extractStats(hTeam, "home");
+        const aStats = extractStats(aTeam, "away");
+        const l5 = (hStats.nvL5 && aStats.nvL5)
+          ? { home: hStats.nvL5, away: aStats.nvL5, nativeApi: true } : null;
+        const snap = { fetchedAt: "debug", home: hStats, away: aStats };
+        if (l5) snap.l5 = l5;
+        const sig = computeSignals(snap, [], []);
+        verdict = {
+          home_team: hStats.name, away_team: aStats.name,
+          home_nvL5: hStats.nvL5, away_nvL5: aStats.nvL5,
+          native_l5_available: !!l5,
+          native_l5_nonzero: !!(l5 && (hStats.nvL5.t > 0 || aStats.nvL5.t > 0)),
+          would_fire: { rank: sig.rank, label: sig.label, combo: sig.probCombo, signals: sig.signals },
+          conclusion: !l5
+            ? "FAIL: native _5 HT fields absent — fallback cannot populate l5"
+            : (l5 && hStats.nvL5.t === 0 && aStats.nvL5.t === 0)
+              ? "WEAK: _5 fields present but all zero — signals will read as 0"
+              : "OK: native l5 populated with real values — signals can evaluate",
+        };
+      } else {
+        verdict = { conclusion: "could not match sample match's teams to team-stats list" };
+      }
+    }
+
     res.json({
       ok: true,
       season_id: sid,
+      verdict,
       sample_match: sampleMatch ? {
         id: sampleMatch.id,
         date_unix: sampleMatch.date_unix,
