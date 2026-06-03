@@ -186,7 +186,13 @@ read retroactively and correlated with the FH results we already hold).
 > n≳100 and a cutoff holds clearly above that subset's own `baseRate15`. The full-cohort
 > result is carried by established leagues and must not be trusted for thin leagues.
 
-`snap.home/away` season stats are always present for live rows.
+`snap.home/away` season stats are always present for live rows. Each carries an
+optional **`xt`** sub-object (forward captures only, post-2026-06): extended FootyStats
+season fields frozen pre-game — `o15ht`/`o05ht`/`bttsfhg`/`leadHT` (HT percentages),
+`xgf`/`xga` (season xG per game), `datk` (dangerous attacks/game), `fhsc`/`fhcn` (FH goals
+scored/conceded per game, 0–40'). These **cannot be backfilled** — team season stats are
+cumulative, so re-fetching later leaks post-match games (the look-ahead trap). They only
+populate going forward; `/season-mine` uses them with a train/test date split.
 
 ### Women's Leagues — Excluded from Signal Calibration
 
@@ -268,6 +274,7 @@ for the last timer run.
 | `GET /calibration` | JSON | Live predicted-vs-actual by rank/combo (Supabase) |
 | `GET /signal-backtest` | JSON | Per-signal live lift + `byRank`/`byCombo` (Supabase) |
 | `GET /prematch-mine` | JSON | Calibrate FootyStats `snap.prematch` predictors (`o15HT` etc.) vs actual FH results (Supabase) |
+| `GET /season-mine` | JSON | Mine frozen season stats (`snap.home/away` + `xt.*`) as FH signals with a train/test date holdout (Supabase) |
 | `GET /history?days=N` | JSON | Recent completed matches with results (Supabase) |
 | `GET /supabase-status` | JSON | Supabase connection + persistence + self-capture status |
 | `GET /debug-raw-api?sid=N` | JSON | Raw FootyStats fields for a season + `verdict` on pre-match predictor availability |
