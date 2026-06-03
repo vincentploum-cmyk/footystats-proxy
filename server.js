@@ -618,6 +618,17 @@ function extractStats(teamObj, role) {
     if (fv !== null && fv !== undefined) return fv;
     return 0;
   };
+  // Role-specific season field with overall fallback (percentages / per-game avgs
+  // FootyStats already computes — no division needed).
+  const sv = (base) => { const r = s[base + sfx]; return safe(r != null ? r : s[base + "_overall"]); };
+  // First-half goal-timing: per-game scored/conceded in the 0–40 min window
+  // (role-specific buckets), normalised by matches played. This is FootyStats'
+  // own goal-timing data — when teams actually score in the first half.
+  const fhBuckets = (kind) =>
+    safe(((s["goals_" + kind + "_min_0_to_10" + sfx]  || 0) +
+          (s["goals_" + kind + "_min_11_to_20" + sfx] || 0) +
+          (s["goals_" + kind + "_min_21_to_30" + sfx] || 0) +
+          (s["goals_" + kind + "_min_31_to_40" + sfx] || 0)) / mpR);
   return {
     name:      teamObj.name || teamObj.cleanName || "",
     scored_fh: safe(pick("scoredAVGHT"   + sfx, "scoredAVGHT_overall")),
@@ -628,6 +639,20 @@ function extractStats(teamObj, role) {
     sot_avg:   safe((s["shotsOnTarget" + sfx] || s["shotsOnTarget_overall"] || 0) / mpR),
     mp:        safe(s.seasonMatchesPlayed_overall || 0),
     mpRole:    mpR,
+    // Extended FootyStats season fields, frozen pre-game for forward mining.
+    // These cannot be backfilled cleanly (season stats are cumulative → re-fetching
+    // later leaks post-match games), so they only populate on live forward captures.
+    xt: {
+      o15ht:  sv("seasonOver15PercentageHT"),   // % of games over 1.5 HT goals
+      o05ht:  sv("seasonOver05PercentageHT"),   // % over 0.5 HT goals
+      bttsfhg: sv("btts_fhg_percentage"),        // % both teams scored in FH
+      leadHT: sv("leadingAtHTPercentage"),       // % leading at HT
+      xgf:    sv("xg_for_avg"),                  // pre-game season xG for (per game)
+      xga:    sv("xg_against_avg"),              // season xG against
+      datk:   sv("dangerous_attacks_avg"),       // dangerous attacks per game
+      fhsc:   fhBuckets("scored"),               // FH goals scored / game (0–40')
+      fhcn:   fhBuckets("conceded"),             // FH goals conceded / game (0–40')
+    },
   };
 }
 
@@ -2150,8 +2175,8 @@ async function computePreds(tzOffset) {
             eligible: result.eligible, eligible25: result.eligible25, eligible15: result.eligible15, signals: result.signals,
             snap: snap ? {
               fetchedAt: snap.fetchedAt,
-              home: { name: snap.home.name, scored_fh: snap.home.scored_fh, conced_fh: snap.home.conced_fh, t1_pct: snap.home.t1_pct, cn010_avg: snap.home.cn010_avg, sot_avg: snap.home.sot_avg },
-              away: { name: snap.away.name, scored_fh: snap.away.scored_fh, conced_fh: snap.away.conced_fh, t1_pct: snap.away.t1_pct, cn010_avg: snap.away.cn010_avg, sot_avg: snap.away.sot_avg },
+              home: { name: snap.home.name, scored_fh: snap.home.scored_fh, conced_fh: snap.home.conced_fh, t1_pct: snap.home.t1_pct, cn010_avg: snap.home.cn010_avg, sot_avg: snap.home.sot_avg, ...(snap.home.xt ? { xt: snap.home.xt } : {}) },
+              away: { name: snap.away.name, scored_fh: snap.away.scored_fh, conced_fh: snap.away.conced_fh, t1_pct: snap.away.t1_pct, cn010_avg: snap.away.cn010_avg, sot_avg: snap.away.sot_avg, ...(snap.away.xt ? { xt: snap.away.xt } : {}) },
               l5: l5snap,
               ...(snap.prematch ? { prematch: snap.prematch } : {}),
             } : null,
@@ -2168,8 +2193,8 @@ async function computePreds(tzOffset) {
           matchDate, status: fix.status || "upcoming", missingStats: missing && !result,
           snap: frozen ? frozen.snap : (snap ? {
             fetchedAt: snap.fetchedAt,
-            home: { name: snap.home.name, scored_fh: snap.home.scored_fh, conced_fh: snap.home.conced_fh, t1_pct: snap.home.t1_pct, cn010_avg: snap.home.cn010_avg, sot_avg: snap.home.sot_avg },
-            away: { name: snap.away.name, scored_fh: snap.away.scored_fh, conced_fh: snap.away.conced_fh, t1_pct: snap.away.t1_pct, cn010_avg: snap.away.cn010_avg, sot_avg: snap.away.sot_avg },
+            home: { name: snap.home.name, scored_fh: snap.home.scored_fh, conced_fh: snap.home.conced_fh, t1_pct: snap.home.t1_pct, cn010_avg: snap.home.cn010_avg, sot_avg: snap.home.sot_avg, ...(snap.home.xt ? { xt: snap.home.xt } : {}) },
+            away: { name: snap.away.name, scored_fh: snap.away.scored_fh, conced_fh: snap.away.conced_fh, t1_pct: snap.away.t1_pct, cn010_avg: snap.away.cn010_avg, sot_avg: snap.away.sot_avg, ...(snap.away.xt ? { xt: snap.away.xt } : {}) },
             l5: l5snap,
             ...(snap.prematch ? { prematch: snap.prematch } : {}),
           } : null),
@@ -2323,6 +2348,7 @@ app.get("/last5-mine", async (req, res) => {
 // can pick a cutoff for o15HT_potential before wiring it in as a fallback.
 // Run /admin/backfill-prematch first to populate snap.prematch on existing rows.
 app.get("/prematch-mine", async (req, res) => {
+  res.set("Cache-Control", "no-store");
   if (!supabase) return res.status(400).json({ ok: false, error: "Supabase not enabled" });
   try {
     const all = [];
@@ -2410,6 +2436,128 @@ app.get("/prematch-mine", async (req, res) => {
         note: "Same sweep restricted to prematch-present rows whose l5 is null — i.e. the thin-league matches our A+B signals can't touch. Grows as forward capture adds these rows. Want o15HT cutoffs here to hold actual15 well above this subset's own baseRate15 before wiring in.",
       },
       note: "Full cohort lift is vs the full-cohort base. o15HT_potential is FootyStats' own FH>1.5 score. Decision gate: does o15HT predict FH>1.5 within the blindspot subset, not just overall?",
+    });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
+// Mine FootyStats SEASON stats (frozen pre-game in snap.home/away) as FH-goal
+// signals, with an HONEST train/test date split so we don't repeat the o15HT
+// overfit. Older matches = train (threshold selection), newer = test (reported).
+// A candidate is only credible if its TEST lift holds near its train lift.
+//
+// Always-present features (every live row): scored_fh, conced_fh, t1_pct.
+// Extended features (xt.*: o15ht, xgf, fhsc, …) populate only on forward captures
+// after this deploy, so their n grows over time — the same row may report them as
+// null until then. Look-ahead-free because snap freezes these at kickoff.
+app.get("/season-mine", async (req, res) => {
+  res.set("Cache-Control", "no-store");
+  if (!supabase) return res.status(400).json({ ok: false, error: "Supabase not enabled" });
+  try {
+    const all = [];
+    const PAGE = 1000;
+    for (let off = 0; ; off += PAGE) {
+      const { data, error } = await supabase
+        .from("match_results")
+        .select("hit_25, hit_15, date_unix, snap")
+        .not("hit_25", "is", null)
+        .not("snap", "is", null)
+        .not("snap->>fetchedAt", "eq", "historical-import")
+        .not("snap->>fetchedAt", "eq", "backfill")
+        .range(off, off + PAGE - 1);
+      if (error) throw error;
+      if (!data || data.length === 0) break;
+      all.push(...data);
+      if (data.length < PAGE) break;
+    }
+    const cohort = all.filter(m => m.snap && m.snap.home && m.snap.away && m.date_unix);
+    cohort.sort((a, b) => (a.date_unix || 0) - (b.date_unix || 0));
+
+    // 70/30 chronological split — train on the past, test on the most recent.
+    const cut = Math.floor(cohort.length * 0.7);
+    const train = cohort.slice(0, cut);
+    const test = cohort.slice(cut);
+
+    // Flatten the snap into a feature map (home/away season stats + extended xt).
+    const feat = (m) => {
+      const h = m.snap.home || {}, a = m.snap.away || {};
+      const hx = h.xt || {}, ax = a.xt || {};
+      return {
+        hScored: h.scored_fh, aScored: a.scored_fh,
+        hConced: h.conced_fh, aConced: a.conced_fh,
+        hT1: h.t1_pct, aT1: a.t1_pct,
+        // extended (may be undefined on pre-deploy rows)
+        hO15: hx.o15ht, aO15: ax.o15ht,
+        hXgf: hx.xgf, aXgf: ax.xgf, hXga: hx.xga, aXga: ax.xga,
+        hFhsc: hx.fhsc, aFhsc: ax.fhsc, hFhcn: hx.fhcn, aFhcn: ax.fhcn,
+        hDatk: hx.datk, aDatk: ax.datk,
+      };
+    };
+
+    const rate = (rows, line) => rows.length ? rows.filter(m => m[line]).length / rows.length : 0;
+    const baseTrain15 = rate(train, "hit_15"), baseTest15 = rate(test, "hit_15");
+    const baseTrain25 = rate(train, "hit_25"), baseTest25 = rate(test, "hit_25");
+
+    // Evaluate a predicate on a row set, requiring all referenced features present.
+    const evalOn = (rows, pred) => {
+      const fired = rows.filter(m => { const f = feat(m); return pred(f); });
+      const n = fired.length;
+      if (!n) return { n: 0, hit15: 0, hit25: 0 };
+      return {
+        n,
+        hit15: +(fired.filter(m => m.hit_15).length / n * 100).toFixed(1),
+        hit25: +(fired.filter(m => m.hit_25).length / n * 100).toFixed(1),
+      };
+    };
+
+    // Candidate single/twin-feature thresholds. `req` lists features that must be
+    // non-null for a row to count (keeps extended-feature candidates honest).
+    const C = [];
+    const add = (label, need, pred) => C.push({ label, need, pred });
+    const has = (f, keys) => keys.every(k => f[k] != null);
+    // Always-present season HT stats (mineable on the full 888 today):
+    for (const t of [0.7, 0.8, 0.9, 1.0]) add("hScored>=" + t, ["hScored"], f => f.hScored >= t);
+    for (const t of [0.6, 0.7, 0.8, 0.9]) add("aScored>=" + t, ["aScored"], f => f.aScored >= t);
+    for (const t of [0.7, 0.8, 0.9]) add("hConced>=" + t, ["hConced"], f => f.hConced >= t);
+    for (const t of [0.7, 0.8, 0.9]) add("aConced>=" + t, ["aConced"], f => f.aConced >= t);
+    for (const t of [20, 25, 30]) add("hT1>=" + t, ["hT1"], f => f.hT1 >= t);
+    for (const t of [20, 25, 30]) add("aT1>=" + t, ["aT1"], f => f.aT1 >= t);
+    add("hScored+aScored>=1.6", ["hScored", "aScored"], f => f.hScored + f.aScored >= 1.6);
+    add("hScored+aConced>=1.7", ["hScored", "aConced"], f => f.hScored + f.aConced >= 1.7);
+    add("both T1>=25", ["hT1", "aT1"], f => f.hT1 >= 25 && f.aT1 >= 25);
+    add("hScored>=0.9 & aScored>=0.7", ["hScored", "aScored"], f => f.hScored >= 0.9 && f.aScored >= 0.7);
+    // Extended features (populate after deploy):
+    for (const t of [40, 45, 50]) add("xt:o15ht both>=" + t, ["hO15", "aO15"], f => f.hO15 >= t && f.aO15 >= t);
+    for (const t of [2.0, 2.5]) add("xt:xgFor sum>=" + t, ["hXgf", "aXgf"], f => f.hXgf + f.aXgf >= t);
+    add("xt:fhScore sum>=1.4", ["hFhsc", "aFhsc"], f => f.hFhsc + f.aFhsc >= 1.4);
+
+    // For each candidate: train hit/lift (selection) AND test hit/lift (verdict).
+    const results = C.map(c => {
+      const tr = evalOn(train, m => has(feat(m), c.need) && c.pred(feat(m)));
+      const te = evalOn(test, m => has(feat(m), c.need) && c.pred(feat(m)));
+      return {
+        label: c.label,
+        train: { n: tr.n, hit15: tr.hit15, lift15: baseTrain15 ? +(tr.hit15 / 100 / baseTrain15).toFixed(2) : 0, hit25: tr.hit25 },
+        test:  { n: te.n, hit15: te.hit15, lift15: baseTest15 ? +(te.hit15 / 100 / baseTest15).toFixed(2) : 0, hit25: te.hit25 },
+      };
+    });
+
+    // Credible = selected on train (n>=30, lift>1.15) AND holds on test (n>=15, lift>1.1).
+    const credible = results.filter(r =>
+      r.train.n >= 30 && r.train.lift15 > 1.15 && r.test.n >= 15 && r.test.lift15 > 1.1
+    ).sort((a, b) => b.test.lift15 - a.test.lift15);
+
+    res.json({
+      ok: true,
+      cohort: cohort.length,
+      trainN: train.length, testN: test.length,
+      baseRate15: { train: +(baseTrain15 * 100).toFixed(1), test: +(baseTest15 * 100).toFixed(1) },
+      baseRate25: { train: +(baseTrain25 * 100).toFixed(1), test: +(baseTest25 * 100).toFixed(1) },
+      currentModelRef: "A+B combo 11 ≈ 44% FH>1.5; B-only ≈ 42%. Beat that out-of-sample to matter.",
+      credible,
+      allResults: results.sort((a, b) => b.test.lift15 - a.test.lift15),
+      note: "TRAIN selects, TEST judges. Trust only candidates whose test.lift15 stays near train.lift15 at reasonable n — that's an out-of-sample win, not an overfit. xt:* candidates show n=0 until forward capture accumulates post-deploy rows.",
     });
   } catch (e) {
     res.status(500).json({ ok: false, error: e.message });
@@ -3038,10 +3186,46 @@ app.get("/debug-raw-api", async (req, res) => {
       };
     }
 
+    // RECENT-FORM RECON: to build last-5 versions of richer features we need those
+    // stats to exist PER COMPLETED MATCH (not just as season aggregates). Probe a
+    // completed match for actual (post-game) xG / shots / corners / possession /
+    // attacks, with values, so we know what's aggregatable over a team's last 5.
+    const completed = all.find(m => m.status === "complete") || null;
+    let perMatchRecon = null;
+    if (completed) {
+      const candidateFields = [
+        "team_a_xg", "team_b_xg", "total_xg",
+        "team_a_xg_prematch", "team_b_xg_prematch",
+        "team_a_shots", "team_b_shots",
+        "team_a_shotsOnTarget", "team_b_shotsOnTarget",
+        "team_a_corners", "team_b_corners",
+        "team_a_possession", "team_b_possession",
+        "team_a_dangerous_attacks", "team_b_dangerous_attacks",
+        "team_a_fh_shots", "team_b_fh_shots",
+        "ht_goals_team_a", "ht_goals_team_b",
+        "homeGoalCount", "awayGoalCount",
+      ];
+      const present = {}, missing = [];
+      for (const f of candidateFields) {
+        const v = completed[f];
+        if (v === undefined) missing.push(f);
+        else present[f] = v;
+      }
+      perMatchRecon = {
+        match: completed.home_name + " vs " + completed.away_name,
+        status: completed.status,
+        present_fields: present,            // exist on the match record (with values)
+        missing_fields: missing,            // not on the record at all
+        all_match_keys: Object.keys(completed).sort(),
+        note: "present_fields with real (non -1) values can be aggregated into last-5 form. -1 / missing means FootyStats doesn't carry it per-match for this league, so a recent-form version is NOT buildable.",
+      };
+    }
+
     res.json({
       ok: true,
       season_id: sid,
       verdict,
+      perMatchRecon,
       sample_match: sampleMatch ? {
         id: sampleMatch.id,
         date_unix: sampleMatch.date_unix,

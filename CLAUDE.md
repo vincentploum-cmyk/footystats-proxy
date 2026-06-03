@@ -172,11 +172,27 @@ match, including thin-coverage leagues where `l5` is null:
 - `btts_fhg` — both-teams-to-score-in-FH potential.
 
 Not yet wired into the signals — captured and being calibrated (`/prematch-mine`) as a
-**fallback FH predictor when `snap.l5` is null**. Backfill onto historical rows with
-`/admin/backfill-prematch` (these fields persist on completed matches, so they can be read
-retroactively and correlated with the FH results we already hold).
+candidate **fallback FH predictor when `snap.l5` is null**. Backfill onto historical rows
+with `/admin/backfill-prematch` (these fields persist on completed matches, so they can be
+read retroactively and correlated with the FH results we already hold).
 
-`snap.home/away` season stats are always present for live rows.
+> **Calibration status (2026-06, n≈689 with prematch):** `o15HT_potential` predicts FH>1.5
+> cleanly and monotonically **on the full cohort** (≥50 → 48% vs 36.4% base, lift 1.32;
+> ≥55 → 53.5%). **But it does NOT replicate on the `l5`-null blind-spot subset** (the only
+> place it would actually be used): there, ≥50 gives 33% FH>1.5 at n=12 — *below* the
+> subset's own 36.7% base. Pre-match `xg` is noise on both (full-match xG ≠ FH). `btts_fhg`
+> looks strong on the subset (lift ~1.8) but at n=9. **Do NOT wire any prematch field as a
+> live fallback** until the blind-spot subset (`/prematch-mine` → `blindspot`) reaches
+> n≳100 and a cutoff holds clearly above that subset's own `baseRate15`. The full-cohort
+> result is carried by established leagues and must not be trusted for thin leagues.
+
+`snap.home/away` season stats are always present for live rows. Each carries an
+optional **`xt`** sub-object (forward captures only, post-2026-06): extended FootyStats
+season fields frozen pre-game — `o15ht`/`o05ht`/`bttsfhg`/`leadHT` (HT percentages),
+`xgf`/`xga` (season xG per game), `datk` (dangerous attacks/game), `fhsc`/`fhcn` (FH goals
+scored/conceded per game, 0–40'). These **cannot be backfilled** — team season stats are
+cumulative, so re-fetching later leaks post-match games (the look-ahead trap). They only
+populate going forward; `/season-mine` uses them with a train/test date split.
 
 ### Women's Leagues — Excluded from Signal Calibration
 
@@ -258,6 +274,7 @@ for the last timer run.
 | `GET /calibration` | JSON | Live predicted-vs-actual by rank/combo (Supabase) |
 | `GET /signal-backtest` | JSON | Per-signal live lift + `byRank`/`byCombo` (Supabase) |
 | `GET /prematch-mine` | JSON | Calibrate FootyStats `snap.prematch` predictors (`o15HT` etc.) vs actual FH results (Supabase) |
+| `GET /season-mine` | JSON | Mine frozen season stats (`snap.home/away` + `xt.*`) as FH signals with a train/test date holdout (Supabase) |
 | `GET /history?days=N` | JSON | Recent completed matches with results (Supabase) |
 | `GET /supabase-status` | JSON | Supabase connection + persistence + self-capture status |
 | `GET /debug-raw-api?sid=N` | JSON | Raw FootyStats fields for a season + `verdict` on pre-match predictor availability |
