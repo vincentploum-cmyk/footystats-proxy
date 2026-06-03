@@ -93,26 +93,25 @@ signal fires, and rank stays 0.
 
 ### Probability Tables
 
-Calibrated on **860 clean live-captured matches** (look-ahead-free, snap frozen pre-game).
-The interaction is the engine: A+B (rank 2) far outperforms either signal alone.
+Calibrated on **732 clean resolved matches** (women excluded, look-ahead-free).
+Tables are **combo-keyed** (`PROB15_BY_COMBO` / `PROB25_BY_COMBO` in `server.js`):
 
-Global rank table (`PROB15_BY_RANK` / `PROB25_BY_RANK` in `server.js`):
+| Combo | n | prob15 (FH>1.5) | prob25 (FH>2.5) |
+|-------|---|-----------------|-----------------|
+| 11 🔥 A+B | 72 | 47.2% | **20.8%** (2.2× baseline) |
+| 01 — B only | 225 | **44.9%** | 11.6% |
+| 10 — A only | 31 | 29.0% | 9.7% |
+| 00 — neither | 404 | 32.9% | 9.4% |
 
-| Rank | Combo | prob15 (FH>1.5) | prob25 (FH>2.5) |
-|------|-------|-----------------|-----------------|
-| 2 🔥 | A + B | 50.7% | 19.5% (~2.1× baseline) |
-| 1 | A only or B only | 45.0% | 9.5% |
-| 0 | Neither | 31.6% | 7.5% |
+Key findings from calibration (732 matches, women excluded):
+- **A alone is at/below baseline on both metrics** (9.7% FH>2.5, 29.0% FH>1.5 vs 32.9% baseline) — zero standalone value.
+- **B alone is a strong FH>1.5 predictor** (44.9% vs 32.9% baseline, n=225) but barely moves FH>2.5 (11.6%).
+- **A+B is the FH>2.5 signal** (20.8% vs 9.4% baseline = 2.2× lift, n=72).
+- The betPill already reflects this: 🔥 only when A+B fire; 🎯 whenever B fires.
 
-FH>2.5 by combo (from calibration, baseline ≈ 9.2%): **A+B 19.5%** ≫ B only ≈ 9.5% >
-A only ≈ 8.6% > baseline. A and B alone are near baseline — only the interaction carries
-the lift, which is why 🔥 shows **only when both fire**.
-
-Recalibrate by re-running the threshold analysis SQL on `match_results` filtered to
-live-captured rows (`fetchedAt NOT IN ('historical-import', 'backfill')`). The
-`/signal-backtest` endpoint reports the live `cohortSize`, per-signal lift, and per-rank
-`gap25` (actual − predicted); a persistently negative `gap25` at rank 2 means the table
-overpredicts and is the trigger to recalibrate.
+Recalibrate by re-running the three combo/rank SQL queries against `match_results` filtered to
+live-captured rows. The `/signal-backtest` endpoint reports `cohortSize`, per-signal lift, and
+per-rank `gap25` (actual − predicted); a persistently negative `gap25` at rank 2 is the trigger.
 
 ### combo string format
 
@@ -247,7 +246,7 @@ from its own completed match history, without requiring manual dataset updates.
 
 ### Phase 1 — Rolling probability recalibration (in-memory)
 - On each `/preds` call, scan `SERVER_MATCH_CACHE` for completed matches
-- Recompute `PROB25_BY_RANK` and `PROB15_BY_RANK` from recent results
+- Recompute `PROB25_BY_COMBO` and `PROB15_BY_COMBO` from recent results
 - Apply a minimum sample guardrail (n ≥ 30 per rank) before overriding defaults
 - Resets on Render restart — useful for session-level adaptation
 
