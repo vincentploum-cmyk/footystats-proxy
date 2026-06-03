@@ -2343,54 +2343,73 @@ app.get("/prematch-mine", async (req, res) => {
     }
     const cohortAll = all.length;
     const cohort = all.filter(m => m.snap && m.snap.prematch);
-    const n = cohort.length;
-    const base25 = n ? cohort.filter(m => m.hit_25).length / n : 0;
-    const base15 = n ? cohort.filter(m => m.hit_15).length / n : 0;
-
-    // How many cohort rows also lack l5 — i.e. the blind-spot matches this is meant to cover.
-    const noL5 = cohort.filter(m => !m.snap.l5 || !m.snap.l5.home || !m.snap.l5.away).length;
+    const hasL5 = (m) => !!(m.snap.l5 && m.snap.l5.home && m.snap.l5.away);
+    // The blind-spot subset: prematch present but l5 null — exactly where o15HT
+    // would actually be used as a fallback. This is the population that matters.
+    const blindspot = cohort.filter(m => !hasL5(m));
 
     const pm = (m) => m.snap.prematch || {};
-    const test = (label, pred) => {
-      const fired = cohort.filter(m => pred(pm(m)));
-      const fN = fired.length;
-      if (!fN) return { label, n: 0, actual25: 0, actual15: 0, lift25: 0, lift15: 0 };
-      const h25 = fired.filter(m => m.hit_25).length;
-      const h15 = fired.filter(m => m.hit_15).length;
+
+    // Run the full threshold sweep over an arbitrary subset, with that subset's
+    // own base rates, so the lift is honest within-population (not vs the global base).
+    const mine = (rows) => {
+      const N = rows.length;
+      const b25 = N ? rows.filter(m => m.hit_25).length / N : 0;
+      const b15 = N ? rows.filter(m => m.hit_15).length / N : 0;
+      const test = (label, pred) => {
+        const fired = rows.filter(m => pred(pm(m)));
+        const fN = fired.length;
+        if (!fN) return { label, n: 0, actual25: 0, actual15: 0, lift25: 0, lift15: 0 };
+        const h25 = fired.filter(m => m.hit_25).length;
+        const h15 = fired.filter(m => m.hit_15).length;
+        return {
+          label, n: fN,
+          actual25: +(h25 / fN * 100).toFixed(1),
+          actual15: +(h15 / fN * 100).toFixed(1),
+          lift25: b25 ? +(h25 / fN / b25).toFixed(2) : 0,
+          lift15: b15 ? +(h15 / fN / b15).toFixed(2) : 0,
+        };
+      };
+      const results = [];
+      // o15HT_potential is FootyStats' own FH-over-1.5 likelihood (0–100). Sweep cutoffs.
+      for (const t of [40, 45, 50, 55, 60, 65, 70]) results.push(test("o15HT>=" + t, x => x.o15HT != null && x.o15HT >= t));
+      for (const t of [60, 65, 70, 75, 80, 85]) results.push(test("o05HT>=" + t, x => x.o05HT != null && x.o05HT >= t));
+      for (const t of [2.0, 2.5, 3.0, 3.5]) results.push(test("xgTotal>=" + t, x => (x.xgHome != null && x.xgAway != null) && (x.xgHome + x.xgAway) >= t));
+      for (const t of [20, 25, 30, 35]) results.push(test("btts_fhg>=" + t, x => x.btts_fhg != null && x.btts_fhg >= t));
+      results.push(test("o15HT>=50 & xgTotal>=2.5", x => x.o15HT >= 50 && (x.xgHome + x.xgAway) >= 2.5));
+      results.push(test("o15HT>=55 & xgTotal>=3.0", x => x.o15HT >= 55 && (x.xgHome + x.xgAway) >= 3.0));
       return {
-        label, n: fN,
-        actual25: +(h25 / fN * 100).toFixed(1),
-        actual15: +(h15 / fN * 100).toFixed(1),
-        lift25: base25 ? +(h25 / fN / base25).toFixed(2) : 0,
-        lift15: base15 ? +(h15 / fN / base15).toFixed(2) : 0,
+        n: N,
+        baseRate25: +(b25 * 100).toFixed(1),
+        baseRate15: +(b15 * 100).toFixed(1),
+        results,
       };
     };
 
-    const results = [];
-    // o15HT_potential is FootyStats' own FH-over-1.5 likelihood (0–100). Sweep cutoffs.
-    for (const t of [40, 45, 50, 55, 60, 65, 70]) results.push(test("o15HT>=" + t, x => x.o15HT != null && x.o15HT >= t));
-    for (const t of [60, 65, 70, 75, 80, 85]) results.push(test("o05HT>=" + t, x => x.o05HT != null && x.o05HT >= t));
-    // Pre-match total xG (full match) — proxy for overall goal expectation.
-    for (const t of [2.0, 2.5, 3.0, 3.5]) results.push(test("xgTotal>=" + t, x => (x.xgHome != null && x.xgAway != null) && (x.xgHome + x.xgAway) >= t));
-    for (const t of [20, 25, 30, 35]) results.push(test("btts_fhg>=" + t, x => x.btts_fhg != null && x.btts_fhg >= t));
-    // Combos: FootyStats' FH potential + goal expectation together.
-    results.push(test("o15HT>=50 & xgTotal>=2.5", x => x.o15HT >= 50 && (x.xgHome + x.xgAway) >= 2.5));
-    results.push(test("o15HT>=55 & xgTotal>=3.0", x => x.o15HT >= 55 && (x.xgHome + x.xgAway) >= 3.0));
-
-    const actionable = results.filter(r => r.n >= 20);
+    const full = mine(cohort);
+    const bs = mine(blindspot);
+    const actionable = full.results.filter(r => r.n >= 20);
 
     res.json({
       ok: true,
       cohortTotal: cohortAll,
-      cohortWithPrematch: n,
-      withoutPrematch: cohortAll - n,
-      prematchRowsLackingL5: noL5,
-      baseRate25: +(base25 * 100).toFixed(1),
-      baseRate15: +(base15 * 100).toFixed(1),
+      cohortWithPrematch: full.n,
+      withoutPrematch: cohortAll - full.n,
+      // ── Full cohort (mostly l5-present) — the broad validation ──
+      baseRate25: full.baseRate25,
+      baseRate15: full.baseRate15,
       topByLift15: actionable.slice().sort((a, b) => b.lift15 - a.lift15).slice(0, 15),
       topByLift25: actionable.slice().sort((a, b) => b.lift25 - a.lift25).slice(0, 15),
-      allResults: results,
-      note: "Cohort = live rows with snap.prematch. Compare lift15 vs baseRate15. o15HT_potential is FootyStats' own FH>1.5 score; a cutoff with lift15>1.3 at n>=30 is a usable fallback when our l5 is null. prematchRowsLackingL5 = how many of these are the actual blind-spot matches.",
+      allResults: full.results,
+      // ── Blind-spot subset (l5 null) — the population we'd actually use this on ──
+      blindspot: {
+        n: bs.n,
+        baseRate25: bs.baseRate25,
+        baseRate15: bs.baseRate15,
+        results: bs.results,
+        note: "Same sweep restricted to prematch-present rows whose l5 is null — i.e. the thin-league matches our A+B signals can't touch. Grows as forward capture adds these rows. Want o15HT cutoffs here to hold actual15 well above this subset's own baseRate15 before wiring in.",
+      },
+      note: "Full cohort lift is vs the full-cohort base. o15HT_potential is FootyStats' own FH>1.5 score. Decision gate: does o15HT predict FH>1.5 within the blindspot subset, not just overall?",
     });
   } catch (e) {
     res.status(500).json({ ok: false, error: e.message });
