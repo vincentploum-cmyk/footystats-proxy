@@ -148,11 +148,25 @@ Run `/signal-backtest` (or `/calibration`) for the authoritative current `cohort
   "fetchedAt": "2026-05-03 00:11",
   "home": { "name": "...", "scored_fh": 0.94, "conced_fh": 0.61, "t1_pct": 27.0, "cn010_avg": 0.09, "sot_avg": 0 },
   "away": { "name": "...", "scored_fh": 0.55, "conced_fh": 0.70, "t1_pct": 13.0, "cn010_avg": 0.12, "sot_avg": 0 },
-  "l5": { "home": { "f": 0.8, "a": 0.6, "t": 1.4 }, "away": { "f": 0.6, "a": 0.8, "t": 1.4 } }
+  "l5": { "home": { "f": 0.8, "a": 0.6, "t": 1.4 }, "away": { "f": 0.6, "a": 0.8, "t": 1.4 } },
+  "prematch": { "o15HT": 42, "o05HT": 78, "xgHome": 0.61, "xgAway": 0.44, "btts_fhg": 31 }
 }
 ```
 
-`snap.l5` is non-null only when both teams had ≥ 3 recent games at capture time.
+`snap.l5` is populated from one of two sources:
+- **Self-reconstructed** (primary): built from `LEAGUE_MATCHES_CACHE` game history.
+  Present when both teams had ≥ 3 recent cached games. Requires the league's season
+  matches to be in cache (always true for established leagues; may be null for new/thin
+  seasons on the first day).
+- **Native API fallback** (`snap.l5.nativeApi === true`): read directly from FootyStats
+  team stats fields `scoredAVGHT_{role}_5` / `concededAVGHT_{role}_5` (falling back to
+  `_overall_5`). Used when self-reconstruction yields null (e.g. USL2, WPSL short seasons).
+
+`snap.prematch` (optional): pre-match first-half predictors from the `/league-matches`
+endpoint, captured at freeze time. `o15HT` and `o05HT` are FootyStats' own FH potential
+scores (0–100); `xgHome`/`xgAway` are pre-match expected goals. Not used by signals yet —
+captured for future analysis and calibration.
+
 `snap.home/away` season stats are always present for live rows.
 
 ### Women's Leagues — Excluded from Signal Calibration
@@ -307,6 +321,14 @@ All learning that needs to survive restarts must use Supabase.
   `computeSignals(snap, hLast5, aLast5)` reads `snap.l5` directly; when `snap.l5` is
   absent neither signal fires and rank stays 0. (Season stats like `t1_pct`/`scored_fh`
   are still captured in `snap.home`/`snap.away` but are no longer used by the signals.)
+- **`snap.l5` has two sources**: self-reconstructed from `LEAGUE_MATCHES_CACHE` (primary)
+  and FootyStats native team API stats (fallback, `snap.l5.nativeApi === true`). The native
+  fallback uses `scoredAVGHT_{role}_5` / `concededAVGHT_{role}_5` from the team stats
+  endpoint. It fires only when self-reconstruction yields null (thin/new-season leagues).
+  When backtesting, filter on `snap->l5->>'nativeApi' IS NULL` for self-reconstructed only.
+- **`snap.prematch`** captures FootyStats' pre-match fixture-level predictors (`o15HT`,
+  `o05HT`, `xgHome`, `xgAway`, `btts_fhg`) at freeze time. Not used as signals — research
+  data only. Mine against `match_results` to evaluate as future signal candidates.
 - **Do NOT reintroduce the season-stat Signal E** (`t1_pct`/`scored_fh`) as a core signal —
   it was the prior-generation A+E model, replaced by the last-5 A+B model.
 - **Do NOT reintroduce signals C or D, or the old "Attack vs Leak" signal** — dropped on
