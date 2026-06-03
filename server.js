@@ -2793,6 +2793,139 @@ app.get("/last5-rank0", async (req, res) => {
   }
 });
 
+// Characterise the FALSE NEGATIVES: matches the CURRENT model rates rank 0
+// (neither A: hT>=1.6 & aT>=1.4, nor B: aF>=0.8) that still went over in the
+// first half. For each pre-game feature, contrast its mean among rank-0 games
+// that DID go over vs those that didn't — a feature that separates them is a
+// candidate signal we're currently missing. Then sweep thresholds for lift.
+// In-sample/exploratory: confirm any hit with a holdout before wiring (o15HT lesson).
+app.get("/rank0-overs", async (req, res) => {
+  res.set("Cache-Control", "no-store");
+  if (!supabase) return res.status(400).json({ ok: false, error: "Supabase not enabled" });
+  try {
+    const all = [];
+    const PAGE = 1000;
+    for (let off = 0; ; off += PAGE) {
+      const { data, error } = await supabase
+        .from("match_results")
+        .select("hit_25, hit_15, snap")
+        .not("hit_25", "is", null)
+        .not("snap", "is", null)
+        .not("snap->>fetchedAt", "eq", "historical-import")
+        .not("snap->>fetchedAt", "eq", "backfill")
+        .range(off, off + PAGE - 1);
+      if (error) throw error;
+      if (!data || data.length === 0) break;
+      all.push(...data);
+      if (data.length < PAGE) break;
+    }
+    const withL5 = all.filter(m => m.snap && m.snap.l5 && m.snap.l5.home && m.snap.l5.away);
+
+    // CURRENT production signal definitions (must match computeSignals).
+    const isRank0 = (m) => {
+      const hT = m.snap.l5.home.t || 0, aT = m.snap.l5.away.t || 0, aF = m.snap.l5.away.f || 0;
+      const sigA = hT >= 1.6 && aT >= 1.4;
+      const sigB = aF >= 0.8;
+      return !sigA && !sigB;
+    };
+    const rank0 = withL5.filter(isRank0);
+
+    const F = (m) => {
+      const l5 = m.snap.l5, h = m.snap.home || {}, a = m.snap.away || {}, pm = m.snap.prematch || {};
+      return {
+        hT: l5.home.t, aT: l5.away.t, ci: (l5.home.t || 0) + (l5.away.t || 0),
+        hF: l5.home.f, hA: l5.home.a, aF: l5.away.f, aA: l5.away.a,
+        h_scored_fh: h.scored_fh, a_scored_fh: a.scored_fh,
+        h_conced_fh: h.conced_fh, a_conced_fh: a.conced_fh,
+        h_t1: h.t1_pct, a_t1: a.t1_pct,
+        o15HT: pm.o15HT, o05HT: pm.o05HT,
+      };
+    };
+
+    const n = rank0.length;
+    const overs15 = rank0.filter(m => m.hit_15);
+    const overs25 = rank0.filter(m => m.hit_25);
+    const base15 = n ? overs15.length / n : 0;
+    const base25 = n ? overs25.length / n : 0;
+
+    const r2 = (v) => v == null ? null : +v.toFixed(2);
+    const mean = (arr) => arr.length ? arr.reduce((s, v) => s + v, 0) / arr.length : null;
+
+    // Feature contrast: mean of each feature among rank-0 OVERS vs rank-0 NON-overs.
+    const featureKeys = ["hT", "aT", "ci", "hF", "hA", "aF", "aA",
+      "h_scored_fh", "a_scored_fh", "h_conced_fh", "a_conced_fh", "h_t1", "a_t1", "o15HT", "o05HT"];
+    const contrast = {};
+    for (const k of featureKeys) {
+      const present = rank0.filter(m => F(m)[k] != null);
+      const o15 = present.filter(m => m.hit_15).map(m => F(m)[k]);
+      const u15 = present.filter(m => !m.hit_15).map(m => F(m)[k]);
+      const o25 = present.filter(m => m.hit_25).map(m => F(m)[k]);
+      const u25 = present.filter(m => !m.hit_25).map(m => F(m)[k]);
+      const m_o15 = mean(o15), m_u15 = mean(u15), m_o25 = mean(o25), m_u25 = mean(u25);
+      contrast[k] = {
+        nPresent: present.length,
+        over15_mean: r2(m_o15), under15_mean: r2(m_u15),
+        delta15: (m_o15 != null && m_u15 != null) ? r2(m_o15 - m_u15) : null,
+        over25_mean: r2(m_o25), under25_mean: r2(m_u25),
+        delta25: (m_o25 != null && m_u25 != null) ? r2(m_o25 - m_u25) : null,
+      };
+    }
+    // Rank features by how strongly they separate the FH>1.5 overs (|delta15|).
+    const topSeparators15 = Object.entries(contrast)
+      .filter(([, v]) => v.delta15 != null && v.nPresent >= 30)
+      .sort((a, b) => Math.abs(b[1].delta15) - Math.abs(a[1].delta15))
+      .map(([k, v]) => ({ feature: k, delta15: v.delta15, over15_mean: v.over15_mean, under15_mean: v.under15_mean, n: v.nPresent }));
+    const topSeparators25 = Object.entries(contrast)
+      .filter(([, v]) => v.delta25 != null && v.nPresent >= 30)
+      .sort((a, b) => Math.abs(b[1].delta25) - Math.abs(a[1].delta25))
+      .map(([k, v]) => ({ feature: k, delta25: v.delta25, over25_mean: v.over25_mean, under25_mean: v.under25_mean, n: v.nPresent }));
+
+    // Threshold lift sweep within rank-0 (asymmetric / season / prematch patterns).
+    const test = (label, pred) => {
+      const sub = rank0.filter(m => { try { return pred(F(m)); } catch (_) { return false; } });
+      const fN = sub.length;
+      if (!fN) return { label, n: 0 };
+      const h25 = sub.filter(m => m.hit_25).length, h15 = sub.filter(m => m.hit_15).length;
+      return {
+        label, n: fN,
+        actual15: +(h15 / fN * 100).toFixed(1), lift15: base15 ? +(h15 / fN / base15).toFixed(2) : 0,
+        actual25: +(h25 / fN * 100).toFixed(1), lift25: base25 ? +(h25 / fN / base25).toFixed(2) : 0,
+      };
+    };
+    const ge = (v, t) => v != null && v >= t;
+    const results = [];
+    for (const t of [1.0, 1.2, 1.4]) results.push(test("hF>=" + t + " (home L5 scored)", x => ge(x.hF, t)));
+    for (const t of [2.0, 2.5, 3.0]) results.push(test("hT>=" + t + " (home L5 total)", x => ge(x.hT, t)));
+    for (const t of [1.5, 2.0]) results.push(test("aT>=" + t + " (away L5 total)", x => ge(x.aT, t)));
+    for (const t of [1.0, 1.2]) { results.push(test("hA>=" + t + " (home L5 leak)", x => ge(x.hA, t))); results.push(test("aA>=" + t + " (away L5 leak)", x => ge(x.aA, t))); }
+    results.push(test("hF>=1.0 & aA>=1.0 (home atk vs away leak)", x => ge(x.hF, 1.0) && ge(x.aA, 1.0)));
+    results.push(test("home scored_fh>=0.9 (season)", x => ge(x.h_scored_fh, 0.9)));
+    results.push(test("both t1_pct>=25 (season)", x => ge(x.h_t1, 25) && ge(x.a_t1, 25)));
+    for (const t of [45, 50, 55]) results.push(test("o15HT>=" + t + " (prematch)", x => ge(x.o15HT, t)));
+
+    const actionable = results.filter(r => r.n >= 20);
+
+    res.json({
+      ok: true,
+      cohortWithL5: withL5.length,
+      rank0Total: n,
+      rank0Pct: withL5.length ? +(n / withL5.length * 100).toFixed(1) : 0,
+      rank0_overs15: overs15.length,
+      rank0_overs25: overs25.length,
+      baseRate15: +(base15 * 100).toFixed(1),
+      baseRate25: +(base25 * 100).toFixed(1),
+      topSeparators15,
+      topSeparators25,
+      featureContrast: contrast,
+      thresholdSweep_byLift15: actionable.slice().sort((a, b) => b.lift15 - a.lift15).slice(0, 12),
+      thresholdSweep_byLift25: actionable.slice().sort((a, b) => b.lift25 - a.lift25).slice(0, 12),
+      note: "rank0 = neither current signal fires. topSeparators ranks features by how differently they read on the overs vs non-overs (a real pattern shows a large delta at decent n). thresholdSweep lift>1.3 at n>=20 is a candidate — but in-sample; confirm with a date holdout before wiring (o15HT looked great in-sample then failed on the blind spot).",
+    });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
 // Diagnostic: how often A and B fire on CURRENT upcoming matches (live signal
 // code, not the persisted snapshots that /signal-backtest reads). Use this to
 // see whether either signal is dormant or saturated for the current league set.
