@@ -93,20 +93,22 @@ signal fires, and rank stays 0.
 
 ### Probability Tables
 
-Calibrated on **732 clean resolved matches** (women excluded, look-ahead-free).
+Calibrated on **888 clean resolved matches** (women excluded, look-ahead-free).
 Tables are **combo-keyed** (`PROB15_BY_COMBO` / `PROB25_BY_COMBO` in `server.js`):
 
 | Combo | n | prob15 (FH>1.5) | prob25 (FH>2.5) |
 |-------|---|-----------------|-----------------|
-| 11 🔥 A+B | 72 | 47.2% | **20.8%** (2.2× baseline) |
-| 01 — B only | 225 | **44.9%** | 11.6% |
-| 10 — A only | 31 | 29.0% | 9.7% |
-| 00 — neither | 404 | 32.9% | 9.4% |
+| 11 🔥 A+B | 86 | 44.2% | **19.8%** (2.0× the no-signal rate) |
+| 01 — B only | 266 | **42.1%** | 11.3% |
+| 10 — A only | 32 | 31.3% | 9.4% |
+| 00 — neither | 504 | 32.7% | 9.9% |
 
-Key findings from calibration (732 matches, women excluded):
-- **A alone is at/below baseline on both metrics** (9.7% FH>2.5, 29.0% FH>1.5 vs 32.9% baseline) — zero standalone value.
-- **B alone is a strong FH>1.5 predictor** (44.9% vs 32.9% baseline, n=225) but barely moves FH>2.5 (11.6%).
-- **A+B is the FH>2.5 signal** (20.8% vs 9.4% baseline = 2.2× lift, n=72).
+Overall baseline (888 cohort): 11.3% FH>2.5, 36.6% FH>1.5.
+
+Key findings from calibration (888 matches, women excluded):
+- **A alone is at/below the no-signal rate on both metrics** (9.4% FH>2.5, 31.3% FH>1.5 vs 9.9%/32.7% neither) — zero standalone value.
+- **B alone is a strong FH>1.5 predictor** (42.1% vs 32.7% neither = +9.4pp, n=266) but sits at baseline on FH>2.5 (11.3%).
+- **A+B is the FH>2.5 signal** (19.8% vs 9.9% neither = 2.0× lift, n=86).
 - The betPill already reflects this: 🔥 only when A+B fire; 🎯 whenever B fires.
 
 Recalibrate by re-running the three combo/rank SQL queries against `match_results` filtered to

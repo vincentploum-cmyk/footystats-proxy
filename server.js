@@ -541,11 +541,12 @@ function unixToLocalDate(unix, tzOffset) {
   return y + "-" + m + "-" + day;
 }
 
-// Multi-signal probabilities — calibrated on 732 clean resolved matches (women excluded).
+// Multi-signal probabilities — calibrated on 888 clean resolved matches (women excluded).
 // Combo-keyed: bit(A)+bit(B). Key finding: A alone is at/below baseline on both metrics —
 // all FH>2.5 lift comes from the A+B interaction. B alone is a strong FH>1.5 predictor.
-const PROB15_BY_COMBO = { "00": 32.9, "01": 44.9, "10": 29.0, "11": 47.2 };
-const PROB25_BY_COMBO = { "00":  9.4, "01": 11.6, "10":  9.7, "11": 20.8 };
+// n by combo: 11=86, 01=266, 10=32, 00=504. Baseline 11.3% FH>2.5 / 36.6% FH>1.5.
+const PROB15_BY_COMBO = { "00": 32.7, "01": 42.1, "10": 31.3, "11": 44.2 };
+const PROB25_BY_COMBO = { "00":  9.9, "01": 11.3, "10":  9.4, "11": 19.8 };
 const RANK_LABELS = { 0: "Low", 1: "Signal", 2: "Fire" };
 
 // Average a team's last-5 first-half form. Goals are team-relative (fhFor =
@@ -3773,7 +3774,7 @@ body{background:#f3f4f6;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',
   ${rateLimited ? '<div style="background:#fef2f2;border:1px solid #fca5a5;border-radius:8px;padding:10px 14px;margin-bottom:14px;font-size:12px;color:#b91c1c;line-height:1.6"><strong>&#9888; API rate limit reached</strong> \u2014 showing cached data. Resets at ' + new Date(RATE_LIMITED_UNTIL).toLocaleTimeString('en-GB') + '. <a href="/cache-status" style="color:#b91c1c">View cache status</a></div>' : ''}
   <div style="background:#fffbeb;border:1px solid #fde68a;border-radius:8px;padding:10px 14px;margin-bottom:14px;font-size:12px;color:#92400e;line-height:1.6">
     <strong>How it works:</strong> 2 pre-game signals (A &amp; B) &mdash; no look-ahead bias. Signal A &#128293;: Mutual Instability (home L5 FH total &ge; 1.6 AND away L5 FH total &ge; 1.4). Signal B &#127919;: Away Team Scoring (away L5 FH scored &ge; 0.8). Rank = signals fired (max 2). &#128293; shown only when both A+B fire; &#127919; shown when B fires.
-    Calibrated on 732 clean matches (women excluded): A+B = 20.8% FH&gt;2.5 (2.2&times; baseline 9.4%) &middot; B only = 11.6% &middot; A only = 9.7% (at baseline) &middot; neither = 9.4%. FH&gt;1.5: 47.2% (A+B) &middot; 44.9% (B only) &middot; 29.0% (A only) &middot; 32.9% (neither).
+    Calibrated on 888 clean matches (women excluded): A+B = 19.8% FH&gt;2.5 (2.0&times; the no-signal rate 9.9%) &middot; B only = 11.3% &middot; A only = 9.4% (at baseline) &middot; neither = 9.9%. FH&gt;1.5: 44.2% (A+B) &middot; 42.1% (B only) &middot; 31.3% (A only) &middot; 32.7% (neither).
   </div>
   <div id="mainView"></div>
 </div>
