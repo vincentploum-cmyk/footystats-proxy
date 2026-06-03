@@ -618,21 +618,16 @@ function extractStats(teamObj, role) {
     if (fv !== null && fv !== undefined) return fv;
     return 0;
   };
-  // Native last-5 HT stats from FootyStats team API (role-specific, fallback to overall).
-  // Used as snap.l5 fallback when self-reconstruction from match cache fails (thin leagues).
-  const nvL5fRaw = s["scoredAVGHT" + sfx + "_5"] ?? s["scoredAVGHT_overall_5"];
-  const nvL5aRaw = s["concededAVGHT" + sfx + "_5"] ?? s["concededAVGHT_overall_5"];
-  const hasNvL5  = nvL5fRaw != null && nvL5aRaw != null;
   return {
     name:      teamObj.name || teamObj.cleanName || "",
     scored_fh: safe(pick("scoredAVGHT"   + sfx, "scoredAVGHT_overall")),
     conced_fh: safe(pick("concededAVGHT" + sfx, "concededAVGHT_overall")),
     t1_pct:    safe(pick("seasonOver25PercentageHT" + sfx, "seasonOver25PercentageHT_overall")),
     cn010_avg: safe((s["goals_conceded_min_0_to_10" + sfx] || 0) / mpR),
+    // Shots on target per game (role-specific, fallback to overall)
     sot_avg:   safe((s["shotsOnTarget" + sfx] || s["shotsOnTarget_overall"] || 0) / mpR),
     mp:        safe(s.seasonMatchesPlayed_overall || 0),
     mpRole:    mpR,
-    nvL5: hasNvL5 ? { f: safe(nvL5fRaw), a: safe(nvL5aRaw), t: +(safe(nvL5fRaw) + safe(nvL5aRaw)).toFixed(2) } : null,
   };
 }
 
@@ -1204,6 +1199,126 @@ app.get("/admin/backfill-l5", async (req, res) => {
       totalLive: allLive.length,
       missingL5: missing.length,
       processed, written, skippedThin, errs,
+      remaining: missing.length - processed,
+      elapsedMs: Date.now() - t0,
+      errors,
+    });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
+// Backfill snap.prematch (FootyStats' own pre-match first-half predictors:
+// o15HT/o05HT potentials, pre-match xG, btts_fhg) onto live-captured rows that
+// predate the prematch-capture path. These match-level fields persist on completed
+// matches in /league-matches, so they can be read retroactively and correlated with
+// the FH results we already hold — enabling immediate calibration of o15HT_potential
+// as a fallback FH signal (FootyStats does NOT expose last-5 HT team stats, so this
+// is the only pre-game FH predictor available for thin-coverage leagues).
+//
+//   GET /admin/backfill-prematch?token=<TOKEN>&dryRun=1   -> report counts only
+//   GET /admin/backfill-prematch?token=<TOKEN>&limit=300  -> fill up to 300 rows
+//
+// Only merges a `prematch` sub-object into snap via UPDATE — never touches
+// home/away/l5/signals/rank, so the pre-game freeze is preserved. Idempotent:
+// considers only rows where snap.prematch is missing.
+app.get("/admin/backfill-prematch", async (req, res) => {
+  const expected = process.env.LOAD_DATASET_TOKEN;
+  if (!expected) return res.status(503).json({ ok: false, error: "admin token not configured" });
+  if (req.query.token !== expected) return res.status(403).json({ ok: false, error: "invalid token" });
+  if (!supabase) return res.status(400).json({ ok: false, error: "Supabase not enabled" });
+
+  const dryRun = req.query.dryRun === "1";
+  const limit = Math.max(1, Math.min(1000, parseInt(req.query.limit || "300", 10)));
+  const t0 = Date.now();
+
+  // Read the same pre-match predictor fields the live capture path freezes.
+  const extractPrematch = (m) => {
+    const pm = {};
+    if (m.o15HT_potential    != null) pm.o15HT    = m.o15HT_potential;
+    if (m.o05HT_potential    != null) pm.o05HT    = m.o05HT_potential;
+    if (m.team_a_xg_prematch != null) pm.xgHome   = m.team_a_xg_prematch;
+    if (m.team_b_xg_prematch != null) pm.xgAway   = m.team_b_xg_prematch;
+    if (m.btts_fhg_potential != null) pm.btts_fhg = m.btts_fhg_potential;
+    return Object.keys(pm).length ? pm : null;
+  };
+
+  try {
+    const allLive = [];
+    const PAGE = 300;
+    const cutoffSec = Math.floor(Date.now() / 1000) - 365 * 86400;
+    for (let off = 0; ; off += PAGE) {
+      const { data, error } = await supabase
+        .from("match_results")
+        .select("match_id, competition_id, snap")
+        .gte("date_unix", cutoffSec)
+        .not("snap", "is", null)
+        .not("snap->>fetchedAt", "eq", "historical-import")
+        .not("snap->>fetchedAt", "eq", "backfill")
+        .range(off, off + PAGE - 1);
+      if (error) throw error;
+      if (!data || data.length === 0) break;
+      allLive.push(...data);
+      if (data.length < PAGE) break;
+    }
+    const missing = allLive.filter(r => r.snap && !r.snap.prematch && r.competition_id);
+
+    if (dryRun) {
+      const byComp = {};
+      for (const r of missing) byComp[r.competition_id] = (byComp[r.competition_id] || 0) + 1;
+      return res.json({
+        ok: true, dryRun: true,
+        totalLive: allLive.length, missingPrematch: missing.length,
+        distinctCompetitions: Object.keys(byComp).length,
+        topComps: Object.entries(byComp).sort((a, b) => b[1] - a[1]).slice(0, 10).map(([c, n]) => ({ competition_id: +c, n })),
+      });
+    }
+
+    const work = missing.slice(0, limit);
+    const byComp = {};
+    for (const r of work) {
+      if (!byComp[r.competition_id]) byComp[r.competition_id] = [];
+      byComp[r.competition_id].push(r);
+    }
+
+    let processed = 0, written = 0, skippedNoData = 0, errs = 0;
+    const errors = [];
+
+    for (const [compId, rs] of Object.entries(byComp)) {
+      if (Date.now() < RATE_LIMITED_UNTIL) {
+        errors.push({ compId, error: "rate-limited; aborting batch" });
+        break;
+      }
+      let matchById;
+      try {
+        const matchRes = await fetchLeagueMatches(compId);
+        matchById = new Map();
+        for (const m of (matchRes.data || [])) if (m && m.id) matchById.set(m.id, m);
+      } catch (e) {
+        errors.push({ compId, error: "fetch failed: " + e.message });
+        continue;
+      }
+      for (const r of rs) {
+        processed++;
+        const m = matchById.get(r.match_id);
+        const pm = m ? extractPrematch(m) : null;
+        if (!pm) { skippedNoData++; continue; }
+        const newSnap = Object.assign({}, r.snap, { prematch: pm });
+        const { error } = await supabase.from("match_results").update({ snap: newSnap }).eq("match_id", r.match_id);
+        if (error) {
+          errs++;
+          if (errors.length < 10) errors.push({ match_id: r.match_id, error: error.message });
+        } else {
+          written++;
+        }
+      }
+    }
+
+    res.json({
+      ok: errs === 0,
+      totalLive: allLive.length,
+      missingPrematch: missing.length,
+      processed, written, skippedNoData, errs,
       remaining: missing.length - processed,
       elapsedMs: Date.now() - t0,
       errors,
@@ -1976,15 +2091,12 @@ async function computePreds(tzOffset) {
           const hStats = extractStats(homeTeam, "home");
           const aStats = extractStats(awayTeam, "away");
           snap = { fetchedAt, home: hStats, away: aStats };
-          if (l5Data) {
-            snap.l5 = l5Data;
-          } else if (hStats.nvL5 && aStats.nvL5) {
-            // FootyStats native last-5 HT team stats — used when self-reconstruction
-            // fails (thin-coverage leagues like USL2/WPSL with few cached games).
-            snap.l5 = { home: hStats.nvL5, away: aStats.nvL5, nativeApi: true };
-          }
-          // Capture pre-match fixture-level predictors from /league-matches
-          // (not present on /fixtures endpoint used to build leagueFixtures).
+          if (l5Data) snap.l5 = l5Data;
+          // Capture pre-match fixture-level predictors from /league-matches.
+          // FootyStats does NOT expose last-5 HT team stats (no scoredAVGHT_*_5
+          // fields exist), so when self-reconstruction yields null these match-level
+          // predictors are the only pre-game first-half signal available for thin
+          // leagues. Captured here; used as a fallback once calibrated.
           const fullFix = matchMap.get(fix.id);
           if (fullFix) {
             const pm = {};
@@ -2198,6 +2310,87 @@ app.get("/last5-mine", async (req, res) => {
       topByLift25_n30: tight.slice(0, 10),
       allResults: results,
       note: "Cohort = live-captured matches with snap.l5 present. Lift > 1.5 with n>=30 is a candidate signal. Compare to current A (hT+aT>=4.0) to see if a stronger or different last-5 pattern exists.",
+    });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
+// Calibrate FootyStats' own pre-match first-half predictors (snap.prematch:
+// o15HT/o05HT potentials, pre-match xG, btts_fhg) against actual FH results.
+// This is the only pre-game FH signal available for thin-coverage leagues where
+// our self-reconstructed l5 is null. Reports hit rates / lift by threshold so we
+// can pick a cutoff for o15HT_potential before wiring it in as a fallback.
+// Run /admin/backfill-prematch first to populate snap.prematch on existing rows.
+app.get("/prematch-mine", async (req, res) => {
+  if (!supabase) return res.status(400).json({ ok: false, error: "Supabase not enabled" });
+  try {
+    const all = [];
+    const PAGE = 1000;
+    for (let off = 0; ; off += PAGE) {
+      const { data, error } = await supabase
+        .from("match_results")
+        .select("hit_25, hit_15, snap")
+        .not("hit_25", "is", null)
+        .not("snap", "is", null)
+        .not("snap->>fetchedAt", "eq", "historical-import")
+        .not("snap->>fetchedAt", "eq", "backfill")
+        .range(off, off + PAGE - 1);
+      if (error) throw error;
+      if (!data || data.length === 0) break;
+      all.push(...data);
+      if (data.length < PAGE) break;
+    }
+    const cohortAll = all.length;
+    const cohort = all.filter(m => m.snap && m.snap.prematch);
+    const n = cohort.length;
+    const base25 = n ? cohort.filter(m => m.hit_25).length / n : 0;
+    const base15 = n ? cohort.filter(m => m.hit_15).length / n : 0;
+
+    // How many cohort rows also lack l5 — i.e. the blind-spot matches this is meant to cover.
+    const noL5 = cohort.filter(m => !m.snap.l5 || !m.snap.l5.home || !m.snap.l5.away).length;
+
+    const pm = (m) => m.snap.prematch || {};
+    const test = (label, pred) => {
+      const fired = cohort.filter(m => pred(pm(m)));
+      const fN = fired.length;
+      if (!fN) return { label, n: 0, actual25: 0, actual15: 0, lift25: 0, lift15: 0 };
+      const h25 = fired.filter(m => m.hit_25).length;
+      const h15 = fired.filter(m => m.hit_15).length;
+      return {
+        label, n: fN,
+        actual25: +(h25 / fN * 100).toFixed(1),
+        actual15: +(h15 / fN * 100).toFixed(1),
+        lift25: base25 ? +(h25 / fN / base25).toFixed(2) : 0,
+        lift15: base15 ? +(h15 / fN / base15).toFixed(2) : 0,
+      };
+    };
+
+    const results = [];
+    // o15HT_potential is FootyStats' own FH-over-1.5 likelihood (0–100). Sweep cutoffs.
+    for (const t of [40, 45, 50, 55, 60, 65, 70]) results.push(test("o15HT>=" + t, x => x.o15HT != null && x.o15HT >= t));
+    for (const t of [60, 65, 70, 75, 80, 85]) results.push(test("o05HT>=" + t, x => x.o05HT != null && x.o05HT >= t));
+    // Pre-match total xG (full match) — proxy for overall goal expectation.
+    for (const t of [2.0, 2.5, 3.0, 3.5]) results.push(test("xgTotal>=" + t, x => (x.xgHome != null && x.xgAway != null) && (x.xgHome + x.xgAway) >= t));
+    for (const t of [20, 25, 30, 35]) results.push(test("btts_fhg>=" + t, x => x.btts_fhg != null && x.btts_fhg >= t));
+    // Combos: FootyStats' FH potential + goal expectation together.
+    results.push(test("o15HT>=50 & xgTotal>=2.5", x => x.o15HT >= 50 && (x.xgHome + x.xgAway) >= 2.5));
+    results.push(test("o15HT>=55 & xgTotal>=3.0", x => x.o15HT >= 55 && (x.xgHome + x.xgAway) >= 3.0));
+
+    const actionable = results.filter(r => r.n >= 20);
+
+    res.json({
+      ok: true,
+      cohortTotal: cohortAll,
+      cohortWithPrematch: n,
+      withoutPrematch: cohortAll - n,
+      prematchRowsLackingL5: noL5,
+      baseRate25: +(base25 * 100).toFixed(1),
+      baseRate15: +(base15 * 100).toFixed(1),
+      topByLift15: actionable.slice().sort((a, b) => b.lift15 - a.lift15).slice(0, 15),
+      topByLift25: actionable.slice().sort((a, b) => b.lift25 - a.lift25).slice(0, 15),
+      allResults: results,
+      note: "Cohort = live rows with snap.prematch. Compare lift15 vs baseRate15. o15HT_potential is FootyStats' own FH>1.5 score; a cutoff with lift15>1.3 at n>=30 is a usable fallback when our l5 is null. prematchRowsLackingL5 = how many of these are the actual blind-spot matches.",
     });
   } catch (e) {
     res.status(500).json({ ok: false, error: e.message });
@@ -2805,38 +2998,25 @@ app.get("/debug-raw-api", async (req, res) => {
         .map(k => [k, st[k]])
     ) : {};
 
-    // VERDICT: run the real extractStats -> computeSignals path on this match's
-    // ACTUAL home/away teams, so one hit tells us whether the native-L5 fallback
-    // produces usable signals for this league (vs. l5 staying null/zero).
+    // VERDICT: report whether FootyStats' match-level pre-match FH predictors are
+    // populated for this league. (Native last-5 HT team stats do NOT exist in the
+    // team API — no scoredAVGHT_*_5 fields — so these match-level potentials are the
+    // only pre-game FH signal available for thin-coverage leagues like USL2/WPSL.)
     let verdict = null;
-    if (sampleMatch && teams && teams.data) {
-      const tmap = {};
-      for (const t of teams.data) if (t && t.id) tmap[t.id] = t;
-      const hId = sampleMatch.homeID, aId = sampleMatch.awayID;
-      const hTeam = tmap[hId], aTeam = tmap[aId];
-      if (hTeam && aTeam) {
-        const hStats = extractStats(hTeam, "home");
-        const aStats = extractStats(aTeam, "away");
-        const l5 = (hStats.nvL5 && aStats.nvL5)
-          ? { home: hStats.nvL5, away: aStats.nvL5, nativeApi: true } : null;
-        const snap = { fetchedAt: "debug", home: hStats, away: aStats };
-        if (l5) snap.l5 = l5;
-        const sig = computeSignals(snap, [], []);
-        verdict = {
-          home_team: hStats.name, away_team: aStats.name,
-          home_nvL5: hStats.nvL5, away_nvL5: aStats.nvL5,
-          native_l5_available: !!l5,
-          native_l5_nonzero: !!(l5 && (hStats.nvL5.t > 0 || aStats.nvL5.t > 0)),
-          would_fire: { rank: sig.rank, label: sig.label, combo: sig.probCombo, signals: sig.signals },
-          conclusion: !l5
-            ? "FAIL: native _5 HT fields absent — fallback cannot populate l5"
-            : (l5 && hStats.nvL5.t === 0 && aStats.nvL5.t === 0)
-              ? "WEAK: _5 fields present but all zero — signals will read as 0"
-              : "OK: native l5 populated with real values — signals can evaluate",
-        };
-      } else {
-        verdict = { conclusion: "could not match sample match's teams to team-stats list" };
-      }
+    if (sampleMatch) {
+      const o15 = sampleMatch.o15HT_potential;
+      const o05 = sampleMatch.o05HT_potential;
+      const txg = sampleMatch.total_xg_prematch;
+      const have = (v) => v != null && v !== -1 && v !== "" && !(typeof v === "number" && isNaN(v));
+      const usable = have(o15) || have(o05) || have(txg);
+      verdict = {
+        match: sampleMatch.home_name + " vs " + sampleMatch.away_name,
+        o15HT_potential: o15, o05HT_potential: o05, total_xg_prematch: txg,
+        prematch_available: usable,
+        conclusion: usable
+          ? "OK: match-level pre-match FH predictors populated — usable as fallback signal"
+          : "FAIL: pre-match predictors empty for this league too",
+      };
     }
 
     res.json({
