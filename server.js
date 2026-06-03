@@ -2805,9 +2805,44 @@ app.get("/debug-raw-api", async (req, res) => {
         .map(k => [k, st[k]])
     ) : {};
 
+    // VERDICT: run the real extractStats -> computeSignals path on this match's
+    // ACTUAL home/away teams, so one hit tells us whether the native-L5 fallback
+    // produces usable signals for this league (vs. l5 staying null/zero).
+    let verdict = null;
+    if (sampleMatch && teams && teams.data) {
+      const tmap = {};
+      for (const t of teams.data) if (t && t.id) tmap[t.id] = t;
+      const hId = sampleMatch.homeID, aId = sampleMatch.awayID;
+      const hTeam = tmap[hId], aTeam = tmap[aId];
+      if (hTeam && aTeam) {
+        const hStats = extractStats(hTeam, "home");
+        const aStats = extractStats(aTeam, "away");
+        const l5 = (hStats.nvL5 && aStats.nvL5)
+          ? { home: hStats.nvL5, away: aStats.nvL5, nativeApi: true } : null;
+        const snap = { fetchedAt: "debug", home: hStats, away: aStats };
+        if (l5) snap.l5 = l5;
+        const sig = computeSignals(snap, [], []);
+        verdict = {
+          home_team: hStats.name, away_team: aStats.name,
+          home_nvL5: hStats.nvL5, away_nvL5: aStats.nvL5,
+          native_l5_available: !!l5,
+          native_l5_nonzero: !!(l5 && (hStats.nvL5.t > 0 || aStats.nvL5.t > 0)),
+          would_fire: { rank: sig.rank, label: sig.label, combo: sig.probCombo, signals: sig.signals },
+          conclusion: !l5
+            ? "FAIL: native _5 HT fields absent — fallback cannot populate l5"
+            : (l5 && hStats.nvL5.t === 0 && aStats.nvL5.t === 0)
+              ? "WEAK: _5 fields present but all zero — signals will read as 0"
+              : "OK: native l5 populated with real values — signals can evaluate",
+        };
+      } else {
+        verdict = { conclusion: "could not match sample match's teams to team-stats list" };
+      }
+    }
+
     res.json({
       ok: true,
       season_id: sid,
+      verdict,
       sample_match: sampleMatch ? {
         id: sampleMatch.id,
         date_unix: sampleMatch.date_unix,
