@@ -2323,6 +2323,7 @@ app.get("/last5-mine", async (req, res) => {
 // can pick a cutoff for o15HT_potential before wiring it in as a fallback.
 // Run /admin/backfill-prematch first to populate snap.prematch on existing rows.
 app.get("/prematch-mine", async (req, res) => {
+  res.set("Cache-Control", "no-store");
   if (!supabase) return res.status(400).json({ ok: false, error: "Supabase not enabled" });
   try {
     const all = [];

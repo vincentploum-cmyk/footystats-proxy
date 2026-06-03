@@ -172,9 +172,19 @@ match, including thin-coverage leagues where `l5` is null:
 - `btts_fhg` — both-teams-to-score-in-FH potential.
 
 Not yet wired into the signals — captured and being calibrated (`/prematch-mine`) as a
-**fallback FH predictor when `snap.l5` is null**. Backfill onto historical rows with
-`/admin/backfill-prematch` (these fields persist on completed matches, so they can be read
-retroactively and correlated with the FH results we already hold).
+candidate **fallback FH predictor when `snap.l5` is null**. Backfill onto historical rows
+with `/admin/backfill-prematch` (these fields persist on completed matches, so they can be
+read retroactively and correlated with the FH results we already hold).
+
+> **Calibration status (2026-06, n≈689 with prematch):** `o15HT_potential` predicts FH>1.5
+> cleanly and monotonically **on the full cohort** (≥50 → 48% vs 36.4% base, lift 1.32;
+> ≥55 → 53.5%). **But it does NOT replicate on the `l5`-null blind-spot subset** (the only
+> place it would actually be used): there, ≥50 gives 33% FH>1.5 at n=12 — *below* the
+> subset's own 36.7% base. Pre-match `xg` is noise on both (full-match xG ≠ FH). `btts_fhg`
+> looks strong on the subset (lift ~1.8) but at n=9. **Do NOT wire any prematch field as a
+> live fallback** until the blind-spot subset (`/prematch-mine` → `blindspot`) reaches
+> n≳100 and a cutoff holds clearly above that subset's own `baseRate15`. The full-cohort
+> result is carried by established leagues and must not be trusted for thin leagues.
 
 `snap.home/away` season stats are always present for live rows.
 
