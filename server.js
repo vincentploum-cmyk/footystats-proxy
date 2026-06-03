@@ -141,6 +141,31 @@ async function persistCompletedPreds(preds) {
   }
 }
 
+// Self-capture: drive computePreds on a timer so freezing pre-game snapshots and
+// recording completed results no longer depend on inbound page traffic. Without
+// it, a match whose pre-game window OR post-completion day saw no visitors never
+// gets a frozen snap / recorded result — that is the pending-row leak. The
+// keep-alive cron keeps the instance warm so this interval actually fires.
+const SELF_CAPTURE_TTL = 20 * 60 * 1000;  // 20 min
+let SELF_CAPTURE_RUNNING = false;
+let SELF_CAPTURE_LAST = { at: 0, preds: 0, error: null };
+async function selfCapture() {
+  if (!supabase || SELF_CAPTURE_RUNNING) return;
+  SELF_CAPTURE_RUNNING = true;
+  try {
+    const { preds } = await computePreds(0);
+    await persistEarlySnapshots(preds);
+    await persistCompletedPreds(preds);
+    SELF_CAPTURE_LAST = { at: Date.now(), preds: preds.length, error: null };
+    console.log("selfCapture: scanned " + preds.length + " preds");
+  } catch (e) {
+    SELF_CAPTURE_LAST = { at: Date.now(), preds: 0, error: e.message };
+    console.error("selfCapture: " + e.message);
+  } finally {
+    SELF_CAPTURE_RUNNING = false;
+  }
+}
+
 // Rehydrate CI_SNAPSHOT_CACHE from Supabase on startup. Without this, a Render
 // restart loses every in-memory frozen pre-match snapshot, so completed matches
 // would be recomputed from current stats instead of showing their frozen view.
@@ -684,6 +709,9 @@ app.get("/supabase-status", (req, res) => {
     lastPersist: SUPABASE_LAST_PERSIST.at
       ? { at: new Date(SUPABASE_LAST_PERSIST.at).toISOString(), attempted: SUPABASE_LAST_PERSIST.attempted, written: SUPABASE_LAST_PERSIST.written, error: SUPABASE_LAST_PERSIST.error }
       : null,
+    selfCapture: SELF_CAPTURE_LAST.at
+      ? { at: new Date(SELF_CAPTURE_LAST.at).toISOString(), preds: SELF_CAPTURE_LAST.preds, running: SELF_CAPTURE_RUNNING, error: SELF_CAPTURE_LAST.error }
+      : { at: null, running: SELF_CAPTURE_RUNNING },
   });
 });
 
@@ -1173,6 +1201,139 @@ app.get("/admin/backfill-l5", async (req, res) => {
       remaining: missing.length - processed,
       elapsedMs: Date.now() - t0,
       errors,
+    });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
+// Backfill match results (ht/ft goals, hit_15, hit_25) on clean live-captured
+// rows whose outcome was never recorded — matches whose snap was frozen pre-game
+// but which dropped out of the 5-day /preds window before any request filled in
+// their result (hit_25 IS NULL, the pending-row leak). For each pending row,
+// fetches its league season matches (cached) and reads the final HT/FT score by
+// match id.
+//
+//   GET /admin/backfill-results?token=<TOKEN>&dryRun=1    -> report counts only
+//   GET /admin/backfill-results?token=<TOKEN>&limit=300   -> resolve up to 300 rows
+//
+// Only UPDATEs result fields — never touches snap/signals/rank, so the pre-game
+// freeze is preserved. Idempotent: considers only rows where hit_25 is null, and
+// writes only matches that are genuinely played with valid first-half data.
+app.get("/admin/backfill-results", async (req, res) => {
+  const expected = process.env.LOAD_DATASET_TOKEN;
+  if (!expected) return res.status(503).json({ ok: false, error: "admin token not configured" });
+  if (req.query.token !== expected) return res.status(403).json({ ok: false, error: "invalid token" });
+  if (!supabase) return res.status(400).json({ ok: false, error: "Supabase not enabled" });
+
+  const dryRun = req.query.dryRun === "1";
+  const limit = Math.max(1, Math.min(1000, parseInt(req.query.limit || "300", 10)));
+  const t0 = Date.now();
+
+  try {
+    const pending = [];
+    const PAGE = 300;
+    const cutoffSec = Math.floor(Date.now() / 1000) - 365 * 86400;
+    for (let off = 0; ; off += PAGE) {
+      const { data, error } = await supabase
+        .from("match_results")
+        .select("match_id, competition_id, date_unix")
+        .is("hit_25", null)
+        .gte("date_unix", cutoffSec)
+        .not("snap", "is", null)
+        .not("snap->>fetchedAt", "eq", "historical-import")
+        .not("snap->>fetchedAt", "eq", "backfill")
+        .range(off, off + PAGE - 1);
+      if (error) throw error;
+      if (!data || data.length === 0) break;
+      pending.push(...data);
+      if (data.length < PAGE) break;
+    }
+    // Only rows we can locate (have competition_id) and whose kickoff has passed
+    // by > 2h (same played-threshold as isPlayedMatch) — future matches stay pending.
+    const nowSecs = Math.floor(Date.now() / 1000);
+    const resolvable = pending.filter(r => r.competition_id && r.date_unix && r.date_unix < nowSecs - 7200);
+
+    if (dryRun) {
+      const byComp = {};
+      for (const r of resolvable) byComp[r.competition_id] = (byComp[r.competition_id] || 0) + 1;
+      return res.json({
+        ok: true, dryRun: true,
+        pendingTotal: pending.length,
+        resolvableCandidates: resolvable.length,
+        notYetPlayedOrNoIds: pending.length - resolvable.length,
+        distinctCompetitions: Object.keys(byComp).length,
+        topComps: Object.entries(byComp).sort((a, b) => b[1] - a[1]).slice(0, 10).map(([c, n]) => ({ competition_id: +c, n })),
+      });
+    }
+
+    const work = resolvable.slice(0, limit);
+    const byComp = {};
+    for (const r of work) {
+      if (!byComp[r.competition_id]) byComp[r.competition_id] = [];
+      byComp[r.competition_id].push(r);
+    }
+
+    let processed = 0, written = 0, notPlayed = 0, notFound = 0, noFhData = 0, errs = 0;
+    const errors = [];
+
+    for (const [compId, rs] of Object.entries(byComp)) {
+      if (Date.now() < RATE_LIMITED_UNTIL) {
+        errors.push({ compId, error: "rate-limited; aborting batch" });
+        break;
+      }
+      let matches;
+      try {
+        const matchRes = await fetchLeagueMatches(compId);
+        matches = matchRes.data || [];
+        const prevSid = PREV_SEASON[compId];
+        if (prevSid) {
+          try { const prev = await fetchLeagueMatches(prevSid); if (prev && prev.data) matches = matches.concat(prev.data); } catch (_) { /* best-effort */ }
+        }
+      } catch (e) {
+        errors.push({ compId, error: "fetch failed: " + e.message });
+        continue;
+      }
+      const byId = {};
+      for (const m of matches) byId[String(m.id)] = m;
+
+      for (const r of rs) {
+        processed++;
+        const m = byId[String(r.match_id)];
+        if (!m) { notFound++; continue; }
+        if (!isPlayedMatch(m, nowSecs)) { notPlayed++; continue; }
+        const fhH = parseInt(m.ht_goals_team_a, 10);
+        const fhA = parseInt(m.ht_goals_team_b, 10);
+        // API returns -1 for unavailable HT data — can't compute a hit, skip.
+        if (!(fhH >= 0) || !(fhA >= 0)) { noFhData++; continue; }
+        const ftH = parseInt(m.homeGoalCount || 0, 10);
+        const ftA = parseInt(m.awayGoalCount || 0, 10);
+        const fhTotal = fhH + fhA;
+        const { error } = await supabase.from("match_results").update({
+          ht_home: fhH, ht_away: fhA, ft_home: ftH, ft_away: ftA,
+          fh_total: fhTotal,
+          hit_15: fhTotal > 1,
+          hit_25: fhTotal > 2,
+        }).eq("match_id", r.match_id);
+        if (error) {
+          errs++;
+          if (errors.length < 10) errors.push({ match_id: r.match_id, error: error.message });
+        } else {
+          written++;
+          SUPABASE_PERSISTED_IDS.add(r.match_id);
+        }
+      }
+    }
+
+    res.json({
+      ok: errs === 0,
+      pendingTotal: pending.length,
+      resolvableCandidates: resolvable.length,
+      processed, written, notPlayed, notFound, noFhData, errs,
+      remaining: resolvable.length - processed,
+      elapsedMs: Date.now() - t0,
+      errors,
+      note: "Resolved pending rows from league-matches final scores. Only result fields written; snap/signals/rank preserved. Re-run until remaining hits 0.",
     });
   } catch (e) {
     res.status(500).json({ ok: false, error: e.message });
@@ -3655,6 +3816,11 @@ app.listen(PORT, () => {
     // Daily recalibration (both rank + combo)
     setInterval(() => { recalibrateLeagueProbs().catch(e => console.error("recalibrateLeagueProbs:", e.message)); }, LEAGUE_PROB_RECAL_TTL);
     setInterval(() => { recalibrateLeagueComboProbs().catch(e => console.error("recalibrateLeagueComboProbs:", e.message)); }, LEAGUE_PROB_RECAL_TTL);
+    // Traffic-independent capture: freeze snaps + record results on a timer so
+    // pending rows stop accumulating on low-traffic days. Kick once after caches
+    // warm, then every 20 min (well under the fixture cache 30-min TTL).
+    setTimeout(() => { selfCapture(); }, 6 * 60 * 1000);
+    setInterval(() => { selfCapture(); }, SELF_CAPTURE_TTL);
   }
 });
 

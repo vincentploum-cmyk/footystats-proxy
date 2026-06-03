@@ -207,6 +207,21 @@ All caching is in-memory (no external cache store):
 Rate limiting is detected from API response metadata and prevents further
 requests until the reset time. Cached data is served while rate-limited.
 
+## Data Capture
+
+Pre-game snaps are frozen and completed results recorded by `persistEarlySnapshots()`
++ `persistCompletedPreds()`, which run on **every `/preds` call** AND on a
+**traffic-independent timer** (`selfCapture()`, every 20 min — see `SELF_CAPTURE_TTL`).
+The timer exists because `computePreds` only covers a 5-day forward window: a match
+drops out the day after it completes, so without it a low-traffic day would leave the
+result permanently unrecorded (a "pending" row: snap frozen, `hit_25 IS NULL`). The
+keep-alive cron keeps the instance warm so the timer fires.
+
+Rows that went pending before self-capture existed can be recovered with
+`GET /admin/backfill-results` (reads final HT/FT scores from league-matches and writes
+only the result fields — snap/signals/rank untouched). Check `/supabase-status.selfCapture`
+for the last timer run.
+
 ## Routes
 
 | Route | Response | Purpose |
@@ -218,7 +233,8 @@ requests until the reset time. Cached data is served while rate-limited.
 | `GET /calibration` | JSON | Live predicted-vs-actual by rank/combo (Supabase) |
 | `GET /signal-backtest` | JSON | Per-signal live lift + `byRank`/`byCombo` (Supabase) |
 | `GET /history?days=N` | JSON | Recent completed matches with results (Supabase) |
-| `GET /supabase-status` | JSON | Supabase connection + persistence status |
+| `GET /supabase-status` | JSON | Supabase connection + persistence + self-capture status |
+| `GET /admin/backfill-results` | JSON | Resolve pending rows (snap frozen, no result) from league-matches scores — gated; `dryRun=1` / `limit=N` |
 | `GET /api/*` | JSON | Passthrough proxy — gated by `LOAD_DATASET_TOKEN` (fails closed if unset) |
 | `GET /admin/*` | JSON | Dataset load / backfill / recalibrate — gated by `LOAD_DATASET_TOKEN` (fails closed if unset) |
 
@@ -231,7 +247,9 @@ requests until the reset time. Cached data is served while rate-limited.
 - **Previous-season fallback**: `PREV_SEASON` map provides fallback season IDs
   when current season has < 5 completed matches
 - **Backfill is safe**: both `/admin/backfill` and `/admin/load-dataset` use
-  `ignoreDuplicates: true` — running them will never overwrite a live-captured snap
+  `ignoreDuplicates: true` — running them will never overwrite a live-captured snap.
+  `/admin/backfill-results` only UPDATEs result fields (`ht_*`/`ft_*`/`fh_total`/`hit_*`)
+  on rows where `hit_25 IS NULL`, so it never touches a frozen snap/signals/rank either.
 
 ## Dataset
 
