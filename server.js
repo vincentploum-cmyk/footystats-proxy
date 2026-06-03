@@ -250,16 +250,17 @@ async function recalibrateLeagueProbs() {
 }
 
 // Phase 3: per-league signal-combination probabilities
-// Cache shape: { "<compId>:<combo4chars>": { n, prob25, prob15 } }
+// Cache shape: { "<compId>:<combo2chars>": { n, prob25, prob15 } }
+// combo is bit(A) + bit(B) — the two live signals (see computeSignals).
 const LEAGUE_COMBO_MIN_N    = 20;
 let   LEAGUE_COMBO_CACHE    = {};
 let   LEAGUE_COMBO_LAST_LOAD  = { at: 0, rows: 0, error: null };
 let   LEAGUE_COMBO_LAST_RECAL = { at: 0, buckets: 0, written: 0, error: null };
 
 function comboFromSignals(sigs) {
-  if (!sigs) return "000";
+  if (!sigs) return "00";
   const bit = (k) => (sigs[k] && sigs[k].met) ? "1" : "0";
-  return bit("A") + bit("B") + bit("C");
+  return bit("A") + bit("B");
 }
 
 async function loadLeagueComboCache() {
@@ -1177,103 +1178,11 @@ app.get("/admin/backfill-l5", async (req, res) => {
   }
 });
 
-app.get("/admin/backfill-signal-d", async (req, res) => {
-  const expected = process.env.LOAD_DATASET_TOKEN;
-  if (!expected) return res.status(503).json({ ok: false, error: "admin token not configured" });
-  if (req.query.token !== expected) return res.status(403).json({ ok: false, error: "invalid token" });
-  if (!supabase) return res.status(400).json({ ok: false, error: "Supabase not enabled" });
-
-  const t0 = Date.now();
-  try {
-    // Fetch all live-captured matches with snap.l5
-    const all = [];
-    const PAGE = 1000;
-    for (let off = 0; ; off += PAGE) {
-      const { data, error } = await supabase
-        .from("match_results")
-        .select("match_id, signals, snap")
-        .not("snap", "is", null)
-        .not("snap->>fetchedAt", "eq", "historical-import")
-        .not("snap->>fetchedAt", "eq", "backfill")
-        .range(off, off + PAGE - 1);
-      if (error) throw error;
-      if (!data || data.length === 0) break;
-      all.push(...data);
-      if (data.length < PAGE) break;
-    }
-
-    const withL5 = all.filter(m => m.snap && m.snap.l5 && m.snap.l5.home && m.snap.l5.away);
-    const toUpdate = [];
-
-    for (const m of withL5) {
-      const snap = m.snap;
-      const sigs = m.signals || {};
-
-      // Recompute Signal C
-      const sigC = (snap.l5.away.f || 0) >= 1.0 && (snap.l5.home.a || 0) >= 0.8;
-      const sigA = sigs.A && sigs.A.met;
-      const sigB = sigs.B && sigs.B.met;
-
-      // Build new signals object with updated C
-      const newSignals = Object.assign({}, sigs, {
-        C: { met: sigC, label: "Away Attack + Home Leak", value: (snap.l5.away.f || 0).toFixed(2) + " / " + (snap.l5.home.a || 0).toFixed(2), threshold: "away L5 FH >= 1.0 & home leak >= 0.8" }
-      });
-
-      // Recompute combo and probabilities
-      const combo = (sigA ? "1" : "0") + (sigB ? "1" : "0") + (sigC ? "1" : "0");
-      const prob25 = PROB25_BY_COMBO[combo] !== undefined ? PROB25_BY_COMBO[combo] : 11.5;
-      const prob15 = PROB15_BY_COMBO[combo] !== undefined ? PROB15_BY_COMBO[combo] : 35.8;
-      const eligible25 = prob25 >= 40.0;
-      const eligible15 = prob15 >= 50.0;
-
-      // Recompute rank
-      const rank = (sigA ? 1 : 0) + (sigB ? 1 : 0) + (sigC ? 1 : 0);
-      const label = rank >= 2 ? "Fire" : rank === 1 ? "Signal" : "Low";
-
-      toUpdate.push({
-        match_id: m.match_id,
-        signals: newSignals,
-        rank, label,
-        prob25, prob15,
-        eligible25, eligible15
-      });
-    }
-
-    // Batch update
-    if (toUpdate.length > 0) {
-      const BATCH = 500;
-      let written = 0;
-      for (let i = 0; i < toUpdate.length; i += BATCH) {
-        const batch = toUpdate.slice(i, i + BATCH);
-        const { error } = await supabase
-          .from("match_results")
-          .upsert(batch.map(u => ({
-            match_id: u.match_id,
-            signals: u.signals,
-            rank: u.rank,
-            label: u.label,
-            prob25: u.prob25,
-            prob15: u.prob15,
-            eligible25: u.eligible25,
-            eligible15: u.eligible15
-          })), { onConflict: "match_id" });
-        if (error) throw error;
-        written += batch.length;
-      }
-    }
-
-    res.json({
-      ok: true,
-      totalLive: all.length,
-      withL5: withL5.length,
-      updated: toUpdate.length,
-      elapsedMs: Date.now() - t0,
-      note: "Backfilled Signal C on all live-captured matches with snap.l5. Recomputed rank, label, prob25, prob15, eligible25, eligible15."
-    });
-  } catch (e) {
-    res.status(500).json({ ok: false, error: e.message });
-  }
-});
+// NOTE: the former /admin/backfill-signal-d route was removed. It recomputed a
+// phantom Signal C and a 3-signal rank (0–3) against tables that never existed
+// (PROB*_BY_COMBO), contradicting the live 2-signal A+B engine. To realign
+// stored rows with the current model, use /admin/recompute-signals, which runs
+// the real computeSignals() over every live-captured snap.
 
 app.get("/admin/recalibrate", async (req, res) => {
   const expected = process.env.LOAD_DATASET_TOKEN;
@@ -1416,7 +1325,7 @@ app.get("/calibration", async (req, res) => {
 });
 
 // ─── SIGNAL BACKTEST (live data, no look-ahead bias) ─────────────────────────
-// Tests each signal A-D against real recorded predictions. Excludes
+// Tests signals A and B against real recorded predictions. Excludes
 // historical-import and backfill rows, whose seasonOver25PercentageHT carries
 // full-season look-ahead bias. lift25 ~1.0 means the signal has no live
 // predictive value; a negative gap25 means the probability table overpredicts.
@@ -1487,11 +1396,11 @@ app.get("/signal-backtest", async (req, res) => {
     }
 
     // Per-combination buckets — rank counts signals, but specific combos can
-    // diverge a lot at the same rank (e.g. B alone vs C alone). This surfaces
+    // diverge a lot at the same rank (e.g. A alone vs B alone). This surfaces
     // which combinations actually carry the predictive weight.
     const byCombo = {};
     for (const m of all) {
-      const c = ["A", "E"].filter(k => met(m, k)).join("") || "(none)";
+      const c = ["A", "B"].filter(k => met(m, k)).join("") || "(none)";
       if (!byCombo[c]) byCombo[c] = { n: 0, hit25: 0, hit15: 0 };
       byCombo[c].n++;
       if (m.hit_25) byCombo[c].hit25++;
@@ -2009,7 +1918,7 @@ app.get("/preds", async (req, res) => {
 // Mine candidate last-5 signals against the clean cohort. Reads snap.l5
 // (home/away L5 FH scored/conceded/total averages) directly, so it's
 // independent of the stored rank/signals fields and won't be polluted by
-// old captures that predate the A+E migration. Reports lift for a grid
+// old captures that predate the current A+B last-5 model. Reports lift for a grid
 // of threshold combinations so we can see whether a stronger or different
 // last-5 pattern exists in data we already have.
 app.get("/last5-mine", async (req, res) => {
@@ -2210,49 +2119,50 @@ app.get("/last5-rank0", async (req, res) => {
   }
 });
 
-// Diagnostic: how often A and E fire on CURRENT upcoming matches (live signal
+// Diagnostic: how often A and B fire on CURRENT upcoming matches (live signal
 // code, not the persisted snapshots that /signal-backtest reads). Use this to
-// tell whether Signal E is genuinely dormant or whether stored snapshots are
-// just stale from before the A+E migration.
+// see whether either signal is dormant or saturated for the current league set.
 app.get("/signal-fires", async (req, res) => {
   try {
     const tzOffset = parseInt(req.query.tz || "0", 10);
     const { preds } = await computePreds(tzOffset);
     const upcoming = preds.filter(p => p.status !== "complete" && !p.matchResult && p.snap);
-    let aFires = 0, eFires = 0, aeFires = 0;
-    const eExamples = [];
+    let aFires = 0, bFires = 0, abFires = 0;
+    const abExamples = [];
     for (const p of upcoming) {
       const aMet = !!(p.signals && p.signals.A && p.signals.A.met);
-      const eMet = !!(p.signals && p.signals.E && p.signals.E.met);
+      const bMet = !!(p.signals && p.signals.B && p.signals.B.met);
       if (aMet) aFires++;
-      if (eMet) eFires++;
-      if (aMet && eMet) aeFires++;
-      if (eMet && eExamples.length < 10) {
-        eExamples.push({
+      if (bMet) bFires++;
+      if (aMet && bMet) abFires++;
+      if (aMet && bMet && abExamples.length < 10) {
+        abExamples.push({
           match: p.home + " vs " + p.away, league: p.league,
-          t1_pct: p.snap.home && p.snap.home.t1_pct,
-          scored_fh: p.snap.home && p.snap.home.scored_fh,
+          aValue: p.signals.A && p.signals.A.value,
+          bValue: p.signals.B && p.signals.B.value,
         });
       }
     }
-    const topHomeByT1 = upcoming
-      .filter(p => p.snap.home && p.snap.home.t1_pct != null)
-      .sort((a, b) => (b.snap.home.t1_pct || 0) - (a.snap.home.t1_pct || 0))
+    const topByCi = upcoming
+      .filter(p => typeof p.ci === "number")
+      .sort((a, b) => (b.ci || 0) - (a.ci || 0))
       .slice(0, 15)
       .map(p => ({
         match: p.home + " vs " + p.away, league: p.league,
-        t1_pct: p.snap.home.t1_pct, scored_fh: p.snap.home.scored_fh,
-        eMet: !!(p.signals && p.signals.E && p.signals.E.met),
+        ci: p.ci,
+        aMet: !!(p.signals && p.signals.A && p.signals.A.met),
+        bMet: !!(p.signals && p.signals.B && p.signals.B.met),
       }));
     res.json({
       ok: true,
       upcomingTotal: upcoming.length,
-      aFires, eFires, aeFires,
+      aFires, bFires, abFires,
       aFireRate: upcoming.length ? +(aFires / upcoming.length * 100).toFixed(1) : 0,
-      eFireRate: upcoming.length ? +(eFires / upcoming.length * 100).toFixed(1) : 0,
-      eExamples,
-      topHomeByT1,
-      note: "Live signals on upcoming matches. If eFires=0 but topHomeByT1 has rows above 25/0.94, signals.E is being computed but no match clears the bar. If t1_pct is generally <25, the E threshold is unreachable for this league set.",
+      bFireRate: upcoming.length ? +(bFires / upcoming.length * 100).toFixed(1) : 0,
+      abFireRate: upcoming.length ? +(abFires / upcoming.length * 100).toFixed(1) : 0,
+      abExamples,
+      topByCi,
+      note: "Live A (Mutual Instability) + B (Away Scoring) signals on upcoming matches. abFires = rank-2 (both fire). If a signal's fire rate is ~0% or ~100%, its threshold may be mis-set for the current league set.",
     });
   } catch(e) {
     console.error(e);
