@@ -516,13 +516,11 @@ function unixToLocalDate(unix, tzOffset) {
   return y + "-" + m + "-" + day;
 }
 
-// Multi-signal probabilities — empirically calibrated on 860 viable matches.
-// Production thresholds: loose for sample stability + out-of-sample robustness.
-// Signal A: Mutual Instability (home L5 total >= 1.6 AND away L5 total >= 1.4) — environment signal
-// Signal B: Away Team Scoring (away L5 FH >= 0.8) — tempo/participation signal
-// Interaction: A+B (19.5%) >> A only (8.6%) > B only (~9.5%) > baseline (9.2%)
-const PROB15_BY_RANK = { 0: 31.6, 1: 45.0, 2: 50.7 };  // empirical FH>1.5 from calibration
-const PROB25_BY_RANK = { 0: 7.5, 1: 9.5, 2: 19.5 };  // empirical FH>2.5: neither, single signal, A+B interaction
+// Multi-signal probabilities — calibrated on 732 clean resolved matches (women excluded).
+// Combo-keyed: bit(A)+bit(B). Key finding: A alone is at/below baseline on both metrics —
+// all FH>2.5 lift comes from the A+B interaction. B alone is a strong FH>1.5 predictor.
+const PROB15_BY_COMBO = { "00": 32.9, "01": 44.9, "10": 29.0, "11": 47.2 };
+const PROB25_BY_COMBO = { "00":  9.4, "01": 11.6, "10":  9.7, "11": 20.8 };
 const RANK_LABELS = { 0: "Low", 1: "Signal", 2: "Fire" };
 
 // Average a team's last-5 first-half form. Goals are team-relative (fhFor =
@@ -539,7 +537,8 @@ function last5Form(arr) {
 // Multi-signal engine — production thresholds from grid-search calibration.
 //   Signal A: Mutual Instability (home L5 total >= 1.6 AND away L5 total >= 1.4)
 //   Signal B: Away Team Scoring (away L5 FH >= 0.8)
-// A+B is the predictive engine (19.5% vs 9.2% baseline = 2.1x lift, 82 matches).
+// A+B is the FH>2.5 engine (20.8% vs 9.4% baseline = 2.2x lift, n=72).
+// B alone drives FH>1.5 (44.9% vs 32.9% baseline). A alone is at/below baseline on both.
 function computeSignals(snap, hLast5, aLast5) {
   const f2 = (v) => v.toFixed(2);
 
@@ -561,9 +560,11 @@ function computeSignals(snap, hLast5, aLast5) {
   const signalCount = (sigA ? 1 : 0) + (sigB ? 1 : 0);
   const rank = Math.min(signalCount, 2);
 
-  // Get probabilities from rank tables
-  const prob15 = PROB15_BY_RANK[rank] || 35.8;
-  const prob25 = PROB25_BY_RANK[rank] || 11.4;
+  // Combo-keyed probabilities: A alone is at/below baseline; B alone predicts FH>1.5 well;
+  // A+B together is the FH>2.5 signal.
+  const combo = (sigA ? "1" : "0") + (sigB ? "1" : "0");
+  const prob15 = PROB15_BY_COMBO[combo];
+  const prob25 = PROB25_BY_COMBO[combo];
 
   return {
     rank,
@@ -2729,7 +2730,7 @@ app.get("/daily-drift", async (req, res) => {
         neither_fires: total.neither,
         neither_hit_rate_pct: total.neither ? +(total.neither_hits / total.neither * 100).toFixed(1) : 0,
       },
-      expected: { ab: 19.5, single: 9.5, neither: 7.5 },
+      expected: { ab: 20.8, bOnly: 11.6, aOnly: 9.7, neither: 9.4 },
       by_day: rows,
       note: "Use 5+ days to distinguish drift from noise. A+B fires rarely (~5-8% of matches).",
     });
@@ -2897,7 +2898,7 @@ app.get("/signal-a-grid-search", async (req, res) => {
       ok: true,
       note: "Grid search for Signal A thresholds. Goal: maximize both A-only and A+B hit rates.",
       baseline_fh25: viable.filter(m => (parseInt(m.ht_home || 0, 10) + parseInt(m.ht_away || 0, 10)) > 2.5).length,
-      baseline_rate_pct: 9.2,
+      baseline_rate_pct: 9.4,
       results,
     });
   } catch (e) {
@@ -3611,7 +3612,7 @@ body{background:#f3f4f6;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',
   ${rateLimited ? '<div style="background:#fef2f2;border:1px solid #fca5a5;border-radius:8px;padding:10px 14px;margin-bottom:14px;font-size:12px;color:#b91c1c;line-height:1.6"><strong>&#9888; API rate limit reached</strong> \u2014 showing cached data. Resets at ' + new Date(RATE_LIMITED_UNTIL).toLocaleTimeString('en-GB') + '. <a href="/cache-status" style="color:#b91c1c">View cache status</a></div>' : ''}
   <div style="background:#fffbeb;border:1px solid #fde68a;border-radius:8px;padding:10px 14px;margin-bottom:14px;font-size:12px;color:#92400e;line-height:1.6">
     <strong>How it works:</strong> 2 pre-game signals (A &amp; B) &mdash; no look-ahead bias. Signal A &#128293;: Mutual Instability (home L5 FH total &ge; 1.6 AND away L5 FH total &ge; 1.4). Signal B &#127919;: Away Team Scoring (away L5 FH scored &ge; 0.8). Rank = signals fired (max 2). &#128293; shown only when both A+B fire; &#127919; shown when B fires.
-    Empirically calibrated on 860 live-captured matches: rank 0 = 7.5% FH&gt;2.5 &middot; rank 1 (single signal) = 9.5% &middot; rank 2 (A+B) = 19.5% (~2.1x baseline). FH&gt;1.5: 31.6% / 45% / 50.7%.
+    Calibrated on 732 clean matches (women excluded): A+B = 20.8% FH&gt;2.5 (2.2&times; baseline 9.4%) &middot; B only = 11.6% &middot; A only = 9.7% (at baseline) &middot; neither = 9.4%. FH&gt;1.5: 47.2% (A+B) &middot; 44.9% (B only) &middot; 29.0% (A only) &middot; 32.9% (neither).
   </div>
   <div id="mainView"></div>
 </div>
