@@ -2564,6 +2564,134 @@ app.get("/season-mine", async (req, res) => {
   }
 });
 
+// Correlate pre-game last-5 CORNER production with the over-2.5 outcome.
+// For each resolved match, reconstruct each team's last-5 corner averages from
+// match history (games strictly BEFORE the match date — look-ahead-free, same
+// discipline as L5), then correlate the combined attacking-corner volume with the
+// goals-over-2.5 result. Reports against BOTH lines (FH>2.5 and FT>2.5) and BOTH
+// corner types (full-match corners and first-half corners), since "over 2.5" is
+// ambiguous. Corner fields are ~50% covered on thin leagues, so usable n < cohort.
+app.get("/corner-mine", async (req, res) => {
+  res.set("Cache-Control", "no-store");
+  if (!supabase) return res.status(400).json({ ok: false, error: "Supabase not enabled" });
+  const t0 = Date.now();
+  try {
+    const all = [];
+    const PAGE = 1000;
+    const cutoffSec = Math.floor(Date.now() / 1000) - 400 * 86400;
+    for (let off = 0; ; off += PAGE) {
+      const { data, error } = await supabase
+        .from("match_results")
+        .select("match_id, competition_id, home_id, away_id, date_unix, ht_home, ht_away, ft_home, ft_away")
+        .not("hit_25", "is", null)
+        .gte("date_unix", cutoffSec)
+        .range(off, off + PAGE - 1);
+      if (error) throw error;
+      if (!data || !data.length) break;
+      all.push(...data);
+      if (data.length < PAGE) break;
+    }
+    const rows = all.filter(r =>
+      r.competition_id && r.home_id && r.away_id && r.date_unix &&
+      r.ht_home != null && r.ht_away != null && r.ft_home != null && r.ft_away != null &&
+      !WOMENS_LEAGUE_IDS.has(r.competition_id));
+
+    const byComp = {};
+    for (const r of rows) { (byComp[r.competition_id] = byComp[r.competition_id] || []).push(r); }
+
+    const pres = (v) => v != null && v !== -1 && v !== "" && !isNaN(Number(v));
+    const feats = [];
+    let competitionsFetched = 0, skippedThin = 0, rateLimited = false;
+
+    for (const [cid, rs] of Object.entries(byComp)) {
+      if (Date.now() < RATE_LIMITED_UNTIL) { rateLimited = true; break; }
+      let matches;
+      try { const mr = await fetchLeagueMatches(cid); matches = (mr && mr.data) || []; }
+      catch (_) { continue; }
+      competitionsFetched++;
+
+      // team's last-5 corners-FOR average (full-match and first-half), as-of a date.
+      const teamL5 = (tid, before) => {
+        const games = matches
+          .filter(m => (m.homeID === tid || m.awayID === tid) && (m.date_unix || 0) < before && m.status === "complete")
+          .sort((a, b) => (b.date_unix || 0) - (a.date_unix || 0));
+        const out = {};
+        const full = games.filter(m => pres(m.team_a_corners) && pres(m.team_b_corners)).slice(0, 5);
+        if (full.length >= 3) out.forFull = full.reduce((s, m) => s + Number(m.homeID === tid ? m.team_a_corners : m.team_b_corners), 0) / full.length;
+        const fh = games.filter(m => pres(m.team_a_fh_corners) && pres(m.team_b_fh_corners)).slice(0, 5);
+        if (fh.length >= 3) out.forFH = fh.reduce((s, m) => s + Number(m.homeID === tid ? m.team_a_fh_corners : m.team_b_fh_corners), 0) / fh.length;
+        return out;
+      };
+
+      for (const r of rs) {
+        const h = teamL5(r.home_id, r.date_unix);
+        const a = teamL5(r.away_id, r.date_unix);
+        const rec = {
+          o25fh: (Number(r.ht_home) + Number(r.ht_away)) > 2 ? 1 : 0,
+          o25ft: (Number(r.ft_home) + Number(r.ft_away)) > 2 ? 1 : 0,
+        };
+        if (h.forFull != null && a.forFull != null) rec.cornFull = +(h.forFull + a.forFull).toFixed(2);
+        if (h.forFH != null && a.forFH != null) rec.cornFH = +(h.forFH + a.forFH).toFixed(2);
+        if (rec.cornFull != null || rec.cornFH != null) feats.push(rec); else skippedThin++;
+      }
+    }
+
+    const pearson = (xs, ys) => {
+      const n = xs.length;
+      if (n < 3) return null;
+      let sx = 0, sy = 0, sxx = 0, syy = 0, sxy = 0;
+      for (let i = 0; i < n; i++) { sx += xs[i]; sy += ys[i]; sxx += xs[i] * xs[i]; syy += ys[i] * ys[i]; sxy += xs[i] * ys[i]; }
+      const cov = sxy - sx * sy / n, vx = sxx - sx * sx / n, vy = syy - sy * sy / n;
+      if (vx <= 0 || vy <= 0) return null;
+      return cov / Math.sqrt(vx * vy);
+    };
+
+    const analyze = (featKey, outKey) => {
+      const sub = feats.filter(f => f[featKey] != null);
+      if (sub.length < 10) return { n: sub.length, note: "too few rows" };
+      const xs = sub.map(f => f[featKey]), ys = sub.map(f => f[outKey]);
+      const r = pearson(xs, ys);
+      const sorted = [...xs].sort((a, b) => a - b);
+      const q = (p) => sorted[Math.max(0, Math.floor(p * (sorted.length - 1)))];
+      const cuts = [q(0.25), q(0.5), q(0.75)];
+      const idxOf = (x) => x <= cuts[0] ? 0 : x <= cuts[1] ? 1 : x <= cuts[2] ? 2 : 3;
+      const agg = [0, 1, 2, 3].map(() => ({ n: 0, hit: 0, xsum: 0 }));
+      for (const f of sub) { const b = idxOf(f[featKey]); agg[b].n++; agg[b].hit += f[outKey]; agg[b].xsum += f[featKey]; }
+      const labels = ["Q1 (fewest corners)", "Q2", "Q3", "Q4 (most corners)"];
+      return {
+        n: sub.length,
+        baseRate: +(ys.reduce((s, y) => s + y, 0) / ys.length * 100).toFixed(1),
+        correlation: r != null ? +r.toFixed(3) : null,
+        quartileCuts: cuts.map(c => +c.toFixed(2)),
+        buckets: agg.map((g, i) => ({
+          bucket: labels[i], n: g.n,
+          avgCorners: g.n ? +(g.xsum / g.n).toFixed(2) : 0,
+          over25Rate: g.n ? +(g.hit / g.n * 100).toFixed(1) : 0,
+        })),
+      };
+    };
+
+    res.json({
+      ok: true,
+      cohortRows: rows.length,
+      usableWithCorners: feats.length,
+      competitionsFetched,
+      skippedThinNoCorners: skippedThin,
+      rateLimitedEarly: rateLimited,
+      results: {
+        "fullCorners_vs_FH_over2.5": analyze("cornFull", "o25fh"),
+        "fullCorners_vs_FT_over2.5": analyze("cornFull", "o25ft"),
+        "fhCorners_vs_FH_over2.5": analyze("cornFH", "o25fh"),
+        "fhCorners_vs_FT_over2.5": analyze("cornFH", "o25ft"),
+      },
+      note: "correlation = Pearson r between combined pre-game last-5 corners-for and the binary over-2.5 outcome (point-biserial). |r|<0.1 ~ no relationship; 0.1-0.3 weak; >0.3 moderate. Compare Q4 over25Rate vs Q1/baseRate to see if more recent corners → more goals. Corners reconstructed from games before each match (look-ahead-free).",
+      elapsedMs: Date.now() - t0,
+    });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
 // ─── RANK 0 MINING: find hidden signals within no-signal matches ────────────────
 // Tests patterns ONLY on rank 0 matches (neither A nor B fire) to find
 // asymmetric or other patterns that could extract value from the "no signal" group.
