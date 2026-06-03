@@ -2926,6 +2926,116 @@ app.get("/rank0-overs", async (req, res) => {
   }
 });
 
+// HOLDOUT test for the "home attack dominance" lead surfaced by /rank0-overs:
+// among rank-0 matches (neither current signal fires), does a strong home attack
+// predict FH goals OUT OF SAMPLE? Chronological 70/30 split of the rank-0 cohort —
+// older = train (picks the threshold), newer = test (judges it). A candidate is
+// only credible if its TEST lift holds; this is the check we skipped before o15HT.
+app.get("/rank0-holdout", async (req, res) => {
+  res.set("Cache-Control", "no-store");
+  if (!supabase) return res.status(400).json({ ok: false, error: "Supabase not enabled" });
+  try {
+    const all = [];
+    const PAGE = 1000;
+    for (let off = 0; ; off += PAGE) {
+      const { data, error } = await supabase
+        .from("match_results")
+        .select("hit_25, hit_15, date_unix, snap")
+        .not("hit_25", "is", null)
+        .not("date_unix", "is", null)
+        .not("snap", "is", null)
+        .not("snap->>fetchedAt", "eq", "historical-import")
+        .not("snap->>fetchedAt", "eq", "backfill")
+        .range(off, off + PAGE - 1);
+      if (error) throw error;
+      if (!data || data.length === 0) break;
+      all.push(...data);
+      if (data.length < PAGE) break;
+    }
+    const withL5 = all.filter(m => m.snap && m.snap.l5 && m.snap.l5.home && m.snap.l5.away && m.date_unix);
+
+    // rank-0 under the CURRENT production signals.
+    const rank0 = withL5.filter(m => {
+      const hT = m.snap.l5.home.t || 0, aT = m.snap.l5.away.t || 0, aF = m.snap.l5.away.f || 0;
+      return !(hT >= 1.6 && aT >= 1.4) && !(aF >= 0.8);
+    }).sort((a, b) => (a.date_unix || 0) - (b.date_unix || 0));
+
+    const F = (m) => ({
+      hF: m.snap.l5.home.f != null ? m.snap.l5.home.f : null,
+      hT: m.snap.l5.home.t != null ? m.snap.l5.home.t : null,
+      h_scored_fh: m.snap.home ? m.snap.home.scored_fh : null,
+    });
+
+    const cut = Math.floor(rank0.length * 0.7);
+    const train = rank0.slice(0, cut);
+    const test = rank0.slice(cut);
+
+    const rate = (rows, key) => rows.length ? rows.filter(m => m[key]).length / rows.length : 0;
+    const tBase15 = rate(train, "hit_15"), tBase25 = rate(train, "hit_25");
+    const eBase15 = rate(test, "hit_15"), eBase25 = rate(test, "hit_25");
+
+    const evalOn = (rows, pred, base15, base25) => {
+      const sub = rows.filter(m => { const f = F(m); return pred(f); });
+      const n = sub.length;
+      if (!n) return { n: 0 };
+      const h15 = sub.filter(m => m.hit_15).length, h25 = sub.filter(m => m.hit_25).length;
+      return {
+        n,
+        hit15: +(h15 / n * 100).toFixed(1), lift15: base15 ? +(h15 / n / base15).toFixed(2) : 0,
+        hit25: +(h25 / n * 100).toFixed(1), lift25: base25 ? +(h25 / n / base25).toFixed(2) : 0,
+      };
+    };
+    const ge = (v, t) => v != null && v >= t;
+
+    // Pre-specified candidates (the home-attack lead, from L5 and season angles).
+    const defs = [
+      { label: "hF>=1.2 (home L5 scored)", pred: f => ge(f.hF, 1.2) },
+      { label: "hF>=1.0 (home L5 scored)", pred: f => ge(f.hF, 1.0) },
+      { label: "hT>=2.0 (home L5 total)", pred: f => ge(f.hT, 2.0) },
+      { label: "home scored_fh>=0.9 (season)", pred: f => ge(f.h_scored_fh, 0.9) },
+      { label: "hF>=1.0 OR scored_fh>=0.9 (home dominance)", pred: f => ge(f.hF, 1.0) || ge(f.h_scored_fh, 0.9) },
+    ];
+    const verdictFor = (te) => {
+      if (!te || te.n < 12) return "INCONCLUSIVE: test n too small";
+      if (te.lift15 >= 1.2) return "HOLDS: test FH>1.5 lift >= 1.2 out of sample";
+      if (te.lift15 >= 1.05) return "MARGINAL: small out-of-sample edge";
+      return "FAILS: no out-of-sample edge (like o15HT)";
+    };
+    const candidates = defs.map(d => {
+      const tr = evalOn(train, d.pred, tBase15, tBase25);
+      const te = evalOn(test, d.pred, eBase15, eBase25);
+      return { label: d.label, train: tr, test: te, verdict: verdictFor(te) };
+    });
+
+    // Overfit check: let TRAIN pick the best hF threshold, then judge on TEST.
+    let trainSelected = null;
+    let best = null;
+    for (const t of [0.8, 0.9, 1.0, 1.1, 1.2, 1.3]) {
+      const tr = evalOn(train, f => ge(f.hF, t), tBase15, tBase25);
+      if (tr.n >= 20 && (!best || tr.lift15 > best.tr.lift15)) best = { t, tr };
+    }
+    if (best) {
+      const te = evalOn(test, f => ge(f.hF, best.t), eBase15, eBase25);
+      trainSelected = { chosen: "hF>=" + best.t, train: best.tr, test: te, verdict: verdictFor(te) };
+    }
+
+    res.json({
+      ok: true,
+      rank0Total: rank0.length,
+      split: {
+        trainN: train.length, testN: test.length,
+        trainBase15: +(tBase15 * 100).toFixed(1), trainBase25: +(tBase25 * 100).toFixed(1),
+        testBase15: +(eBase15 * 100).toFixed(1), testBase25: +(eBase25 * 100).toFixed(1),
+      },
+      candidates,
+      trainSelected,
+      note: "Train = older 70% of rank-0 games, Test = newer 30%. Trust a candidate ONLY if its test.lift15 holds >= ~1.2 at test.n >= ~12. lift is vs the same split's rank-0 base rate. Small test n means even a HOLDS verdict is tentative until more data accrues — but a FAILS verdict is decisive (that's how o15HT was caught).",
+    });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
 // Diagnostic: how often A and B fire on CURRENT upcoming matches (live signal
 // code, not the persisted snapshots that /signal-backtest reads). Use this to
 // see whether either signal is dormant or saturated for the current league set.
