@@ -3036,6 +3036,137 @@ app.get("/rank0-holdout", async (req, res) => {
   }
 });
 
+// Tests "Reason 2": does a team-quality MISMATCH (one team much better than the
+// other) predict FH goals? Two parts: (1) DIRECTION — quartile buckets on the
+// full live cohort, to see whether a bigger gap means MORE goals or a controlled
+// 1-0; (2) HOLDOUT — chronological 70/30 split of the rank-0 cohort (where
+// mismatches hide, since A+B need mutual activity), train picks the threshold,
+// test judges it. Same discipline as /rank0-holdout. Symmetric gap, both directions.
+app.get("/mismatch-holdout", async (req, res) => {
+  res.set("Cache-Control", "no-store");
+  if (!supabase) return res.status(400).json({ ok: false, error: "Supabase not enabled" });
+  try {
+    const all = [];
+    const PAGE = 1000;
+    for (let off = 0; ; off += PAGE) {
+      const { data, error } = await supabase
+        .from("match_results")
+        .select("hit_25, hit_15, date_unix, snap")
+        .not("hit_25", "is", null)
+        .not("date_unix", "is", null)
+        .not("snap", "is", null)
+        .not("snap->>fetchedAt", "eq", "historical-import")
+        .not("snap->>fetchedAt", "eq", "backfill")
+        .range(off, off + PAGE - 1);
+      if (error) throw error;
+      if (!data || data.length === 0) break;
+      all.push(...data);
+      if (data.length < PAGE) break;
+    }
+    const live = all.filter(m => m.snap && m.snap.home && m.snap.away && m.date_unix);
+
+    const F = (m) => {
+      const h = m.snap.home || {}, a = m.snap.away || {}, l5 = m.snap.l5;
+      const num = (v) => (v != null && !isNaN(Number(v))) ? Number(v) : null;
+      const hSF = num(h.scored_fh), hCF = num(h.conced_fh), aSF = num(a.scored_fh), aCF = num(a.conced_fh);
+      const seasonGap = (hSF != null && hCF != null && aSF != null && aCF != null)
+        ? Math.abs((hSF - hCF) - (aSF - aCF)) : null;
+      const scoredGap = (hSF != null && aSF != null) ? Math.abs(hSF - aSF) : null;
+      const t1Gap = (num(h.t1_pct) != null && num(a.t1_pct) != null) ? Math.abs(num(h.t1_pct) - num(a.t1_pct)) : null;
+      let l5Gap = null;
+      if (l5 && l5.home && l5.away) l5Gap = Math.abs(((l5.home.f || 0) - (l5.home.a || 0)) - ((l5.away.f || 0) - (l5.away.a || 0)));
+      return { seasonGap, scoredGap, t1Gap, l5Gap };
+    };
+
+    // ── Part 1: DIRECTION on full cohort (quartile buckets + correlation) ──
+    const pearson = (xs, ys) => {
+      const n = xs.length;
+      if (n < 3) return null;
+      let sx = 0, sy = 0, sxx = 0, syy = 0, sxy = 0;
+      for (let i = 0; i < n; i++) { sx += xs[i]; sy += ys[i]; sxx += xs[i] * xs[i]; syy += ys[i] * ys[i]; sxy += xs[i] * ys[i]; }
+      const cov = sxy - sx * sy / n, vx = sxx - sx * sx / n, vy = syy - sy * sy / n;
+      if (vx <= 0 || vy <= 0) return null;
+      return +(cov / Math.sqrt(vx * vy)).toFixed(3);
+    };
+    const direction = (featKey) => {
+      const sub = live.filter(m => F(m)[featKey] != null);
+      if (sub.length < 40) return { feature: featKey, n: sub.length, note: "too few" };
+      const xs = sub.map(m => F(m)[featKey]);
+      const sorted = [...xs].sort((a, b) => a - b);
+      const q = (p) => sorted[Math.max(0, Math.floor(p * (sorted.length - 1)))];
+      const cuts = [q(0.25), q(0.5), q(0.75)];
+      const idx = (x) => x <= cuts[0] ? 0 : x <= cuts[1] ? 1 : x <= cuts[2] ? 2 : 3;
+      const agg = [0, 1, 2, 3].map(() => ({ n: 0, h15: 0, h25: 0, xs: 0 }));
+      for (const m of sub) { const b = idx(F(m)[featKey]); agg[b].n++; agg[b].h15 += m.hit_15 ? 1 : 0; agg[b].h25 += m.hit_25 ? 1 : 0; agg[b].xs += F(m)[featKey]; }
+      const labels = ["Q1 (closest match)", "Q2", "Q3", "Q4 (biggest mismatch)"];
+      return {
+        feature: featKey, n: sub.length,
+        corr15: pearson(xs, sub.map(m => m.hit_15 ? 1 : 0)),
+        corr25: pearson(xs, sub.map(m => m.hit_25 ? 1 : 0)),
+        quartiles: agg.map((g, i) => ({
+          bucket: labels[i], n: g.n, avgGap: g.n ? +(g.xs / g.n).toFixed(2) : 0,
+          over15Rate: g.n ? +(g.h15 / g.n * 100).toFixed(1) : 0,
+          over25Rate: g.n ? +(g.h25 / g.n * 100).toFixed(1) : 0,
+        })),
+      };
+    };
+
+    // ── Part 2: HOLDOUT on rank-0 cohort ──
+    const rank0 = live.filter(m => m.snap.l5 && m.snap.l5.home && m.snap.l5.away).filter(m => {
+      const hT = m.snap.l5.home.t || 0, aT = m.snap.l5.away.t || 0, aF = m.snap.l5.away.f || 0;
+      return !(hT >= 1.6 && aT >= 1.4) && !(aF >= 0.8);
+    }).sort((a, b) => (a.date_unix || 0) - (b.date_unix || 0));
+    const cut = Math.floor(rank0.length * 0.7);
+    const train = rank0.slice(0, cut), test = rank0.slice(cut);
+    const rate = (rows, key) => rows.length ? rows.filter(m => m[key]).length / rows.length : 0;
+    const tB15 = rate(train, "hit_15"), tB25 = rate(train, "hit_25"), eB15 = rate(test, "hit_15"), eB25 = rate(test, "hit_25");
+    const evalOn = (rows, pred, b15, b25) => {
+      const sub = rows.filter(m => { try { return pred(F(m)); } catch (_) { return false; } });
+      const n = sub.length;
+      if (!n) return { n: 0 };
+      const h15 = sub.filter(m => m.hit_15).length, h25 = sub.filter(m => m.hit_25).length;
+      return { n, hit15: +(h15 / n * 100).toFixed(1), lift15: b15 ? +(h15 / n / b15).toFixed(2) : 0, hit25: +(h25 / n * 100).toFixed(1), lift25: b25 ? +(h25 / n / b25).toFixed(2) : 0 };
+    };
+    const ge = (v, t) => v != null && v >= t;
+    const verdictFor = (te) => {
+      if (!te || te.n < 12) return "INCONCLUSIVE: test n too small";
+      if (te.lift15 >= 1.2) return "HOLDS: test FH>1.5 lift >= 1.2 out of sample";
+      if (te.lift15 >= 1.05) return "MARGINAL: small out-of-sample edge";
+      return "FAILS: no out-of-sample edge";
+    };
+    const defs = [
+      { label: "seasonGap>=0.5 (net FH rating gap)", pred: f => ge(f.seasonGap, 0.5) },
+      { label: "seasonGap>=0.7", pred: f => ge(f.seasonGap, 0.7) },
+      { label: "seasonGap>=1.0", pred: f => ge(f.seasonGap, 1.0) },
+      { label: "l5Gap>=0.9 (net FH form gap)", pred: f => ge(f.l5Gap, 0.9) },
+      { label: "scoredGap>=0.5 (FH scored gap)", pred: f => ge(f.scoredGap, 0.5) },
+      { label: "t1Gap>=15 (FH-scoring %% gap)", pred: f => ge(f.t1Gap, 15) },
+    ];
+    const candidates = defs.map(d => ({
+      label: d.label,
+      train: evalOn(train, d.pred, tB15, tB25),
+      test: evalOn(test, d.pred, eB15, eB25),
+      verdict: verdictFor(evalOn(test, d.pred, eB15, eB25)),
+    }));
+
+    res.json({
+      ok: true,
+      cohort: { liveRows: live.length, rank0Total: rank0.length },
+      directionFullCohort: {
+        seasonGap: direction("seasonGap"),
+        l5Gap: direction("l5Gap"),
+      },
+      rank0Holdout: {
+        split: { trainN: train.length, testN: test.length, trainBase15: +(tB15 * 100).toFixed(1), testBase15: +(eB15 * 100).toFixed(1), trainBase25: +(tB25 * 100).toFixed(1), testBase25: +(eB25 * 100).toFixed(1) },
+        candidates,
+      },
+      note: "Part 1 (direction): if Q4 (biggest mismatch) over15Rate is ABOVE Q1, big gaps mean more goals (reason 2 real); if FLAT or BELOW, a mismatch tends to a controlled low-scoring game. corr near 0 = no relationship. Part 2 (holdout): trust a candidate only if test.lift15 >= ~1.2 at test.n >= 12. A FAILS verdict here means reason 2 doesn't convert to FH goals in our data.",
+    });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
 // Diagnostic: how often A and B fire on CURRENT upcoming matches (live signal
 // code, not the persisted snapshots that /signal-backtest reads). Use this to
 // see whether either signal is dormant or saturated for the current league set.
