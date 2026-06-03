@@ -3186,10 +3186,46 @@ app.get("/debug-raw-api", async (req, res) => {
       };
     }
 
+    // RECENT-FORM RECON: to build last-5 versions of richer features we need those
+    // stats to exist PER COMPLETED MATCH (not just as season aggregates). Probe a
+    // completed match for actual (post-game) xG / shots / corners / possession /
+    // attacks, with values, so we know what's aggregatable over a team's last 5.
+    const completed = all.find(m => m.status === "complete") || null;
+    let perMatchRecon = null;
+    if (completed) {
+      const candidateFields = [
+        "team_a_xg", "team_b_xg", "total_xg",
+        "team_a_xg_prematch", "team_b_xg_prematch",
+        "team_a_shots", "team_b_shots",
+        "team_a_shotsOnTarget", "team_b_shotsOnTarget",
+        "team_a_corners", "team_b_corners",
+        "team_a_possession", "team_b_possession",
+        "team_a_dangerous_attacks", "team_b_dangerous_attacks",
+        "team_a_fh_shots", "team_b_fh_shots",
+        "ht_goals_team_a", "ht_goals_team_b",
+        "homeGoalCount", "awayGoalCount",
+      ];
+      const present = {}, missing = [];
+      for (const f of candidateFields) {
+        const v = completed[f];
+        if (v === undefined) missing.push(f);
+        else present[f] = v;
+      }
+      perMatchRecon = {
+        match: completed.home_name + " vs " + completed.away_name,
+        status: completed.status,
+        present_fields: present,            // exist on the match record (with values)
+        missing_fields: missing,            // not on the record at all
+        all_match_keys: Object.keys(completed).sort(),
+        note: "present_fields with real (non -1) values can be aggregated into last-5 form. -1 / missing means FootyStats doesn't carry it per-match for this league, so a recent-form version is NOT buildable.",
+      };
+    }
+
     res.json({
       ok: true,
       season_id: sid,
       verdict,
+      perMatchRecon,
       sample_match: sampleMatch ? {
         id: sampleMatch.id,
         date_unix: sampleMatch.date_unix,
