@@ -1934,7 +1934,6 @@ app.get("/admin/export-dataset", async (req, res) => {
         .not("snap", "is", null)
         .not("snap->>fetchedAt", "eq", "historical-import")
         .not("snap->>fetchedAt", "eq", "backfill")
-        .order("date_unix", { ascending: true })
         .range(off, off + PAGE - 1);
       if (error) throw error;
       if (!data || data.length === 0) break;
@@ -1945,6 +1944,7 @@ app.get("/admin/export-dataset", async (req, res) => {
       const fa = m.snap && m.snap.fetchedAt ? String(m.snap.fetchedAt) : "";
       return !fa.includes("(from history)");
     });
+    rows.sort((a, b) => (a.date_unix || 0) - (b.date_unix || 0));
 
     const num = (v) => (v == null || v === "" || isNaN(Number(v))) ? "" : Number(v);
     const bit = (s, k) => (s && s[k] && s[k].met) ? 1 : 0;
