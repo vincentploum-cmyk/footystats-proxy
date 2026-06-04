@@ -731,15 +731,16 @@ function computeSignals(snap, hLast5, aLast5) {
   const seasonGap = hasGap ? Math.abs((hSF - hCF) - (aSF - aCF)) : 0;
   const sigC = hasGap && seasonGap >= 0.5;
 
-  // Compute rank (0-3) based on how many signals fire
-  const signalCount = (sigA ? 1 : 0) + (sigB ? 1 : 0) + (sigC ? 1 : 0);
-  const rank = Math.min(signalCount, 3);
-
-  // Combo-keyed probabilities (bit(A)+bit(B)+bit(C)). The table encodes that C only
-  // helps where A+B are silent, so the per-combo prob is what to trust, not the count.
+  // Combo-keyed probabilities (bit(A)+bit(B)+bit(C)).
   const combo = (sigA ? "1" : "0") + (sigB ? "1" : "0") + (sigC ? "1" : "0");
   const prob15 = PROB15_BY_COMBO[combo];
   const prob25 = PROB25_BY_COMBO[combo];
+
+  // Rank is derived from the calibrated probability — NOT from counting signals — so
+  // rank and probability always move together (a higher rank is always a higher-
+  // probability match). Tiered on FH-over-1.5, the primary bet: 3 & 2 = Fire, 1 =
+  // Signal, 0 = Low.
+  const rank = prob15 >= 45 ? 3 : prob15 >= 40 ? 2 : prob15 >= 30 ? 1 : 0;
 
   return {
     rank,
