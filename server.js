@@ -547,6 +547,112 @@ const PROB15_BY_COMBO = { "000": 26.0, "001": 39.3, "010": 43.6, "011": 39.3, "1
 const PROB25_BY_COMBO = { "000":  6.7, "001": 12.3, "010": 14.5, "011":  5.4, "100": 14.7, "101": 20.0, "110": 19.6, "111": 20.0 };
 const RANK_LABELS = { 0: "Low", 1: "Signal", 2: "Fire", 3: "Fire" };
 
+function numOrNull(v) {
+  return (v != null && !isNaN(Number(v))) ? Number(v) : null;
+}
+
+function pushUnique(arr, label) {
+  if (label && !arr.includes(label)) arr.push(label);
+}
+
+// Pattern helper: lightweight secondary context only. The calibrated combo probabilities
+// remain the source of truth; these tags just improve tiebreaking and explainability.
+function derivePatternContext(pred) {
+  const snap = (pred && pred.snap) || {};
+  const pm = snap.prematch || {};
+  const home = snap.home || {};
+  const away = snap.away || {};
+  const l5 = snap.l5 || {};
+  const hL5 = l5.home || {};
+  const aL5 = l5.away || {};
+  const sigA = !!(pred && pred.signals && pred.signals.A && pred.signals.A.met);
+
+  const pmO05 = numOrNull(pm.o05HT);
+  const pmO15 = numOrNull(pm.o15HT);
+  const pmBtts = numOrNull(pm.btts_fhg);
+  const pmXgHome = numOrNull(pm.xgHome);
+  const pmXgAway = numOrNull(pm.xgAway);
+  const hScored = numOrNull(home.scored_fh);
+  const hT1 = numOrNull(home.t1_pct);
+  const aConced = numOrNull(away.conced_fh);
+  const hCn010 = numOrNull(home.cn010_avg);
+  const hL5F = numOrNull(hL5.f);
+  const hL5T = numOrNull(hL5.t);
+  const aL5F = numOrNull(aL5.f);
+
+  let score15 = 0;
+  let score25 = 0;
+  const reasons15 = [];
+  const reasons25 = [];
+  const cautions = [];
+
+  if (pmO05 != null && pmO05 >= 86) { score15 += 2; score25 += 1; pushUnique(reasons15, "elite prematch FH goal pace"); pushUnique(reasons25, "elite prematch FH pace"); }
+  if (pmBtts != null && pmBtts >= 34) { score15 += 2; score25 += 1; pushUnique(reasons15, "both teams projected live early"); }
+  if (pmO15 != null && pmO15 >= 50) { score15 += 2; score25 += 1; pushUnique(reasons15, "strong prematch over 1.5 signal"); }
+  if (hL5T != null && hL5T >= 2.0) { score15 += 2; score25 += 2; pushUnique(reasons15, "home last-5 FH totals are hot"); pushUnique(reasons25, "home last-5 FH chaos is high"); }
+  if (hScored != null && hScored >= 1.14) { score15 += 1; score25 += 1; pushUnique(reasons15, "home scores early often"); }
+  if (numOrNull(pred && pred.ci) != null && Number(pred.ci) >= 3.55) { score15 += 1; score25 += 2; pushUnique(reasons15, "combined FH intensity is high"); pushUnique(reasons25, "combined FH intensity is high"); }
+  if (aL5F != null && aL5F >= 1.2) { score15 += 1; score25 += 1; pushUnique(reasons15, "away side brings recent FH scoring"); }
+  if (aConced != null && aConced >= 0.88) { score15 += 1; score25 += 1; pushUnique(reasons15, "away side leaks early goals"); }
+
+  if (aConced != null && aConced >= 0.88 && pmXgHome != null && pmXgHome >= 1.59) {
+    score15 += 3;
+    pushUnique(reasons15, "strong home pressure vs soft away defence");
+  }
+  if (hL5F != null && hL5F >= 1.0 && aL5F != null && aL5F >= 1.0) {
+    score15 += 2;
+    score25 += 3;
+    pushUnique(reasons15, "both teams scored 1.0+ FH in L5");
+    pushUnique(reasons25, "both teams scored 1.0+ FH in L5");
+  }
+  if (pmO15 != null && pmO15 >= 45 && pmBtts != null && pmBtts >= 28.4) {
+    score15 += 2;
+    score25 += 1;
+    pushUnique(reasons15, "prematch FH goal signals agree");
+  }
+
+  if (Number(pred && pred.prob25) >= 19.6) { score25 += 2; pushUnique(reasons25, "top calibrated FH over 2.5 bucket"); }
+  if (sigA) { score25 += 1; pushUnique(reasons25, "mutual instability is live"); }
+  if (hL5F != null && hL5F >= 1.0 && pmBtts != null && pmBtts >= 28.4) {
+    score25 += 2;
+    pushUnique(reasons25, "home pressure plus live-both-teams setup");
+  }
+  if (hT1 != null && hT1 >= 21 && hL5F != null && hL5F >= 1.0) {
+    score25 += 2;
+    pushUnique(reasons25, "home side converts strong FH volume");
+  }
+  if (hL5T != null && hL5T >= 1.6 && pmO15 != null && pmO15 >= 45) {
+    score25 += 2;
+    pushUnique(reasons25, "recent chaos and prematch model agree");
+  }
+  if (aConced != null && aConced >= 0.88 && pmXgAway != null && pmXgAway >= 1.49) {
+    score25 += 2;
+    pushUnique(reasons25, "away xG stays live in a soft early defence game");
+  }
+  if (hCn010 != null && hCn010 >= 0.167 && pmO15 != null && pmO15 >= 45) {
+    score25 += 1;
+    pushUnique(reasons25, "early-goal timing risk plus strong prematch pace");
+  }
+
+  if (pmO05 != null && pmO05 <= 54) { score15 -= 2; score25 -= 4; pushUnique(cautions, "cold prematch FH pace"); }
+  if (aConced != null && aConced <= 0.33) { score15 -= 1; score25 -= 2; pushUnique(cautions, "away defence rarely concedes early"); }
+  if (hScored != null && hScored <= 0.33) { score15 -= 2; score25 -= 2; pushUnique(cautions, "home side rarely scores early"); }
+  if (pmBtts != null && pmBtts <= 12) { score15 -= 1; score25 -= 2; pushUnique(cautions, "low FH BTTS pressure"); }
+  if (Number(pred && pred.prob25) <= 5.4) { score25 -= 2; pushUnique(cautions, "weak calibrated 2.5 bucket"); }
+  if (pmO15 != null && pmO15 <= 27) { score15 -= 1; score25 -= 1; pushUnique(cautions, "cold prematch over 1.5 signal"); }
+
+  return {
+    score15,
+    score25,
+    tag15: score15 >= 5 ? "Strong 1.5 setup" : (score15 >= 3 ? "Live 1.5 setup" : ""),
+    tag25: score25 >= 6 ? "Strong 2.5 setup" : (score25 >= 4 ? "Live 2.5 setup" : ""),
+    cautionTag: cautions.length && (score15 <= 0 || score25 <= 0) ? "Caution trap" : "",
+    reasons15: reasons15.slice(0, 3),
+    reasons25: reasons25.slice(0, 3),
+    cautions: cautions.slice(0, 3),
+  };
+}
+
 // Average a team's last-5 first-half form. Goals are team-relative (fhFor =
 // scored, fhAgst = conceded). Returns null if fewer than 3 recent games.
 function last5Form(arr) {
@@ -2291,7 +2397,7 @@ async function computePreds(tzOffset) {
         // Use frozen snapshot if match is complete and we have one
         const frozen = isComplete ? CI_SNAPSHOT_CACHE[matchId] : null;
 
-        preds.push({
+        const pred = {
           id: matchId, homeId, awayId,
           league: leagueName, leagueSid: parseInt(sid, 10),
           home: fix.home_name || "", away: fix.away_name || "",
@@ -2319,16 +2425,21 @@ async function computePreds(tzOffset) {
           signals:  frozen ? frozen.signals  : (result ? result.signals  : {}),
           hLast5, aLast5, hAvgFH, aAvgFH,
           matchResult: isComplete ? { fhH, fhA, ftH, ftA, hit25: (fhH+fhA)>2, hit15: (fhH+fhA)>1 } : null,
-        });
+        };
+        pred.pattern = derivePatternContext(pred);
+        preds.push(pred);
       }
     }
 
     rebuildServerMatchCache();
     // Probability-first ordering: the per-combo calibrated probability is the source of
-    // truth (Signal C is anti-additive, so rank count can disagree). ci/rank break ties.
+    // truth (Signal C is anti-additive, so rank count can disagree). Pattern scores are
+    // secondary context only, then ci/rank break ties.
     preds.sort((a, b) =>
       (b.prob25 || 0) - (a.prob25 || 0) ||
+      (((b.pattern || {}).score25) || 0) - (((a.pattern || {}).score25) || 0) ||
       (b.prob15 || 0) - (a.prob15 || 0) ||
+      (((b.pattern || {}).score15) || 0) - (((a.pattern || {}).score15) || 0) ||
       (b.ci || 0) - (a.ci || 0) ||
       (b.rank || 0) - (a.rank || 0));
   return { preds, dates };
@@ -4456,6 +4567,12 @@ body{background:#f3f4f6;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',
   J += "  if(sigA&&sigB)h+='<div style=\"display:inline-block;background:#dc2626;color:#fff;font-size:11px;font-weight:700;padding:3px 9px;border-radius:6px;margin-right:4px\" title=\"Signal A+B: Mutual Instability + Away Scoring\">🔥</div>';";
   J += "  if(sigB)h+='<div style=\"display:inline-block;background:#15803d;color:#fff;font-size:11px;font-weight:700;padding:3px 9px;border-radius:6px;letter-spacing:.5px;margin-right:6px\" title=\"Signal B: Away Team Scoring\">🎯</div>';";
   J += "  return h;}";
+  J += "function patternScore(m,key){var p=m&&m.pattern?m.pattern:null;if(!p)return 0;return key==='prob25'?(Number(p.score25)||0):(Number(p.score15)||0);}";
+  J += "function sortFor15(a,b){return ((b.prob15||0)-(a.prob15||0))|| (patternScore(b,'prob15')-patternScore(a,'prob15')) || ((b.prob25||0)-(a.prob25||0)) || ((b.ci||0)-(a.ci||0)) || ((b.rank||0)-(a.rank||0));}";
+  J += "function sortFor25(a,b){return ((b.prob25||0)-(a.prob25||0))|| (patternScore(b,'prob25')-patternScore(a,'prob25')) || ((b.prob15||0)-(a.prob15||0)) || ((b.ci||0)-(a.ci||0)) || ((b.rank||0)-(a.rank||0));}";
+  J += "function sortDefault(a,b){return sortFor25(a,b)||sortFor15(a,b)||((a.dt||0)-(b.dt||0));}";
+  J += "function patternBadges(m){if(!m||!m.pattern)return '';var p=m.pattern,h='';var t15=(p.reasons15||[]).join(' • ');var t25=(p.reasons25||[]).join(' • ');var tc=(p.cautions||[]).join(' • ');if(p.tag15)h+='<span title=\"'+esc(t15||p.tag15)+'\" style=\"background:#eff6ff;color:#1d4ed8;border:1px solid #bfdbfe;padding:2px 8px;border-radius:999px;font-size:10px;font-weight:700\">'+esc(p.tag15)+'</span>';if(p.tag25)h+='<span title=\"'+esc(t25||p.tag25)+'\" style=\"background:#f0fdf4;color:#15803d;border:1px solid #a7f3d0;padding:2px 8px;border-radius:999px;font-size:10px;font-weight:700\">'+esc(p.tag25)+'</span>';if(p.cautionTag)h+='<span title=\"'+esc(tc||p.cautionTag)+'\" style=\"background:#fff7ed;color:#c2410c;border:1px solid #fdba74;padding:2px 8px;border-radius:999px;font-size:10px;font-weight:700\">'+esc(p.cautionTag)+'</span>';return h?'<div style=\"display:flex;gap:6px;flex-wrap:wrap;margin-top:10px\">'+h+'</div>':'';}";
+  J += "function patternBadgeForRow(m,probKey){if(!m||!m.pattern)return '';var p=m.pattern;var lbl=probKey==='prob25'?(p.tag25||''):(p.tag15||'');var tips=probKey==='prob25'?(p.reasons25||[]):(p.reasons15||[]);if(lbl)return '<span title=\"'+esc(tips.join(' • ')||lbl)+'\" style=\"background:'+(probKey==='prob25'?'#f0fdf4':'#eff6ff')+';color:'+(probKey==='prob25'?'#15803d':'#1d4ed8')+';padding:1px 6px;border-radius:10px;font-size:9px;font-weight:700\">'+esc(lbl)+'</span>';if(p.cautionTag)return '<span title=\"'+esc((p.cautions||[]).join(' • ')||p.cautionTag)+'\" style=\"background:#fff7ed;color:#c2410c;padding:1px 6px;border-radius:10px;font-size:9px;font-weight:700\">'+esc(p.cautionTag)+'</span>';return '';}";
 
   J += "function renderTabs(){";
   J += "  var el=document.getElementById('dayTabs');var h='';";
@@ -4655,7 +4772,7 @@ body{background:#f3f4f6;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',
   J += "  ll.forEach(function(e){";
   J += "    var lg=e[0],ms=e[1];";
   J += "    if(openLeague!==lg)return;";
-  J += "    var sorted=ms.slice().sort(function(a,b){return ((b.prob25||0)-(a.prob25||0))||((b.prob15||0)-(a.prob15||0))||((b.ci||0)-(a.ci||0))||((b.rank||0)-(a.rank||0))||((a.dt||0)-(b.dt||0));});";
+  J += "    var sorted=ms.slice().sort(sortDefault);";
   J += "    sections+='<div class=\"league-section\"><div class=\"league-section-hdr\">'+esc(lg)+'</div>';";
   J += "    sorted.forEach(function(m){sections+=renderCard(m);});";
   J += "    sections+='</div>';";
@@ -4835,6 +4952,7 @@ body{background:#f3f4f6;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',
   J += "    +'<span>Recent FH intensity \u00b7 both teams\u2019 last 5</span>'";
   J += "    +'<span style=\"font-size:18px;font-weight:700;color:'+ciValCol+'\">'+ciVal.toFixed(2)+' '+ciCheck+'</span>'";
   J += "  +'</div>';";
+  J += "  var patternH=patternBadges(m);";
   J += "  var mw=m.missingStats?'<span style=\"background:#fef3c7;color:#92400e;font-size:10px;padding:2px 6px;border-radius:4px;font-weight:600;margin-left:6px\">\u26a0 no stats</span>':'';";
   J += "  return '<div class=\"card\">'";
   J += "    +'<div class=\"card-accent\" style=\"background:'+accent+'\"></div>'";
@@ -4847,6 +4965,7 @@ body{background:#f3f4f6;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',
   J += "        +'<div style=\"display:flex;align-items:center;gap:6px\">'+betPill(m)+'<div class=\"rank-pill '+rc+'\"><div class=\"rn\">'+m.rank+'/3</div><div class=\"rl\">'+esc(m.label)+'</div></div></div>'";
   J += "      +'</div>'";
   J += "    +ps+rb";
+  J += "    +patternH";
   J += "    +'<div class=\"teams\">'";
   J += "    +teamBox('Home',m.home,m.homeId,m.hLast5,m.snap?m.snap.home:null)";
   J += "    +teamBox('Away',m.away,m.awayId,m.aLast5,m.snap?m.snap.away:null)";
@@ -4875,12 +4994,14 @@ body{background:#f3f4f6;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',
   J += "function renderBBRow(m,probKey,goalLabel,idx){";
   J += "  var rc=rankCls(m.rank);";
   J += "  var dt=m.dt?new Date(m.dt).toLocaleDateString('en-GB',{weekday:'short',day:'2-digit',month:'short'}):'';";
-  J += "  var sigs='';if(m.signals){['A','E'].forEach(function(k){if(m.signals[k]&&m.signals[k].met)sigs+=k+' ';});}";
+  J += "  var sigs='';if(m.signals){['A','B','C'].forEach(function(k){if(m.signals[k]&&m.signals[k].met)sigs+=k+' ';});}";
+  J += "  var ptag=patternBadgeForRow(m,probKey);";
   J += "  var h='<div style=\"display:flex;align-items:center;gap:10px;padding:10px 12px;border-bottom:1px solid #f3f4f6\">';";
   J += "  h+='<div style=\"font-size:18px;font-weight:800;color:#d1d5db;width:24px;text-align:center\">'+(idx+1)+'</div>';";
   J += "  h+='<div style=\"flex:1;min-width:0\">';";
   J += "  h+='<div style=\"font-weight:600;font-size:13px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis\">'+esc(m.home)+' vs '+esc(m.away)+'</div>';";
   J += "  h+='<div style=\"font-size:10px;color:#9ca3af\">'+esc(m.league)+' \u00b7 '+esc(dt)+'</div>';";
+  J += "  if(ptag)h+='<div style=\"margin-top:4px\">'+ptag+'</div>';";
   J += "  h+='</div>';";
   J += "  h+='<div style=\"display:flex;gap:4px;align-items:center;flex-shrink:0\">';";
   J += "  if(sigs)h+='<span style=\"background:#fef9c3;color:#92400e;padding:1px 6px;border-radius:10px;font-size:9px;font-weight:600\">'+sigs.trim()+'</span>';";
@@ -4923,19 +5044,19 @@ body{background:#f3f4f6;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',
   J += "  var h='';";
 
   // Top 7 Over 1.5
-  J += "  var s15=upcoming.slice().sort(function(a,b){return b.prob15-a.prob15||b.ci-a.ci;});";
+  J += "  var s15=upcoming.slice().sort(sortFor15);";
   J += "  h+=renderBBSection('\u26bd Top 7 \u2014 FH Over 1.5 Goals','#1d4ed8','#bfdbfe',s15.slice(0,7),'prob15','> 1.5');";
 
   // Top 7 Over 2.5
-  J += "  var s25=upcoming.slice().sort(function(a,b){return b.prob25-a.prob25||b.ci-a.ci;});";
+  J += "  var s25=upcoming.slice().sort(sortFor25);";
   J += "  h+=renderBBSection('\ud83d\udd25 Top 7 \u2014 FH Over 2.5 Goals','#15803d','#a5d6a7',s25.slice(0,7),'prob25','> 2.5');";
 
   // Top 5 Value Picks — high CI but low rank (close to more signals firing)
-  J += "  var value=upcoming.filter(function(p){return p.rank===1&&p.ci>=3.0;}).sort(function(a,b){return b.ci-a.ci;});";
+  J += "  var value=upcoming.filter(function(p){return p.rank<=1&&((p.pattern&&((p.pattern.score15||0)>=4||(p.pattern.score25||0)>=4))||p.ci>=3.2);}).sort(function(a,b){return Math.max(patternScore(b,'prob15'),patternScore(b,'prob25'))-Math.max(patternScore(a,'prob15'),patternScore(a,'prob25'))||b.ci-a.ci||b.prob15-a.prob15;});";
   J += "  if(value.length){";
   J += "    h+='<div style=\"margin-bottom:24px\">';";
   J += "    h+='<div style=\"font-size:16px;font-weight:700;color:#92400e;margin-bottom:10px;padding-bottom:6px;border-bottom:2px solid #fde68a\">\ud83d\udca1 Top 5 Value Picks \u2014 High CI, Signals Developing</div>';";
-  J += "    h+='<div style=\"background:#fffbeb;border:1px solid #fde68a;border-radius:8px;padding:8px 12px;margin-bottom:10px;font-size:11px;color:#92400e\">These matches have high recent FH intensity (\u2265 3.0) but only 1\u20132 signals fired. Both teams\u2019 recent first halves suggest goal potential the full signal set hasn\\'t captured yet.</div>';";
+  J += "    h+='<div style=\"background:#fffbeb;border:1px solid #fde68a;border-radius:8px;padding:8px 12px;margin-bottom:10px;font-size:11px;color:#92400e\">These are secondary-pattern matches: the calibrated probability is decent, but the newer pattern tags suggest extra FH pressure that raw rank alone misses.</div>';";
   J += "    h+='<div style=\"background:#fff;border:1px solid #e5e7eb;border-radius:12px;overflow:hidden\">';";
   J += "    value.slice(0,5).forEach(function(m,i){h+=renderBBRow(m,'prob15','value',i);});";
   J += "    h+='</div></div>';";
@@ -4945,11 +5066,11 @@ body{background:#f3f4f6;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',
   J += "  h+='<div style=\"margin-bottom:24px\">';";
   J += "  h+='<div style=\"font-size:16px;font-weight:700;color:#7c3aed;margin-bottom:10px;padding-bottom:6px;border-bottom:2px solid #c4b5fd\">\ud83c\udfc6 Best Match Per Day</div>';";
   J += "  DATES.slice(0,4).forEach(function(d,di){";
-  J += "    var dayMatches=upcoming.filter(function(p){return p.matchDate===d;}).sort(function(a,b){return ((b.prob25||0)-(a.prob25||0))||((b.prob15||0)-(a.prob15||0))||((b.ci||0)-(a.ci||0))||((b.rank||0)-(a.rank||0));});";
+  J += "    var dayMatches=upcoming.filter(function(p){return p.matchDate===d;}).sort(sortDefault);";
   J += "    if(!dayMatches.length)return;";
   J += "    var best=dayMatches[0];var rc=rankCls(best.rank);";
   J += "    var dt=best.dt?new Date(best.dt).toLocaleDateString('en-GB',{weekday:'short',day:'2-digit',month:'short'}):'';";
-  J += "    var sigs='';if(best.signals){['A','E'].forEach(function(k){if(best.signals[k]&&best.signals[k].met)sigs+=k+' ';});}";
+  J += "    var sigs='';if(best.signals){['A','B','C'].forEach(function(k){if(best.signals[k]&&best.signals[k].met)sigs+=k+' ';});}";
   J += "    h+='<div style=\"background:#fff;border:1px solid #e5e7eb;border-radius:12px;padding:12px 14px;margin-bottom:10px\">';";
   J += "    h+='<div style=\"font-size:11px;color:#7c3aed;font-weight:700;text-transform:uppercase;letter-spacing:.5px;margin-bottom:6px\">'+(DAY_LABELS[di]||d)+' \u2014 '+esc(dt)+'</div>';";
   J += "    h+='<div style=\"display:flex;justify-content:space-between;align-items:center;margin-bottom:4px\">';";
@@ -4961,13 +5082,16 @@ body{background:#f3f4f6;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',
   J += "    h+='<span style=\"background:#eff6ff;color:#1d4ed8;padding:2px 8px;border-radius:12px\">CI: '+best.ci+'</span>';";
   J += "    h+='<span style=\"background:#f0fdf4;color:#15803d;padding:2px 8px;border-radius:12px\">FH>1.5: '+best.prob15+'%</span>';";
   J += "    h+='<span style=\"background:#f0fdf4;color:#15803d;padding:2px 8px;border-radius:12px\">FH>2.5: '+best.prob25+'%</span>';";
+  J += "    if(best.pattern&&best.pattern.tag15)h+='<span style=\"background:#eff6ff;color:#1d4ed8;padding:2px 8px;border-radius:12px\">'+esc(best.pattern.tag15)+'</span>';";
+  J += "    if(best.pattern&&best.pattern.tag25)h+='<span style=\"background:#f0fdf4;color:#15803d;padding:2px 8px;border-radius:12px\">'+esc(best.pattern.tag25)+'</span>';";
+  J += "    if(best.pattern&&best.pattern.cautionTag)h+='<span style=\"background:#fff7ed;color:#c2410c;padding:2px 8px;border-radius:12px\">'+esc(best.pattern.cautionTag)+'</span>';";
   J += "    if(sigs)h+='<span style=\"background:#fef9c3;color:#92400e;padding:2px 8px;border-radius:12px\">Signals: '+sigs.trim()+'</span>';";
   J += "    h+='</div></div>';";
   J += "  });";
   J += "  h+='</div>';";
 
   // Parlays — Over 1.5
-  J += "  var p15=upcoming.filter(function(p){return p.rank>=1;}).sort(function(a,b){return b.prob15-a.prob15;});";
+  J += "  var p15=upcoming.filter(function(p){return p.rank>=1;}).sort(sortFor15);";
   J += "  h+='<div style=\"margin-bottom:24px\"><div style=\"font-size:16px;font-weight:700;color:#1d4ed8;margin-bottom:10px;padding-bottom:6px;border-bottom:2px solid #bfdbfe\">\u26bd Parlays \u2014 FH Over 1.5 Goals</div>';";
   J += "  if(p15.length>=2)h+=renderParlayCard('2-Leg Parlay',p15.slice(0,2),'prob15','> 1.5');";
   J += "  if(p15.length>=3)h+=renderParlayCard('3-Leg Parlay',p15.slice(0,3),'prob15','> 1.5');";
@@ -4975,7 +5099,7 @@ body{background:#f3f4f6;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',
   J += "  h+='</div>';";
 
   // Parlays — Over 2.5
-  J += "  var p25=upcoming.filter(function(p){return p.rank>=1;}).sort(function(a,b){return b.prob25-a.prob25;});";
+  J += "  var p25=upcoming.filter(function(p){return p.rank>=1;}).sort(sortFor25);";
   J += "  h+='<div><div style=\"font-size:16px;font-weight:700;color:#15803d;margin-bottom:10px;padding-bottom:6px;border-bottom:2px solid #a5d6a7\">\ud83d\udd25 Parlays \u2014 FH Over 2.5 Goals</div>';";
   J += "  if(p25.length>=2)h+=renderParlayCard('2-Leg Parlay',p25.slice(0,2),'prob25','> 2.5');";
   J += "  if(p25.length>=3)h+=renderParlayCard('3-Leg Parlay',p25.slice(0,3),'prob25','> 2.5');";
