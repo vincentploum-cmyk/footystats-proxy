@@ -369,24 +369,16 @@ function applyLeagueProb(result, compId) {
     result.eligible = result.eligible25;  // Primary eligible
     return;
   }
-  // 2. Fall back to per-league rank prob (Phase 2)
-  const entry = LEAGUE_PROB_CACHE[compId + ":" + result.rank];
-  if (entry && entry.n >= LEAGUE_PROB_MIN_N) {
-    result.prob25 = entry.prob25;
-    result.prob15 = entry.prob15;
-    result.probSource  = "league_rank";
-    result.probSampleN = entry.n;
-    result.probCombo   = combo;
-    // Recalculate eligibility based on league-specific probs
-    result.eligible25 = result.prob25 >= 40.0;
-    result.eligible15 = result.prob15 >= 50.0;
-    result.eligible = result.eligible25;  // Primary eligible
-    return;
-  }
-  // 3. Global default already in result.prob25/prob15
+  // 2. League-rank is too coarse to override the calibrated combo-keyed tables —
+  //    keep the global combo probabilities when the league combo sample is too thin.
+  //    Surface league-rank as debug metadata only (for /calibration etc.).
+  const rankEntry = LEAGUE_PROB_CACHE[compId + ":" + result.rank];
   result.probSource  = "global";
-  result.probSampleN = entry ? entry.n : 0;
+  result.probSampleN = 0;
   result.probCombo   = combo;
+  if (rankEntry) {
+    result.leagueRankDebug = { n: rankEntry.n, prob25: rankEntry.prob25, prob15: rankEntry.prob15 };
+  }
   // Ensure eligibility flags are set for global fallback too
   result.eligible25 = result.prob25 >= 40.0;
   result.eligible15 = result.prob15 >= 50.0;
@@ -703,10 +695,13 @@ function buildLast5(teamId, cache) {
   };
   // Try 35-day window first
   let unique = entries.filter(m => (m.date_unix || 0) >= cutoff && dedup(m));
-  // If fewer than 3, drop the time window entirely — just take the most recent
+  // If thin, expand to ONE bounded older window (70 days). If still < 3, return [] so
+  // last5Form yields null and neither signal fires — better than firing on stale form.
   if (unique.length < 3) {
     seen.clear();
-    unique = entries.filter(m => dedup(m));
+    const olderCutoff = now - 2 * LAST5_WINDOW_SECS;
+    unique = entries.filter(m => (m.date_unix || 0) >= olderCutoff && dedup(m));
+    if (unique.length < 3) return [];
   }
   return unique
     .sort((a, b) => (b.date_unix || 0) - (a.date_unix || 0))
@@ -2013,6 +2008,7 @@ async function computePreds(tzOffset) {
     for (const m of allFixtures) {
       const sid = parseInt(m.competition_id, 10);
       if (leagueFilterActive && !LEAGUE_NAMES[sid]) continue;
+      if (WOMENS_LEAGUE_IDS.has(sid)) continue;  // signals not calibrated for women's leagues
       const fid = String(m.id || (m.homeID + "_" + m.awayID + "_" + (m.date_unix || 0)));
       if (seenFixtureIds.has(fid)) continue;
       seenFixtureIds.add(fid);
