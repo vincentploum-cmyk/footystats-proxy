@@ -2001,6 +2001,20 @@ app.get("/history", async (req, res) => {
       b.expected15 = b.n ? +(b.expSum15 / b.n).toFixed(1) : 0;
       delete b.expSum25; delete b.expSum15;
     }
+    const matches = all.map((m) => {
+      const pred = {
+        rank: Number(m.rank) || 0,
+        label: RANK_LABELS[Number(m.rank) || 0] || "Low",
+        prob25: Number(m.prob25) || 0,
+        prob15: Number(m.prob15) || 0,
+        ci: Number(m.ci) || 0,
+        defCi: Number(m.def_ci) || 0,
+        signals: m.signals || {},
+        snap: m.snap || null,
+      };
+      return { ...m, pattern: derivePatternContext(pred) };
+    });
+
     res.json({
       ok: true,
       days,
@@ -2011,7 +2025,7 @@ app.get("/history", async (req, res) => {
         actual15: total.n ? +(total.hit15 / total.n * 100).toFixed(1) : 0,
       },
       byRank,
-      matches: all,
+      matches,
     });
   } catch (e) {
     res.status(500).json({ ok: false, error: e.message });
@@ -4712,7 +4726,7 @@ body{background:#f3f4f6;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',
   J += "    var dStr=m.date_unix?new Date(m.date_unix*1000).toISOString().slice(0,10):'';";
   J += "    var rankColor=['#6b7280','#0891b2','#dc2626','#dc2626'][m.rank]||'#6b7280';";
   J += "    var sigs=m.signals||{};";
-  J += "    var sigStr=['A','B'].map(function(k){return sigs[k]&&sigs[k].met?k:'\u00b7';}).join('');";
+  J += "    var sigStr=['A','B','C'].map(function(k){return sigs[k]&&sigs[k].met?k:'\u00b7';}).join('');";
   J += "    h+='<div class=\"hist-row\" data-mid=\"'+m.match_id+'\" style=\"cursor:pointer;background:#fff;border:1px solid #e5e7eb;border-radius:8px;padding:10px 12px;display:flex;gap:10px;align-items:center;font-size:12px;margin-bottom:6px\">';";
   J += "    h+='<div style=\"width:22px;height:22px;border-radius:50%;background:'+rankColor+';color:#fff;display:flex;align-items:center;justify-content:center;font-weight:700;font-size:12px;flex-shrink:0\">'+m.rank+'</div>';";
   J += "    h+=betPill({prob25:Number(m.prob25)||0,prob15:Number(m.prob15)||0,eligible25:!!m.eligible25,eligible15:!!m.eligible15,snap:m.snap,signals:m.signals});";
@@ -4735,7 +4749,7 @@ body{background:#f3f4f6;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',
   J += "        var m=HISTORY.matches.find(function(x){return String(x.match_id)===mid;});";
   J += "        if(m){";
   J += "          var lbl=['Low','Signal','Fire','Fire'][m.rank]||'Low';";
-  J += "          var card={id:m.match_id,homeId:m.home_id,awayId:m.away_id,league:m.league_name||'\u2014',leagueSid:m.competition_id,home:m.home_name||'',away:m.away_name||'',dt:(m.date_unix||0)*1000,matchDate:m.date_unix?new Date(m.date_unix*1000).toISOString().slice(0,10):'',status:'complete',missingStats:!m.snap,rank:m.rank||0,label:lbl,prob25:Number(m.prob25)||0,prob15:Number(m.prob15)||0,eligible:(m.rank||0)>=2,eligible25:!!m.eligible25,eligible15:!!m.eligible15,ci:Number(m.ci)||0,defCi:Number(m.def_ci)||0,signals:m.signals||{},snap:m.snap||null,hLast5:[],aLast5:[],hAvgFH:null,aAvgFH:null,matchResult:{fhH:m.ht_home||0,fhA:m.ht_away||0,ftH:m.ft_home||0,ftA:m.ft_away||0,hit25:!!m.hit_25,hit15:!!m.hit_15}};";
+  J += "          var card={id:m.match_id,homeId:m.home_id,awayId:m.away_id,league:m.league_name||'\u2014',leagueSid:m.competition_id,home:m.home_name||'',away:m.away_name||'',dt:(m.date_unix||0)*1000,matchDate:m.date_unix?new Date(m.date_unix*1000).toISOString().slice(0,10):'',status:'complete',missingStats:!m.snap,rank:m.rank||0,label:lbl,prob25:Number(m.prob25)||0,prob15:Number(m.prob15)||0,eligible:(m.rank||0)>=2,eligible25:!!m.eligible25,eligible15:!!m.eligible15,ci:Number(m.ci)||0,defCi:Number(m.def_ci)||0,signals:m.signals||{},snap:m.snap||null,pattern:m.pattern||null,hLast5:[],aLast5:[],hAvgFH:null,aAvgFH:null,matchResult:{fhH:m.ht_home||0,fhA:m.ht_away||0,ftH:m.ft_home||0,ftA:m.ft_away||0,hit25:!!m.hit_25,hit15:!!m.hit_15}};";
   J += "          det.innerHTML=renderCard(card);det.dataset.loaded='1';";
   J += "          det.querySelectorAll('.toggle-btn').forEach(function(btn){btn.addEventListener('click',function(ev){ev.stopPropagation();var dEl=btn.nextElementSibling;var o=dEl.classList.toggle('open');btn.innerHTML=o?'\u25b2 Hide last 5 games & H2H':'\u25bc Show last 5 games & H2H';if(o){var h2h=dEl.querySelector('[id^=\"h2h-\"]');if(h2h&&!h2h.dataset.loaded){loadH2H(h2h);}}});});";
   J += "        }";
