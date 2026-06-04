@@ -474,9 +474,24 @@ async function fetchLeagueMatches(sid) {
 async function fetchTeamStats(sid) {
   const now = Date.now();
   if (TEAM_STATS_CACHE[sid] && (now - TEAM_STATS_CACHE[sid].ts) < TTL_TEAMS) return TEAM_STATS_CACHE[sid].data;
-  const data = await safeFetch(BASE + "/league-teams?season_id=" + sid + "&include=stats&key=" + KEY);
-  if (data) TEAM_STATS_CACHE[sid] = { data, ts: now };
-  return data || TEAM_STATS_CACHE[sid]?.data || { data: [] };
+  const url = (p) => BASE + "/league-teams?season_id=" + sid + "&include=stats&page=" + p + "&key=" + KEY;
+  const page1 = await safeFetch(url(1));
+  if (!page1) return TEAM_STATS_CACHE[sid]?.data || { data: [] };
+  let teams = page1.data || [];
+  // /league-teams paginates (~50 teams/page). A normal club league fits on one page,
+  // but big rosters — International Friendlies has hundreds of national teams — span
+  // many pages. Without this loop, teams past page 1 (e.g. Portugal/Chile) are missing
+  // from teamMap, so their fixtures get flagged missingStats and hidden. Page through
+  // all pages (capped) and concat. max_page=1 leaves every other league unchanged.
+  const maxPage = Math.min(page1.pager && page1.pager.max_page ? page1.pager.max_page : 1, 15);
+  for (let p = 2; p <= maxPage; p++) {
+    const pg = await safeFetch(url(p));
+    if (pg && pg.data && pg.data.length) teams = teams.concat(pg.data);
+    else break;
+  }
+  const data = { ...page1, data: teams };
+  TEAM_STATS_CACHE[sid] = { data, ts: now };
+  return data;
 }
 
 function rebuildServerMatchCache() {
