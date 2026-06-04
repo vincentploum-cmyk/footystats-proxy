@@ -1912,6 +1912,89 @@ app.get("/history", async (req, res) => {
   }
 });
 
+// ─── DATASET EXPORT — flat CSV/JSON of the clean live cohort for offline analysis ───
+// Gated by LOAD_DATASET_TOKEN. One row per completed match with EVERY frozen pre-game
+// feature (season stats + xt, last-5 FH form, FootyStats prematch predictors), the fired
+// signals/combo/rank, the frozen probabilities, and the final results + hit targets.
+// Clean cohort only — historical-import/backfill/(from history) rows are dropped (those
+// carry look-ahead bias). Usage: GET /admin/export-dataset?token=<TOKEN>[&format=json]
+app.get("/admin/export-dataset", async (req, res) => {
+  const expected = process.env.LOAD_DATASET_TOKEN;
+  if (!expected) return res.status(503).json({ ok: false, error: "admin token not configured" });
+  if (req.query.token !== expected) return res.status(403).json({ ok: false, error: "invalid token" });
+  if (!supabase) return res.status(400).json({ ok: false, error: "Supabase not enabled" });
+  try {
+    const all = [];
+    const PAGE = 1000;
+    for (let off = 0; ; off += PAGE) {
+      const { data, error } = await supabase
+        .from("match_results")
+        .select("match_id, competition_id, league_name, home_name, away_name, date_unix, ht_home, ht_away, ft_home, ft_away, fh_total, hit_15, hit_25, rank, ci, def_ci, prob25, prob15, signals, snap")
+        .not("hit_25", "is", null)
+        .not("snap", "is", null)
+        .not("snap->>fetchedAt", "eq", "historical-import")
+        .not("snap->>fetchedAt", "eq", "backfill")
+        .order("date_unix", { ascending: true })
+        .range(off, off + PAGE - 1);
+      if (error) throw error;
+      if (!data || data.length === 0) break;
+      all.push(...data);
+      if (data.length < PAGE) break;
+    }
+    const rows = all.filter(m => {
+      const fa = m.snap && m.snap.fetchedAt ? String(m.snap.fetchedAt) : "";
+      return !fa.includes("(from history)");
+    });
+
+    const num = (v) => (v == null || v === "" || isNaN(Number(v))) ? "" : Number(v);
+    const bit = (s, k) => (s && s[k] && s[k].met) ? 1 : 0;
+    const flat = rows.map(m => {
+      const s = m.snap || {};
+      const h = s.home || {}, a = s.away || {};
+      const hx = h.xt || {}, ax = a.xt || {};
+      const l5 = s.l5 || {}, l5h = l5.home || {}, l5a = l5.away || {};
+      const pm = s.prematch || {};
+      const sg = m.signals || {};
+      return {
+        match_id: m.match_id, competition_id: m.competition_id, league_name: m.league_name || "",
+        is_women: WOMENS_LEAGUE_IDS.has(m.competition_id) ? 1 : 0,
+        date_unix: m.date_unix || "", date_iso: m.date_unix ? new Date(m.date_unix * 1000).toISOString().slice(0, 10) : "",
+        home_name: m.home_name || "", away_name: m.away_name || "", fetchedAt: s.fetchedAt || "", has_l5: s.l5 ? 1 : 0,
+        // fired signals / rank / combo (3-char bit(A)bit(B)bit(C))
+        sigA: bit(sg, "A"), sigB: bit(sg, "B"), sigC: bit(sg, "C"),
+        combo: "" + bit(sg, "A") + bit(sg, "B") + bit(sg, "C"), rank: m.rank == null ? "" : m.rank,
+        prob15: num(m.prob15), prob25: num(m.prob25), ci: num(m.ci), def_ci: num(m.def_ci),
+        // home season stats
+        h_scored_fh: num(h.scored_fh), h_conced_fh: num(h.conced_fh), h_t1_pct: num(h.t1_pct), h_cn010: num(h.cn010_avg), h_sot: num(h.sot_avg),
+        // away season stats
+        a_scored_fh: num(a.scored_fh), a_conced_fh: num(a.conced_fh), a_t1_pct: num(a.t1_pct), a_cn010: num(a.cn010_avg), a_sot: num(a.sot_avg),
+        // home extended season fields (xt — forward captures only, may be blank on older rows)
+        h_o15ht: num(hx.o15ht), h_o05ht: num(hx.o05ht), h_bttsfhg: num(hx.bttsfhg), h_leadHT: num(hx.leadHT), h_xgf: num(hx.xgf), h_xga: num(hx.xga), h_datk: num(hx.datk), h_fhsc: num(hx.fhsc), h_fhcn: num(hx.fhcn),
+        // away extended season fields (xt)
+        a_o15ht: num(ax.o15ht), a_o05ht: num(ax.o05ht), a_bttsfhg: num(ax.bttsfhg), a_leadHT: num(ax.leadHT), a_xgf: num(ax.xgf), a_xga: num(ax.xga), a_datk: num(ax.datk), a_fhsc: num(ax.fhsc), a_fhcn: num(ax.fhcn),
+        // last-5 first-half form (f=scored, a=conceded, t=total per game)
+        l5_h_f: num(l5h.f), l5_h_a: num(l5h.a), l5_h_t: num(l5h.t), l5_a_f: num(l5a.f), l5_a_a: num(l5a.a), l5_a_t: num(l5a.t),
+        // FootyStats own prematch predictors
+        pm_o15HT: num(pm.o15HT), pm_o05HT: num(pm.o05HT), pm_xgHome: num(pm.xgHome), pm_xgAway: num(pm.xgAway), pm_btts_fhg: num(pm.btts_fhg),
+        // results + targets
+        ht_home: num(m.ht_home), ht_away: num(m.ht_away), ft_home: num(m.ft_home), ft_away: num(m.ft_away), fh_total: num(m.fh_total),
+        hit_15: m.hit_15 ? 1 : 0, hit_25: m.hit_25 ? 1 : 0,
+      };
+    });
+
+    if (req.query.format === "json") return res.json({ ok: true, n: flat.length, rows: flat });
+    const cols = flat.length ? Object.keys(flat[0]) : [];
+    const esc = (v) => { const sv = v == null ? "" : String(v); return /[",\n]/.test(sv) ? '"' + sv.replace(/"/g, '""') + '"' : sv; };
+    const lines = [cols.join(",")];
+    for (const r of flat) lines.push(cols.map(c => esc(r[c])).join(","));
+    res.set("Content-Type", "text/csv; charset=utf-8");
+    res.set("Content-Disposition", `attachment; filename="footy_dataset_${new Date().toISOString().slice(0, 10)}.csv"`);
+    res.send(lines.join("\n"));
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
 app.get("/h2h", async (req, res) => {
   if (!supabase) return res.json({ ok: true, matches: [] });
   const h = parseInt(req.query.h, 10);
