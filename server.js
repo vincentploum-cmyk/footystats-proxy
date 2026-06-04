@@ -731,15 +731,16 @@ function computeSignals(snap, hLast5, aLast5) {
   const seasonGap = hasGap ? Math.abs((hSF - hCF) - (aSF - aCF)) : 0;
   const sigC = hasGap && seasonGap >= 0.5;
 
-  // Compute rank (0-3) based on how many signals fire
-  const signalCount = (sigA ? 1 : 0) + (sigB ? 1 : 0) + (sigC ? 1 : 0);
-  const rank = Math.min(signalCount, 3);
-
-  // Combo-keyed probabilities (bit(A)+bit(B)+bit(C)). The table encodes that C only
-  // helps where A+B are silent, so the per-combo prob is what to trust, not the count.
+  // Combo-keyed probabilities (bit(A)+bit(B)+bit(C)).
   const combo = (sigA ? "1" : "0") + (sigB ? "1" : "0") + (sigC ? "1" : "0");
   const prob15 = PROB15_BY_COMBO[combo];
   const prob25 = PROB25_BY_COMBO[combo];
+
+  // Rank is derived from the calibrated probability — NOT from counting signals — so
+  // rank and probability always move together (a higher rank is always a higher-
+  // probability match). Tiered on FH-over-1.5, the primary bet: 3 & 2 = Fire, 1 =
+  // Signal, 0 = Low.
+  const rank = prob15 >= 45 ? 3 : prob15 >= 40 ? 2 : prob15 >= 30 ? 1 : 0;
 
   return {
     rank,
@@ -2489,12 +2490,12 @@ async function computePreds(tzOffset) {
     // truth (Signal C is anti-additive, so rank count can disagree). Pattern scores are
     // secondary context only, then ci/rank break ties.
     preds.sort((a, b) =>
+      (b.rank || 0) - (a.rank || 0) ||
       (b.prob25 || 0) - (a.prob25 || 0) ||
       (((b.pattern || {}).score25) || 0) - (((a.pattern || {}).score25) || 0) ||
       (b.prob15 || 0) - (a.prob15 || 0) ||
       (((b.pattern || {}).score15) || 0) - (((a.pattern || {}).score15) || 0) ||
-      (b.ci || 0) - (a.ci || 0) ||
-      (b.rank || 0) - (a.rank || 0));
+      (b.ci || 0) - (a.ci || 0));
   return { preds, dates };
 }
 
@@ -4623,7 +4624,7 @@ body{background:#f3f4f6;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',
   J += "function patternScore(m,key){var p=m&&m.pattern?m.pattern:null;if(!p)return 0;return key==='prob25'?(Number(p.score25)||0):(Number(p.score15)||0);}";
   J += "function sortFor15(a,b){return ((b.prob15||0)-(a.prob15||0))|| (patternScore(b,'prob15')-patternScore(a,'prob15')) || ((b.prob25||0)-(a.prob25||0)) || ((b.ci||0)-(a.ci||0)) || ((b.rank||0)-(a.rank||0));}";
   J += "function sortFor25(a,b){return ((b.prob25||0)-(a.prob25||0))|| (patternScore(b,'prob25')-patternScore(a,'prob25')) || ((b.prob15||0)-(a.prob15||0)) || ((b.ci||0)-(a.ci||0)) || ((b.rank||0)-(a.rank||0));}";
-  J += "function sortDefault(a,b){return sortFor25(a,b)||sortFor15(a,b)||((a.dt||0)-(b.dt||0));}";
+  J += "function sortDefault(a,b){return ((b.rank||0)-(a.rank||0))||sortFor25(a,b)||sortFor15(a,b)||((a.dt||0)-(b.dt||0));}";
   J += "function patternBadges(m){if(!m||!m.pattern)return '';var p=m.pattern,h='';var t15=(p.reasons15||[]).join(' • ');var t25=(p.reasons25||[]).join(' • ');var tc=(p.cautions||[]).join(' • ');if(p.tag15)h+='<span title=\"'+esc(t15||p.tag15)+'\" style=\"background:#eff6ff;color:#1d4ed8;border:1px solid #bfdbfe;padding:2px 8px;border-radius:999px;font-size:10px;font-weight:700\">'+esc(p.tag15)+'</span>';if(p.tag25)h+='<span title=\"'+esc(t25||p.tag25)+'\" style=\"background:#f0fdf4;color:#15803d;border:1px solid #a7f3d0;padding:2px 8px;border-radius:999px;font-size:10px;font-weight:700\">'+esc(p.tag25)+'</span>';if(p.cautionTag)h+='<span title=\"'+esc(tc||p.cautionTag)+'\" style=\"background:#fff7ed;color:#c2410c;border:1px solid #fdba74;padding:2px 8px;border-radius:999px;font-size:10px;font-weight:700\">'+esc(p.cautionTag)+'</span>';return h?'<div style=\"display:flex;gap:6px;flex-wrap:wrap;margin-top:10px\">'+h+'</div>':'';}";
   J += "function patternBadgeForRow(m,probKey){if(!m||!m.pattern)return '';var p=m.pattern;var lbl=probKey==='prob25'?(p.tag25||''):(p.tag15||'');var tips=probKey==='prob25'?(p.reasons25||[]):(p.reasons15||[]);if(lbl)return '<span title=\"'+esc(tips.join(' • ')||lbl)+'\" style=\"background:'+(probKey==='prob25'?'#f0fdf4':'#eff6ff')+';color:'+(probKey==='prob25'?'#15803d':'#1d4ed8')+';padding:1px 6px;border-radius:10px;font-size:9px;font-weight:700\">'+esc(lbl)+'</span>';if(p.cautionTag)return '<span title=\"'+esc((p.cautions||[]).join(' • ')||p.cautionTag)+'\" style=\"background:#fff7ed;color:#c2410c;padding:1px 6px;border-radius:10px;font-size:9px;font-weight:700\">'+esc(p.cautionTag)+'</span>';return '';}";
 

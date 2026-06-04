@@ -63,10 +63,13 @@ There is no test suite, linter, or build step configured.
 
 ## Prediction Algorithm (3-Signal Ranking)
 
-Matches are ranked 0–3 based on how many signals fire. Rank = signals fired (max 3).
-🔥 Fire (2+) → 📢 Signal (1) → Low (0). `eligible` = rank ≥ 2. **Trust the per-combo
-probability, not the rank count** — Signal C is anti-additive with B, so a higher rank
-can carry a *lower* calibrated probability (see Probability Tables).
+Rank is **derived from the calibrated probability**, not from counting signals, so rank
+and probability always move together (a higher rank is always a higher-probability match).
+It is tiered on `prob15` (FH-over-1.5, the primary bet): `>=45 → 3`, `>=40 → 2`, `>=30 → 1`,
+else `0`. 🔥 Fire (2–3) → 📢 Signal (1) → Low (0). `eligible` = rank ≥ 2. This replaced the
+old "rank = signals fired" count, which could disagree with probability because Signal C is
+anti-additive with B (a high signal-count combo like `011` carries a *low* probability).
+The match list sorts by rank, which — because rank is a probability tier — is probability order.
 
 ### Signals
 
