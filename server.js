@@ -276,16 +276,16 @@ async function recalibrateLeagueProbs() {
 
 // Phase 3: per-league signal-combination probabilities
 // Cache shape: { "<compId>:<combo2chars>": { n, prob25, prob15 } }
-// combo is bit(A) + bit(B) — the two live signals (see computeSignals).
+// combo is bit(A) + bit(B) + bit(C) — the three live signals (see computeSignals).
 const LEAGUE_COMBO_MIN_N    = 20;
 let   LEAGUE_COMBO_CACHE    = {};
 let   LEAGUE_COMBO_LAST_LOAD  = { at: 0, rows: 0, error: null };
 let   LEAGUE_COMBO_LAST_RECAL = { at: 0, buckets: 0, written: 0, error: null };
 
 function comboFromSignals(sigs) {
-  if (!sigs) return "00";
+  if (!sigs) return "000";
   const bit = (k) => (sigs[k] && sigs[k].met) ? "1" : "0";
-  return bit("A") + bit("B");
+  return bit("A") + bit("B") + bit("C");
 }
 
 async function loadLeagueComboCache() {
@@ -541,13 +541,17 @@ function unixToLocalDate(unix, tzOffset) {
   return y + "-" + m + "-" + day;
 }
 
-// Multi-signal probabilities — calibrated on 888 clean resolved matches (women excluded).
-// Combo-keyed: bit(A)+bit(B). Key finding: A alone is at/below baseline on both metrics —
-// all FH>2.5 lift comes from the A+B interaction. B alone is a strong FH>1.5 predictor.
-// n by combo: 11=86, 01=266, 10=32, 00=504. Baseline 11.3% FH>2.5 / 36.6% FH>1.5.
-const PROB15_BY_COMBO = { "00": 32.7, "01": 42.1, "10": 31.3, "11": 44.2 };
-const PROB25_BY_COMBO = { "00":  9.9, "01": 11.3, "10":  9.4, "11": 19.8 };
-const RANK_LABELS = { 0: "Low", 1: "Signal", 2: "Fire" };
+// Multi-signal probabilities — combo-keyed: bit(A)+bit(B)+bit(C).
+// Recalibrated on the clean live cohort (n=869, women excluded) via /signalc-validate.
+// Signal C (team mismatch) only adds value where A+B are silent: combo "001"
+// (rank-0 + mismatch) lifts FH>2.5 from 6.7% to 12.3% (n=211/254). C is
+// anti-additive with B (011 prob25 falls to 5.4%) — the per-combo probs below
+// encode that, so a high rank never overrides a low calibrated probability.
+// n by combo: 000=254, 001=211, 010=172, 011=112, 100=9, 101=25, 110=46, 111=40.
+// (100 borrows the stabler A-only 2-combo value; n=9 made its raw rate unreliable.)
+const PROB15_BY_COMBO = { "000": 26.0, "001": 39.3, "010": 43.6, "011": 39.3, "100": 35.3, "101": 36.0, "110": 50.0, "111": 37.5 };
+const PROB25_BY_COMBO = { "000":  6.7, "001": 12.3, "010": 14.5, "011":  5.4, "100": 14.7, "101": 20.0, "110": 19.6, "111": 20.0 };
+const RANK_LABELS = { 0: "Low", 1: "Signal", 2: "Fire", 3: "Fire" };
 
 // Average a team's last-5 first-half form. Goals are team-relative (fhFor =
 // scored, fhAgst = conceded). Returns null if fewer than 3 recent games.
@@ -582,13 +586,25 @@ function computeSignals(snap, hLast5, aLast5) {
   // Signal B: Away Team Scoring (away team moderately active)
   const sigB = hasL5 && awayL5Scored >= 0.8;
 
-  // Compute rank (0-2) based on how many signals fire
-  const signalCount = (sigA ? 1 : 0) + (sigB ? 1 : 0);
-  const rank = Math.min(signalCount, 2);
+  // Signal C: Team Mismatch — one side much better than the other, measured by the
+  // season net-FH-rating gap |(home scored_fh - conced_fh) - (away scored_fh - conced_fh)|.
+  // Uses season stats frozen pre-game, so it can fire even when l5 is null (thin
+  // leagues). Validated on the rank-0 cohort: lifts no-signal games ~2x on FH>2.5.
+  // It is anti-additive with B — the combo prob table reflects that.
+  const num = (v) => (v != null && !isNaN(Number(v))) ? Number(v) : null;
+  const hS = (snap && snap.home) || {}, aS = (snap && snap.away) || {};
+  const hSF = num(hS.scored_fh), hCF = num(hS.conced_fh), aSF = num(aS.scored_fh), aCF = num(aS.conced_fh);
+  const hasGap = hSF != null && hCF != null && aSF != null && aCF != null;
+  const seasonGap = hasGap ? Math.abs((hSF - hCF) - (aSF - aCF)) : 0;
+  const sigC = hasGap && seasonGap >= 0.5;
 
-  // Combo-keyed probabilities: A alone is at/below baseline; B alone predicts FH>1.5 well;
-  // A+B together is the FH>2.5 signal.
-  const combo = (sigA ? "1" : "0") + (sigB ? "1" : "0");
+  // Compute rank (0-3) based on how many signals fire
+  const signalCount = (sigA ? 1 : 0) + (sigB ? 1 : 0) + (sigC ? 1 : 0);
+  const rank = Math.min(signalCount, 3);
+
+  // Combo-keyed probabilities (bit(A)+bit(B)+bit(C)). The table encodes that C only
+  // helps where A+B are silent, so the per-combo prob is what to trust, not the count.
+  const combo = (sigA ? "1" : "0") + (sigB ? "1" : "0") + (sigC ? "1" : "0");
   const prob15 = PROB15_BY_COMBO[combo];
   const prob25 = PROB25_BY_COMBO[combo];
 
@@ -603,6 +619,7 @@ function computeSignals(snap, hLast5, aLast5) {
     signals: {
       A: { met: sigA, label: "Mutual Instability", value: f2(homeL5Total) + " / " + f2(awayL5Total), threshold: "home L5 total >= 1.6 & away L5 total >= 1.4" },
       B: { met: sigB, label: "Away Team Scoring", value: f2(awayL5Scored), threshold: "away L5 FH >= 0.8" },
+      C: { met: sigC, label: "Team Mismatch", value: f2(seasonGap), threshold: "season net-FH rating gap >= 0.5" },
     },
   };
 }
@@ -4417,8 +4434,9 @@ body{background:#f3f4f6;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',
   J += "    +'<th style=\"padding:6px 8px\">Rank</th><th style=\"padding:6px 8px\">N</th>'";
   J += "    +'<th style=\"padding:6px 8px\">Pred FH&gt;2.5</th><th style=\"padding:6px 8px\">Actual</th>'";
   J += "    +'<th style=\"padding:6px 8px\">Pred FH&gt;1.5</th><th style=\"padding:6px 8px\">Actual</th></tr></thead><tbody>';";
-  J += "  for(var r=2;r>=0;r--){var b=d.byRank[r]||{n:0,predicted25:0,actual25:0,predicted15:0,actual15:0};";
-  J += "    var lbl=['Low','Signal','Fire'][r];";
+  J += "  for(var r=3;r>=0;r--){var b=d.byRank[r]||{n:0,predicted25:0,actual25:0,predicted15:0,actual15:0};";
+  J += "    if(r===3&&(!b||!b.n))continue;";
+  J += "    var lbl=['Low','Signal','Fire','Fire'][r];";
   J += "    var c25=(b.n<10)?'#9ca3af':(b.actual25>=b.predicted25-2)?'#0f766e':'#b91c1c';";
   J += "    var c15=(b.n<10)?'#9ca3af':(b.actual15>=b.predicted15-2)?'#0f766e':'#b91c1c';";
   J += "    h+='<tr style=\"border-bottom:1px solid #f3f4f6\">'";
@@ -4504,7 +4522,7 @@ body{background:#f3f4f6;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',
   J += "      if(!det.dataset.loaded){";
   J += "        var m=HISTORY.matches.find(function(x){return String(x.match_id)===mid;});";
   J += "        if(m){";
-  J += "          var lbl=['Low','Signal','Fire'][m.rank]||'Low';";
+  J += "          var lbl=['Low','Signal','Fire','Fire'][m.rank]||'Low';";
   J += "          var card={id:m.match_id,homeId:m.home_id,awayId:m.away_id,league:m.league_name||'\u2014',leagueSid:m.competition_id,home:m.home_name||'',away:m.away_name||'',dt:(m.date_unix||0)*1000,matchDate:m.date_unix?new Date(m.date_unix*1000).toISOString().slice(0,10):'',status:'complete',missingStats:!m.snap,rank:m.rank||0,label:lbl,prob25:Number(m.prob25)||0,prob15:Number(m.prob15)||0,eligible:(m.rank||0)>=2,eligible25:!!m.eligible25,eligible15:!!m.eligible15,ci:Number(m.ci)||0,defCi:Number(m.def_ci)||0,signals:m.signals||{},snap:m.snap||null,hLast5:[],aLast5:[],hAvgFH:null,aAvgFH:null,matchResult:{fhH:m.ht_home||0,fhA:m.ht_away||0,ftH:m.ft_home||0,ftA:m.ft_away||0,hit25:!!m.hit_25,hit15:!!m.hit_15}};";
   J += "          det.innerHTML=renderCard(card);det.dataset.loaded='1';";
   J += "          det.querySelectorAll('.toggle-btn').forEach(function(btn){btn.addEventListener('click',function(ev){ev.stopPropagation();var dEl=btn.nextElementSibling;var o=dEl.classList.toggle('open');btn.innerHTML=o?'\u25b2 Hide last 5 games & H2H':'\u25bc Show last 5 games & H2H';if(o){var h2h=dEl.querySelector('[id^=\"h2h-\"]');if(h2h&&!h2h.dataset.loaded){loadH2H(h2h);}}});});";
@@ -4731,7 +4749,7 @@ body{background:#f3f4f6;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',
   J += "          +'<div style=\"font-size:10px;color:#9ca3af;text-transform:uppercase;letter-spacing:.7px;margin-bottom:5px\">'+esc(m.league)+' \u00b7 '+esc(dt)+mw+'</div>'";
   J += "          +sb";
   J += "        +'</div>'";
-  J += "        +'<div style=\"display:flex;align-items:center;gap:6px\">'+betPill(m)+'<div class=\"rank-pill '+rc+'\"><div class=\"rn\">'+m.rank+'/2</div><div class=\"rl\">'+esc(m.label)+'</div></div></div>'";
+  J += "        +'<div style=\"display:flex;align-items:center;gap:6px\">'+betPill(m)+'<div class=\"rank-pill '+rc+'\"><div class=\"rn\">'+m.rank+'/3</div><div class=\"rl\">'+esc(m.label)+'</div></div></div>'";
   J += "      +'</div>'";
   J += "    +ps+rb";
   J += "    +'<div class=\"teams\">'";
@@ -4772,7 +4790,7 @@ body{background:#f3f4f6;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',
   J += "  h+='<div style=\"display:flex;gap:4px;align-items:center;flex-shrink:0\">';";
   J += "  if(sigs)h+='<span style=\"background:#fef9c3;color:#92400e;padding:1px 6px;border-radius:10px;font-size:9px;font-weight:600\">'+sigs.trim()+'</span>';";
   J += "  h+='<span style=\"background:#eff6ff;color:#1d4ed8;padding:1px 6px;border-radius:10px;font-size:9px\">CI '+(Number(m.ci)||0).toFixed(1)+'</span>';";
-  J += "  h+='<span class=\"rn '+rc+'\" style=\"font-size:12px;padding:2px 6px\">'+m.rank+'/2</span>';";
+  J += "  h+='<span class=\"rn '+rc+'\" style=\"font-size:12px;padding:2px 6px\">'+m.rank+'/3</span>';";
   J += "  h+='<span style=\"background:#1b5e20;color:#fff;padding:2px 8px;border-radius:12px;font-size:11px;font-weight:700\">'+m[probKey]+'%</span>';";
   J += "  h+='</div></div>';";
   J += "  return h;";
@@ -4841,7 +4859,7 @@ body{background:#f3f4f6;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',
   J += "    h+='<div style=\"font-size:11px;color:#7c3aed;font-weight:700;text-transform:uppercase;letter-spacing:.5px;margin-bottom:6px\">'+(DAY_LABELS[di]||d)+' \u2014 '+esc(dt)+'</div>';";
   J += "    h+='<div style=\"display:flex;justify-content:space-between;align-items:center;margin-bottom:4px\">';";
   J += "    h+='<div style=\"font-weight:700;font-size:14px\">'+esc(best.home)+' vs '+esc(best.away)+'</div>';";
-  J += "    h+='<span class=\"rn '+rc+'\" style=\"font-size:14px;padding:2px 8px\">'+best.rank+'/2</span>';";
+  J += "    h+='<span class=\"rn '+rc+'\" style=\"font-size:14px;padding:2px 8px\">'+best.rank+'/3</span>';";
   J += "    h+='</div>';";
   J += "    h+='<div style=\"font-size:11px;color:#6b7280;margin-bottom:6px\">'+esc(best.league)+'</div>';";
   J += "    h+='<div style=\"display:flex;gap:6px;flex-wrap:wrap;font-size:11px\">';";
@@ -4908,7 +4926,7 @@ body{background:#f3f4f6;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',
 <div class="body">
   ${rateLimited ? '<div style="background:#fef2f2;border:1px solid #fca5a5;border-radius:8px;padding:10px 14px;margin-bottom:14px;font-size:12px;color:#b91c1c;line-height:1.6"><strong>&#9888; API rate limit reached</strong> \u2014 showing cached data. Resets at ' + new Date(RATE_LIMITED_UNTIL).toLocaleTimeString('en-GB') + '. <a href="/cache-status" style="color:#b91c1c">View cache status</a></div>' : ''}
   <div style="background:#fffbeb;border:1px solid #fde68a;border-radius:8px;padding:10px 14px;margin-bottom:14px;font-size:12px;color:#92400e;line-height:1.6">
-    <strong>How it works:</strong> 2 pre-game signals (A &amp; B) &mdash; no look-ahead bias. Signal A &#128293;: Mutual Instability (home L5 FH total &ge; 1.6 AND away L5 FH total &ge; 1.4). Signal B &#127919;: Away Team Scoring (away L5 FH scored &ge; 0.8). Rank = signals fired (max 2). &#128293; shown only when both A+B fire; &#127919; shown when B fires.
+    <strong>How it works:</strong> 3 pre-game signals (A, B &amp; C) &mdash; no look-ahead bias. Signal A &#128293;: Mutual Instability (home L5 FH total &ge; 1.6 AND away L5 FH total &ge; 1.4). Signal B &#127919;: Away Team Scoring (away L5 FH scored &ge; 0.8). Signal C: Team Mismatch (season net-FH rating gap &ge; 0.5) &mdash; adds value mainly on no-signal games. Rank = signals fired (max 3); probability is per-combo, so a higher rank never overrides a lower calibrated probability. &#128293; shown when both A+B fire; &#127919; shown when B fires.
     Calibrated on 888 clean matches (women excluded): A+B = 19.8% FH&gt;2.5 (2.0&times; the no-signal rate 9.9%) &middot; B only = 11.3% &middot; A only = 9.4% (at baseline) &middot; neither = 9.9%. FH&gt;1.5: 44.2% (A+B) &middot; 42.1% (B only) &middot; 31.3% (A only) &middot; 32.7% (neither).
   </div>
   <div id="mainView"></div>
