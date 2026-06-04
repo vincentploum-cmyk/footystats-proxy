@@ -388,6 +388,10 @@ function applyLeagueProb(result, compId) {
 }
 
 let LEAGUE_NAMES = {};
+// Season IDs of current international competitions (country === "International"):
+// friendlies, Nations Leagues, WC/continental qualifiers, etc. Used to assemble a
+// cross-competition last-5 for national teams, whose games are split across these.
+let INTERNATIONAL_SIDS = new Set();
 let LEAGUE_LIST_LOADING = false;
 
 async function fetchLeagueList() {
@@ -398,16 +402,30 @@ async function fetchLeagueList() {
     if (!data) { console.warn("fetchLeagueList skipped"); LEAGUE_LIST_LOADING = false; return; }
     const list = data.data || [];
     const map = {};
+    const intl = new Set();
+    const CUR_YEAR = new Date().getFullYear();
     for (const league of list) {
       const leagueName = league.league_name || league.name || "";
       const country    = league.country || "";
       const name       = country ? country + " \u00b7 " + leagueName : leagueName;
       if (!name) continue;
+      const isIntl = country.toLowerCase() === "international";
       const seasons = league.season || [];
-      for (const s of seasons) { if (s.id) map[parseInt(s.id, 10)] = name; }
+      for (const s of seasons) {
+        if (!s.id) continue;
+        map[parseInt(s.id, 10)] = name;
+        // Collect only current/previous-year international seasons \u2014 these hold the
+        // recent matches needed for a last-5, and the year filter keeps the set
+        // small (skips finished tournaments like past Euros/Copas).
+        if (isIntl) {
+          const yr = parseInt(String(s.year || "").slice(0, 4), 10) || 0;
+          if (yr >= CUR_YEAR - 1) intl.add(parseInt(s.id, 10));
+        }
+      }
     }
     LEAGUE_NAMES = map;
-    console.log("Mapped " + Object.keys(map).length + " season IDs");
+    INTERNATIONAL_SIDS = intl;
+    console.log("Mapped " + Object.keys(map).length + " season IDs (" + intl.size + " current international)");
     if (list.length === 0) setTimeout(fetchLeagueList, 2 * 60 * 1000);
   } catch(e) {
     console.error("Failed to load league list: " + e.message);
@@ -2316,6 +2334,26 @@ async function computePreds(tzOffset) {
       for (const m of allMatches) if (m.id) matchMap.set(m.id, m);
       return { sid, leagueName, teamMap, fixtures: leagueFixtures[sid], matchMap };
     }));
+
+    // ── International cross-competition last-5 ──────────────────────────────────
+    // National teams split their games across many competitions (friendlies,
+    // Nations League, qualifiers) — so a fixture's own competition rarely holds ≥3
+    // of their recent games and buildLast5 returns null. When the window contains
+    // international fixtures, pull recent matches from every current international
+    // competition into localExtra so last-5 can be assembled across competitions.
+    // Runs AFTER the fixtured leagues are fetched, so normal predictions are never
+    // starved; fetchLeagueMatches is 2h-cached and safeFetch backs off gracefully
+    // if it hits the rate limit (those comps just stay absent, no crash).
+    if (INTERNATIONAL_SIDS.size && leagueSids.some(s => INTERNATIONAL_SIDS.has(parseInt(s, 10)))) {
+      const already = new Set(leagueSids.map(s => parseInt(s, 10)));
+      const intlToFetch = [...INTERNATIONAL_SIDS].filter(s => !already.has(s));
+      const CHUNK = 5;
+      for (let i = 0; i < intlToFetch.length; i += CHUNK) {
+        const chunk = intlToFetch.slice(i, i + CHUNK);
+        const res = await Promise.all(chunk.map(s => fetchLeagueMatches(s).catch(() => ({ data: [] }))));
+        res.forEach((r, j) => addToLocalExtra(r.data || [], LEAGUE_NAMES[chunk[j]] || ""));
+      }
+    }
 
     for (const { sid, leagueName, teamMap, fixtures, matchMap } of leagueData) {
       for (const fix of fixtures) {
