@@ -306,6 +306,7 @@ for the last timer run.
 | `GET /rank0-overs` / `GET /rank0-holdout` | JSON | Characterise rank-0 false-negatives / holdout-test the home-attack lead (Supabase) |
 | `GET /corner-mine` | JSON | Correlate pre-game last-5 corners with over-2.5 (Supabase) |
 | `GET /history?days=N` | JSON | Recent completed matches with results (Supabase) |
+| `GET /admin/export-dataset` | CSV/JSON | Flat one-row-per-match export of the clean live cohort (all pre-game features + l5 + prematch + signals/combo/rank + results) for offline analysis — gated; `?format=json` |
 | `GET /supabase-status` | JSON | Supabase connection + persistence + self-capture status |
 | `GET /debug-raw-api?sid=N` | JSON | Raw FootyStats fields for a season + `verdict` on pre-match predictor availability |
 | `GET /admin/backfill-results` | JSON | Resolve pending rows (snap frozen, no result) from league-matches scores — gated; `dryRun=1` / `limit=N` |
