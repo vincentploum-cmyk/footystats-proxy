@@ -220,11 +220,18 @@ The following competition IDs are excluded from clean signal analysis:
 | 16046 | Arsenal Women / WSL |
 | 16563 | Women's internationals |
 
-These leagues are **excluded from live predictions** (`computePreds` skips
-`WOMENS_LEAGUE_IDS`, PR #60) so the serving population matches the calibrated population,
-and they must never be used for threshold recalibration. Historical women's rows remain in
-Supabase and are filtered out of every calibration query (`exclude_women` / the
-`WOMEN_LEAGUES` guard).
+These leagues **are served live** (predicted with the global table, like any league — the
+PR #60 `computePreds` skip was reverted). They are excluded **only from recalibration /
+model-fitting**, not from serving: the CSV loader, `/admin/backfill`, `/corner-mine`, and
+the `exclude_women` calibration queries all drop them so the men's-calibrated thresholds
+aren't biased by a different-distribution population.
+
+**This exclusion is a precaution, not a validated result** — it was never backed by measured
+women's base rates/lift. To validate (and decide whether they need their own table), run the
+women's-only cohort: `/signal-backtest?women_only=true` and `/calibration?women_only=true`
+(mirror of `exclude_women`). Women's leagues often have wider talent gaps → more mismatches,
+so they're also a natural test case for **Signal C**. Until that cohort is checked, women's
+matches are shown but their probabilities use the men's table.
 
 ### Look-ahead bias — lessons learned
 
@@ -290,8 +297,8 @@ for the last timer run.
 | `GET /preds?tz=<offset>` | JSON | Prediction data for 5-day window |
 | `GET /cache-status` | JSON | Cache sizes and rate-limit status |
 | `GET /debug` | JSON | Fixtures, league registry, cache state |
-| `GET /calibration` | JSON | Live predicted-vs-actual by rank/combo (Supabase) |
-| `GET /signal-backtest` | JSON | Per-signal live lift + `byRank`/`byCombo` (Supabase) |
+| `GET /calibration` | JSON | Live predicted-vs-actual by rank/combo (Supabase). `?exclude_women=true` / `?women_only=true` / `?competition_id=N` |
+| `GET /signal-backtest` | JSON | Per-signal live lift + `byRank`/`byCombo` (Supabase). `?exclude_women=true` / `?women_only=true` / `?competition_id=N` |
 | `GET /prematch-mine` | JSON | Calibrate FootyStats `snap.prematch` predictors (`o15HT` etc.) vs actual FH results (Supabase) |
 | `GET /season-mine` | JSON | Mine frozen season stats (`snap.home/away` + `xt.*`) as FH signals with a train/test date holdout (Supabase) |
 | `GET /signalc-validate` | JSON | Recalibrate the 3-signal (A+B+C) combo table: 8-combo probs, train/test stability, C's marginal lift within each A+B combo (Supabase) |

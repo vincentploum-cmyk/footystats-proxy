@@ -1563,6 +1563,7 @@ app.get("/calibration", async (req, res) => {
     const PAGE = 1000;
     const compId = req.query.competition_id ? parseInt(req.query.competition_id, 10) : null;
     const exclude = req.query.exclude_women === "true";
+    const womenOnly = req.query.women_only === "true";  // women's-only cohort (validation)
     const WOMEN_LEAGUES = [15020, 16037, 16046, 16563];
     for (let off = 0; ; off += PAGE) {
       let q = supabase
@@ -1573,7 +1574,8 @@ app.get("/calibration", async (req, res) => {
         .not("snap->>fetchedAt", "eq", "historical-import")
         .not("snap->>fetchedAt", "eq", "backfill");
       if (compId) q = q.eq("competition_id", compId);
-      if (exclude) q = q.not("competition_id", "in", `(${WOMEN_LEAGUES.join(",")})`);
+      if (womenOnly) q = q.in("competition_id", WOMEN_LEAGUES);
+      else if (exclude) q = q.not("competition_id", "in", `(${WOMEN_LEAGUES.join(",")})`);
       const { data, error } = await q.range(off, off + PAGE - 1);
       if (error) throw error;
       if (!data || data.length === 0) break;
@@ -1627,8 +1629,9 @@ app.get("/calibration", async (req, res) => {
       ok: true,
       cohortSize: total.n,
       filter: {
-        league: compId ? `competition_id=${compId}` : (exclude ? "excluding women's leagues" : "all leagues"),
+        league: compId ? `competition_id=${compId}` : (womenOnly ? "women's leagues only" : exclude ? "excluding women's leagues" : "all leagues"),
         women_excluded: exclude || false,
+        women_only: womenOnly || false,
       },
       summary: {
         n: total.n,
@@ -1658,6 +1661,7 @@ app.get("/signal-backtest", async (req, res) => {
     const PAGE = 1000;
     const compId = req.query.competition_id ? parseInt(req.query.competition_id, 10) : null;
     const exclude = req.query.exclude_women === "true";
+    const womenOnly = req.query.women_only === "true";  // women's-only cohort (validation)
     const WOMEN_LEAGUES = [15020, 16037, 16046, 16563];
     for (let off = 0; ; off += PAGE) {
       let q = supabase
@@ -1668,7 +1672,8 @@ app.get("/signal-backtest", async (req, res) => {
         .not("snap->>fetchedAt", "eq", "historical-import")
         .not("snap->>fetchedAt", "eq", "backfill");
       if (compId) q = q.eq("competition_id", compId);
-      if (exclude) q = q.not("competition_id", "in", `(${WOMEN_LEAGUES.join(",")})`);
+      if (womenOnly) q = q.in("competition_id", WOMEN_LEAGUES);
+      else if (exclude) q = q.not("competition_id", "in", `(${WOMEN_LEAGUES.join(",")})`);
       const { data, error } = await q.range(off, off + PAGE - 1);
       if (error) throw error;
       if (!data || data.length === 0) break;
@@ -1740,8 +1745,9 @@ app.get("/signal-backtest", async (req, res) => {
       ok: true,
       cohortSize: n,
       filter: {
-        league: compId ? `competition_id=${compId}` : (exclude ? "excluding women's leagues" : "all leagues"),
+        league: compId ? `competition_id=${compId}` : (womenOnly ? "women's leagues only" : exclude ? "excluding women's leagues" : "all leagues"),
         women_excluded: exclude || false,
+        women_only: womenOnly || false,
       },
       baseRate25: +(base25 * 100).toFixed(1),
       baseRate15: +(base15 * 100).toFixed(1),
@@ -2027,7 +2033,9 @@ async function computePreds(tzOffset) {
     for (const m of allFixtures) {
       const sid = parseInt(m.competition_id, 10);
       if (leagueFilterActive && !LEAGUE_NAMES[sid]) continue;
-      if (WOMENS_LEAGUE_IDS.has(sid)) continue;  // signals not calibrated for women's leagues
+      // Women's leagues ARE served live (using the global table) — they're only kept out
+      // of the recalibration cohort (see /admin/backfill, /signalc-validate). Validate
+      // their fit with `?women_only=true` on /signal-backtest and /calibration.
       const fid = String(m.id || (m.homeID + "_" + m.awayID + "_" + (m.date_unix || 0)));
       if (seenFixtureIds.has(fid)) continue;
       seenFixtureIds.add(fid);
