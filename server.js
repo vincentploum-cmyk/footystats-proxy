@@ -4936,7 +4936,7 @@ body{background:#f3f4f6;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',
   J += "    return '<div class=\"team-box\"><div class=\"team-role\">'+esc(role)+'</div><div class=\"team-name\">'+esc(name)+'</div>'+fs+fhBar+'<div class=\"stat-grid\">'+chips+'</div></div>';";
   J += "  }";
   J += "  var sigsH='<div class=\"signals\">';";
-  J += "  ['A','B'].forEach(function(k){";
+  J += "  ['A','B','C'].forEach(function(k){";
   J += "    var s=m.signals[k];if(!s)return;";
   J += "    sigsH+='<div class=\"sig '+(s.met?'sig-y':'sig-n')+'\">'";
   J += "      +'<div class=\"sig-dot\"></div>'+esc(k)+' \u00b7 '+esc(s.label)";
