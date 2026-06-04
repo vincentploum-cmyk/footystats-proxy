@@ -3167,6 +3167,122 @@ app.get("/mismatch-holdout", async (req, res) => {
   }
 });
 
+// VALIDATION for wiring Signal C (team mismatch). Computes the full 3-signal
+// model (A+B+C, C = season net-FH-rating gap >= 0.5) on the whole clean cohort:
+//  (1) the recalibrated 8-combo probability table (the numbers we'd wire),
+//  (2) a chronological train/test split of that table to confirm it's stable
+//      out of sample (not just rank-0),
+//  (3) C's marginal lift INSIDE each existing A+B combo — tells us whether C is
+//      a global signal or only a rank-0 patch.
+const SIGNAL_C_GAP = 0.5;
+app.get("/signalc-validate", async (req, res) => {
+  res.set("Cache-Control", "no-store");
+  if (!supabase) return res.status(400).json({ ok: false, error: "Supabase not enabled" });
+  try {
+    const all = [];
+    const PAGE = 1000;
+    for (let off = 0; ; off += PAGE) {
+      const { data, error } = await supabase
+        .from("match_results")
+        .select("hit_25, hit_15, date_unix, snap")
+        .not("hit_25", "is", null)
+        .not("date_unix", "is", null)
+        .not("snap", "is", null)
+        .not("snap->>fetchedAt", "eq", "historical-import")
+        .not("snap->>fetchedAt", "eq", "backfill")
+        .range(off, off + PAGE - 1);
+      if (error) throw error;
+      if (!data || data.length === 0) break;
+      all.push(...data);
+      if (data.length < PAGE) break;
+    }
+
+    const seasonGap = (m) => {
+      const h = m.snap.home || {}, a = m.snap.away || {};
+      const num = (v) => (v != null && !isNaN(Number(v))) ? Number(v) : null;
+      const hSF = num(h.scored_fh), hCF = num(h.conced_fh), aSF = num(a.scored_fh), aCF = num(a.conced_fh);
+      return (hSF != null && hCF != null && aSF != null && aCF != null) ? Math.abs((hSF - hCF) - (aSF - aCF)) : null;
+    };
+
+    // Need l5 (for A,B) AND a computable gap (for C).
+    const rows = all.filter(m => m.snap && m.snap.l5 && m.snap.l5.home && m.snap.l5.away && seasonGap(m) != null)
+      .map(m => {
+        const l5 = m.snap.l5;
+        const A = (l5.home.t || 0) >= 1.6 && (l5.away.t || 0) >= 1.4;
+        const B = (l5.away.f || 0) >= 0.8;
+        const C = seasonGap(m) >= SIGNAL_C_GAP;
+        return {
+          date: m.date_unix || 0, hit15: !!m.hit_15, hit25: !!m.hit_25,
+          A, B, C, combo2: (A ? 1 : 0) + "" + (B ? 1 : 0),
+          combo3: (A ? 1 : 0) + "" + (B ? 1 : 0) + "" + (C ? 1 : 0),
+        };
+      }).sort((a, b) => a.date - b.date);
+
+    const summarize = (rs, keyFn) => {
+      const g = {};
+      for (const r of rs) { const k = keyFn(r); (g[k] = g[k] || { n: 0, h15: 0, h25: 0 }); g[k].n++; g[k].h15 += r.hit15 ? 1 : 0; g[k].h25 += r.hit25 ? 1 : 0; }
+      const out = {};
+      for (const k of Object.keys(g).sort()) {
+        const x = g[k];
+        out[k] = { n: x.n, prob15: +(x.h15 / x.n * 100).toFixed(1), prob25: +(x.h25 / x.n * 100).toFixed(1) };
+      }
+      return out;
+    };
+
+    // (1) Full-cohort recalibrated 3-signal combo table (key = A B C).
+    const comboTable3 = summarize(rows, r => r.combo3);
+    const comboTable2_current = summarize(rows, r => r.combo2);
+
+    // (2) Holdout stability of the 3-combo table.
+    const cut = Math.floor(rows.length * 0.7);
+    const trainT = summarize(rows.slice(0, cut), r => r.combo3);
+    const testT = summarize(rows.slice(cut), r => r.combo3);
+    const stability = {};
+    for (const k of Object.keys(comboTable3)) {
+      const tr = trainT[k], te = testT[k];
+      stability[k] = {
+        train: tr || { n: 0 }, test: te || { n: 0 },
+        prob15_drift: (tr && te) ? +(te.prob15 - tr.prob15).toFixed(1) : null,
+        prob25_drift: (tr && te) ? +(te.prob25 - tr.prob25).toFixed(1) : null,
+      };
+    }
+
+    // (3) C's marginal effect INSIDE each existing A+B combo.
+    const withinCombo = {};
+    for (const c2 of ["00", "01", "10", "11"]) {
+      const base = rows.filter(r => r.combo2 === c2);
+      const withC = base.filter(r => r.C), noC = base.filter(r => !r.C);
+      const stat = (rs) => rs.length ? { n: rs.length, prob15: +(rs.filter(r => r.hit15).length / rs.length * 100).toFixed(1), prob25: +(rs.filter(r => r.hit25).length / rs.length * 100).toFixed(1) } : { n: 0 };
+      const sWith = stat(withC), sNo = stat(noC);
+      withinCombo[c2] = {
+        all: stat(base), withC: sWith, withoutC: sNo,
+        lift15: (sWith.n && sNo.n && sNo.prob15) ? +(sWith.prob15 / sNo.prob15).toFixed(2) : null,
+        lift25: (sWith.n && sNo.n && sNo.prob25) ? +(sWith.prob25 / sNo.prob25).toFixed(2) : null,
+      };
+    }
+
+    // Overall + headline rates for context.
+    const n = rows.length;
+    const overall = { n, prob15: +(rows.filter(r => r.hit15).length / n * 100).toFixed(1), prob25: +(rows.filter(r => r.hit25).length / n * 100).toFixed(1) };
+    const cFires = rows.filter(r => r.C).length;
+
+    res.json({
+      ok: true,
+      signalC: "C = |(home.scored_fh - home.conced_fh) - (away.scored_fh - away.conced_fh)| >= " + SIGNAL_C_GAP + " (season, frozen pre-game)",
+      cohortN: n,
+      overall,
+      cFireRate: +(cFires / n * 100).toFixed(1),
+      comboTable3_recalibrated: comboTable3,
+      comboTable2_current,
+      holdoutStability: stability,
+      cMarginalWithinCombo: withinCombo,
+      note: "comboTable3 keys are A B C bits (e.g. '011' = B+C, no A). This is the table we'd wire. holdoutStability: small prob drift (train vs test) at decent n = trustworthy bucket. cMarginalWithinCombo is the key test: if withC.prob15 > withoutC.prob15 across ALL four combos, C adds value everywhere (true global signal); if it only helps in '00' (rank-0), C is a rank-0 rescue and should be wired narrowly. Buckets with n<30 are noisy — judge accordingly.",
+    });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
 // Diagnostic: how often A and B fire on CURRENT upcoming matches (live signal
 // code, not the persisted snapshots that /signal-backtest reads). Use this to
 // see whether either signal is dormant or saturated for the current league set.
