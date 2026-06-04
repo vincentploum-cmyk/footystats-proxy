@@ -131,9 +131,11 @@ lift within each A+B combo). Re-run when the cohort roughly doubles.
 e.g. "111" = all three, "001" = mismatch only, "010" = B only, "000" = neither.
 `applyLeagueProb()` uses this 3-char key. **NOTE:** the Supabase
 `compute_league_combo_buckets()` RPC still emits the old **2-char** key (it predates C),
-so 3-char league-combo lookups miss and gracefully fall back to league-rank → global
-(the recalibrated 8-combo table). Per-league combo overrides stay dormant until that
-RPC is updated to bit(A)+bit(B)+bit(C); the global table covers all combos meanwhile.
+so 3-char league-combo lookups miss and gracefully fall back to the global recalibrated
+8-combo table. (The coarse per-league *rank* override was removed — see PR #60 — so the
+fallback chain is now simply league-combo → global.) Per-league combo overrides stay
+dormant until that RPC is updated to bit(A)+bit(B)+bit(C); the global table covers all
+combos meanwhile.
 
 ### Clean data — what to trust
 
@@ -218,7 +220,11 @@ The following competition IDs are excluded from clean signal analysis:
 | 16046 | Arsenal Women / WSL |
 | 16563 | Women's internationals |
 
-These leagues still appear in the UI but must not be used for threshold recalibration.
+These leagues are **excluded from live predictions** (`computePreds` skips
+`WOMENS_LEAGUE_IDS`, PR #60) so the serving population matches the calibrated population,
+and they must never be used for threshold recalibration. Historical women's rows remain in
+Supabase and are filtered out of every calibration query (`exclude_women` / the
+`WOMEN_LEAGUES` guard).
 
 ### Look-ahead bias — lessons learned
 
@@ -389,9 +395,18 @@ All learning that needs to survive restarts must use Supabase.
 - **Do not reintroduce CN010 as a core signal** — near-zero additive value on clean data
 - **Women's leagues (15020, 16037, 16046, 16563) must be excluded** from any
   threshold recalibration or model retraining
+- **Match ordering is probability-first**: `prob25 → prob15 → ci → rank` (in `computePreds`
+  and the client day / best-bets sorts). The per-combo calibrated probability is the source
+  of truth — because Signal C is anti-additive, rank count can disagree (a rank-2 `011` can
+  sort below a rank-1 `010`). `ci`/`rank` are only tiebreakers now, not the primary key.
 - `computeSignals()` returns `ci` (combined intensity = `homeL5Total + awayL5Total`) and
-  `defCi` (away last-5 FH total) — keep them in the return object, they drive display/sorting
-- The `eligible` flag (rank ≥ 2) controls star badges on league pills in the UI
+  `defCi` (away last-5 FH total) — keep them in the return object, they feed display and the
+  sort tiebreak
+- The `eligible` flag (**rank ≥ 2**) controls star badges on league pills in the UI.
+  `applyLeagueProb()` no longer overrides it with a `prob25 >= 40` rule (that was always
+  false on the global table, max ~20% — it silently killed the badge). `eligible25` /
+  `eligible15` remain as informational prob-tier flags only; nothing gates on them
+  (`betPill` is signal-based).
 - The 🔥/🎯 badges (`betPill`) are **signal-based** (🔥 = A+B both fire, 🎯 = B fires),
   not prob-based. **Signal C deliberately fires no betPill** — it reshapes the combo
   probability and ranking only, so wiring C never minted new 🔥/🎯 bets.
