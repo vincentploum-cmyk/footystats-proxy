@@ -363,10 +363,11 @@ function applyLeagueProb(result, compId) {
     result.probSource  = "league_combo";
     result.probSampleN = comboEntry.n;
     result.probCombo   = combo;
-    // Recalculate eligibility based on league-specific probs
+    // eligible = rank >= 2 (documented star-badge rule). eligible25/eligible15 are
+    // informational prob-tier flags only — nothing gates on them (betPill is signal-based).
     result.eligible25 = result.prob25 >= 40.0;
     result.eligible15 = result.prob15 >= 50.0;
-    result.eligible = result.eligible25;  // Primary eligible
+    result.eligible = result.rank >= 2;
     return;
   }
   // 2. League-rank is too coarse to override the calibrated combo-keyed tables —
@@ -379,10 +380,11 @@ function applyLeagueProb(result, compId) {
   if (rankEntry) {
     result.leagueRankDebug = { n: rankEntry.n, prob25: rankEntry.prob25, prob15: rankEntry.prob15 };
   }
-  // Ensure eligibility flags are set for global fallback too
+  // eligible = rank >= 2 (documented star-badge rule). eligible25/eligible15 are
+  // informational prob-tier flags only — nothing gates on them (betPill is signal-based).
   result.eligible25 = result.prob25 >= 40.0;
   result.eligible15 = result.prob15 >= 50.0;
-  result.eligible = result.eligible25;  // Primary eligible
+  result.eligible = result.rank >= 2;
 }
 
 let LEAGUE_NAMES = {};
@@ -896,7 +898,7 @@ app.get("/admin/load-dataset", async (req, res) => {
 
   const dryRun = req.query.dryRun === "1";
   if (dryRun) {
-    const byRank = { 0: 0, 1: 0, 2: 0 };
+    const byRank = { 0: 0, 1: 0, 2: 0, 3: 0 };
     const byComp = {};
     for (const r of validRows) {
       byRank[r.rank] = (byRank[r.rank] || 0) + 1;
@@ -1561,6 +1563,7 @@ app.get("/calibration", async (req, res) => {
     const PAGE = 1000;
     const compId = req.query.competition_id ? parseInt(req.query.competition_id, 10) : null;
     const exclude = req.query.exclude_women === "true";
+    const womenOnly = req.query.women_only === "true";  // women's-only cohort (validation)
     const WOMEN_LEAGUES = [15020, 16037, 16046, 16563];
     for (let off = 0; ; off += PAGE) {
       let q = supabase
@@ -1571,7 +1574,8 @@ app.get("/calibration", async (req, res) => {
         .not("snap->>fetchedAt", "eq", "historical-import")
         .not("snap->>fetchedAt", "eq", "backfill");
       if (compId) q = q.eq("competition_id", compId);
-      if (exclude) q = q.not("competition_id", "in", `(${WOMEN_LEAGUES.join(",")})`);
+      if (womenOnly) q = q.in("competition_id", WOMEN_LEAGUES);
+      else if (exclude) q = q.not("competition_id", "in", `(${WOMEN_LEAGUES.join(",")})`);
       const { data, error } = await q.range(off, off + PAGE - 1);
       if (error) throw error;
       if (!data || data.length === 0) break;
@@ -1580,7 +1584,7 @@ app.get("/calibration", async (req, res) => {
     }
     const byRank = {};
     const byCombo = {};
-    for (let r = 0; r <= 2; r++) byRank[r] = { n: 0, hit25: 0, hit15: 0, sumP25: 0, sumP15: 0 };
+    for (let r = 0; r <= 3; r++) byRank[r] = { n: 0, hit25: 0, hit15: 0, sumP25: 0, sumP15: 0 };
     let total = { n: 0, hit25: 0, hit15: 0, sumP25: 0, sumP15: 0 };
     // Normalize prob to percentage: old rows stored as 11.5, new rows as 0.115
     const toPct = (v) => { const n = Number(v || 0); return n > 0 && n < 1 ? n * 100 : n; };
@@ -1595,10 +1599,10 @@ app.get("/calibration", async (req, res) => {
         byRank[r].sumP25 += p25;
         byRank[r].sumP15 += p15;
       }
-      // Per-combo bucket (2-bit: A+B)
+      // Per-combo bucket (3-bit: A+B+C). Old rows lack signals.C → treated as C=0.
       const sigs = m.signals || {};
       const bit = (k) => (sigs[k] && sigs[k].met) ? "1" : "0";
-      const combo = bit("A") + bit("B");
+      const combo = bit("A") + bit("B") + bit("C");
       if (!byCombo[combo]) byCombo[combo] = { n: 0, hit25: 0, hit15: 0, sumP25: 0, sumP15: 0 };
       byCombo[combo].n++;
       if (m.hit_25) byCombo[combo].hit25++;
@@ -1625,8 +1629,9 @@ app.get("/calibration", async (req, res) => {
       ok: true,
       cohortSize: total.n,
       filter: {
-        league: compId ? `competition_id=${compId}` : (exclude ? "excluding women's leagues" : "all leagues"),
+        league: compId ? `competition_id=${compId}` : (womenOnly ? "women's leagues only" : exclude ? "excluding women's leagues" : "all leagues"),
         women_excluded: exclude || false,
+        women_only: womenOnly || false,
       },
       summary: {
         n: total.n,
@@ -1656,6 +1661,7 @@ app.get("/signal-backtest", async (req, res) => {
     const PAGE = 1000;
     const compId = req.query.competition_id ? parseInt(req.query.competition_id, 10) : null;
     const exclude = req.query.exclude_women === "true";
+    const womenOnly = req.query.women_only === "true";  // women's-only cohort (validation)
     const WOMEN_LEAGUES = [15020, 16037, 16046, 16563];
     for (let off = 0; ; off += PAGE) {
       let q = supabase
@@ -1666,7 +1672,8 @@ app.get("/signal-backtest", async (req, res) => {
         .not("snap->>fetchedAt", "eq", "historical-import")
         .not("snap->>fetchedAt", "eq", "backfill");
       if (compId) q = q.eq("competition_id", compId);
-      if (exclude) q = q.not("competition_id", "in", `(${WOMEN_LEAGUES.join(",")})`);
+      if (womenOnly) q = q.in("competition_id", WOMEN_LEAGUES);
+      else if (exclude) q = q.not("competition_id", "in", `(${WOMEN_LEAGUES.join(",")})`);
       const { data, error } = await q.range(off, off + PAGE - 1);
       if (error) throw error;
       if (!data || data.length === 0) break;
@@ -1679,7 +1686,7 @@ app.get("/signal-backtest", async (req, res) => {
     const met = (m, k) => !!(m.signals && m.signals[k] && m.signals[k].met);
 
     const perSignal = {};
-    for (const k of ["A", "B"]) {
+    for (const k of ["A", "B", "C"]) {
       const fired = all.filter(m => met(m, k));
       const quiet = all.filter(m => !met(m, k));
       const fHit = fired.length ? fired.filter(m => m.hit_25).length / fired.length : 0;
@@ -1695,7 +1702,7 @@ app.get("/signal-backtest", async (req, res) => {
     }
 
     const byRank = {};
-    for (let r = 0; r <= 2; r++) byRank[r] = { n: 0, hit25: 0, hit15: 0, sumP25: 0, sumP15: 0 };
+    for (let r = 0; r <= 3; r++) byRank[r] = { n: 0, hit25: 0, hit15: 0, sumP25: 0, sumP15: 0 };
     for (const m of all) {
       const b = byRank[m.rank];
       if (!b) continue;
@@ -1720,7 +1727,7 @@ app.get("/signal-backtest", async (req, res) => {
     // which combinations actually carry the predictive weight.
     const byCombo = {};
     for (const m of all) {
-      const c = ["A", "B"].filter(k => met(m, k)).join("") || "(none)";
+      const c = ["A", "B", "C"].filter(k => met(m, k)).join("") || "(none)";
       if (!byCombo[c]) byCombo[c] = { n: 0, hit25: 0, hit15: 0 };
       byCombo[c].n++;
       if (m.hit_25) byCombo[c].hit25++;
@@ -1738,8 +1745,9 @@ app.get("/signal-backtest", async (req, res) => {
       ok: true,
       cohortSize: n,
       filter: {
-        league: compId ? `competition_id=${compId}` : (exclude ? "excluding women's leagues" : "all leagues"),
+        league: compId ? `competition_id=${compId}` : (womenOnly ? "women's leagues only" : exclude ? "excluding women's leagues" : "all leagues"),
         women_excluded: exclude || false,
+        women_only: womenOnly || false,
       },
       baseRate25: +(base25 * 100).toFixed(1),
       baseRate15: +(base15 * 100).toFixed(1),
@@ -1864,7 +1872,7 @@ app.get("/history", async (req, res) => {
       if (data.length < PAGE) break;
     }
     const byRank = {};
-    for (let r = 0; r <= 2; r++) byRank[r] = { n: 0, hit25: 0, hit15: 0, expSum25: 0, expSum15: 0 };
+    for (let r = 0; r <= 3; r++) byRank[r] = { n: 0, hit25: 0, hit15: 0, expSum25: 0, expSum15: 0 };
     let total = { n: 0, hit25: 0, hit15: 0 };
     for (const m of all) {
       const r = m.rank;
@@ -2025,7 +2033,9 @@ async function computePreds(tzOffset) {
     for (const m of allFixtures) {
       const sid = parseInt(m.competition_id, 10);
       if (leagueFilterActive && !LEAGUE_NAMES[sid]) continue;
-      if (WOMENS_LEAGUE_IDS.has(sid)) continue;  // signals not calibrated for women's leagues
+      // Women's leagues ARE served live (using the global table) — they're only kept out
+      // of the recalibration cohort (see /admin/backfill, /signalc-validate). Validate
+      // their fit with `?women_only=true` on /signal-backtest and /calibration.
       const fid = String(m.id || (m.homeID + "_" + m.awayID + "_" + (m.date_unix || 0)));
       if (seenFixtureIds.has(fid)) continue;
       seenFixtureIds.add(fid);
@@ -2231,7 +2241,13 @@ async function computePreds(tzOffset) {
     }
 
     rebuildServerMatchCache();
-    preds.sort((a, b) => b.ci - a.ci || b.rank - a.rank);
+    // Probability-first ordering: the per-combo calibrated probability is the source of
+    // truth (Signal C is anti-additive, so rank count can disagree). ci/rank break ties.
+    preds.sort((a, b) =>
+      (b.prob25 || 0) - (a.prob25 || 0) ||
+      (b.prob15 || 0) - (a.prob15 || 0) ||
+      (b.ci || 0) - (a.ci || 0) ||
+      (b.rank || 0) - (a.rank || 0));
   return { preds, dates };
 }
 
@@ -4556,7 +4572,7 @@ body{background:#f3f4f6;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',
   J += "  ll.forEach(function(e){";
   J += "    var lg=e[0],ms=e[1];";
   J += "    if(openLeague!==lg)return;";
-  J += "    var sorted=ms.slice().sort(function(a,b){return (b.rank-a.rank)||(b.ci-a.ci)||((a.dt||0)-(b.dt||0));});";
+  J += "    var sorted=ms.slice().sort(function(a,b){return ((b.prob25||0)-(a.prob25||0))||((b.prob15||0)-(a.prob15||0))||((b.ci||0)-(a.ci||0))||((b.rank||0)-(a.rank||0))||((a.dt||0)-(b.dt||0));});";
   J += "    sections+='<div class=\"league-section\"><div class=\"league-section-hdr\">'+esc(lg)+'</div>';";
   J += "    sorted.forEach(function(m){sections+=renderCard(m);});";
   J += "    sections+='</div>';";
@@ -4846,7 +4862,7 @@ body{background:#f3f4f6;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',
   J += "  h+='<div style=\"margin-bottom:24px\">';";
   J += "  h+='<div style=\"font-size:16px;font-weight:700;color:#7c3aed;margin-bottom:10px;padding-bottom:6px;border-bottom:2px solid #c4b5fd\">\ud83c\udfc6 Best Match Per Day</div>';";
   J += "  DATES.slice(0,4).forEach(function(d,di){";
-  J += "    var dayMatches=upcoming.filter(function(p){return p.matchDate===d;}).sort(function(a,b){return b.rank-a.rank||b.ci-a.ci;});";
+  J += "    var dayMatches=upcoming.filter(function(p){return p.matchDate===d;}).sort(function(a,b){return ((b.prob25||0)-(a.prob25||0))||((b.prob15||0)-(a.prob15||0))||((b.ci||0)-(a.ci||0))||((b.rank||0)-(a.rank||0));});";
   J += "    if(!dayMatches.length)return;";
   J += "    var best=dayMatches[0];var rc=rankCls(best.rank);";
   J += "    var dt=best.dt?new Date(best.dt).toLocaleDateString('en-GB',{weekday:'short',day:'2-digit',month:'short'}):'';";
