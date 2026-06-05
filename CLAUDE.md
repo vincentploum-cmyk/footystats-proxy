@@ -95,7 +95,25 @@ thin-coverage leagues where `l5` is null (its one cross-over benefit for the bli
 - `ci` = combined intensity (`homeL5Total + awayL5Total`) — used for display/sorting
 - `defCi` = away last-5 FH total (`awayL5Total`)
 - `eligible` = rank ≥ 2
-- `signals` = `{ A: {…}, B: {…}, C: { met, label, value, threshold } }`
+- `ov15Candidate` / `ov25Candidate` = FH over-1.5 / over-2.5 **candidate** flags (see below);
+  also `envFh` (= both teams' season `scored_fh + conced_fh`) and `l5Fh` (= home+away
+  last-5 FH scored) — the two combined inputs they use
+- `signals` = `{ A: {…}, B: {…}, C: {…}, O15: {…}, O25: {…} }`
+
+### Over-1.5 / Over-2.5 FH candidate signals
+
+Separate from the A/B/C combo, two **candidate** flags detect FH over-goal targets via three
+pre-game checks that must all clear (rounded to absorb float drift at the boundary):
+
+| Flag | env_fh (`Σ scored_fh+conced_fh`) | l5_fh (`Σ last-5 FH scored`) | model prob |
+|------|------|------|------|
+| `ov25Candidate` (Over 2.5 FH) | ≥ 2.85 | ≥ 1.6 | `prob25` ≥ 14.5 |
+| `ov15Candidate` (Over 1.5 FH) | ≥ 2.60 | ≥ 1.4 | `prob15` ≥ 38 |
+
+They surface as `signals.O15` / `signals.O25` and as **O1.5 / O2.5 badges** on the match card
+(`candidatePill()`). They fire **no betPill** and don't affect rank/sort — detection only. The
+identical logic runs offline in `scripts/ov25_score.py` over a dataset export. They rely on
+season FH stats (always present) + `l5` (null on thin leagues → `l5_fh = 0` → won't fire there).
 
 ### Probability Tables
 
