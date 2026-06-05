@@ -1841,6 +1841,12 @@ app.get("/calibration", async (req, res) => {
     let total = { n: 0, hit25: 0, hit15: 0, sumP25: 0, sumP15: 0 };
     // Normalize prob to percentage: old rows stored as 11.5, new rows as 0.115
     const toPct = (v) => { const n = Number(v || 0); return n > 0 && n < 1 ? n * 100 : n; };
+    // O1.5 / O2.5 candidate flags recomputed inline from snap+prob (same rule as
+    // computeSignals), so this covers the full history without needing a recompute.
+    const num0 = (v) => { const n = Number(v); return Number.isFinite(n) ? n : 0; };
+    const r4 = (v) => Math.round(v * 1e4) / 1e4;
+    const cand = { ov15: { play: { n: 0, hit: 0 }, skip: { n: 0, hit: 0 } },
+                   ov25: { play: { n: 0, hit: 0 }, skip: { n: 0, hit: 0 } } };
     for (const m of all) {
       const r = m.rank;
       const p25 = toPct(m.prob25);
@@ -1862,6 +1868,16 @@ app.get("/calibration", async (req, res) => {
       if (m.hit_15) byCombo[combo].hit15++;
       byCombo[combo].sumP25 += p25;
       byCombo[combo].sumP15 += p15;
+      // O1.5 / O2.5 candidate split (same thresholds as the live signal).
+      const sn = m.snap || {}, h = sn.home || {}, a = sn.away || {}, l5 = sn.l5 || {}, l5h = l5.home || {}, l5a = l5.away || {};
+      const envFh = r4(num0(h.scored_fh) + num0(h.conced_fh) + num0(a.scored_fh) + num0(a.conced_fh));
+      const l5Fh = r4(num0(l5h.f) + num0(l5a.f));
+      const ov15 = envFh >= 2.60 && l5Fh >= 1.4 && p15 >= 38;
+      const ov25 = envFh >= 2.85 && l5Fh >= 1.6 && p25 >= 14.5;
+      (ov15 ? cand.ov15.play : cand.ov15.skip).n++;
+      if (m.hit_15) (ov15 ? cand.ov15.play : cand.ov15.skip).hit++;
+      (ov25 ? cand.ov25.play : cand.ov25.skip).n++;
+      if (m.hit_25) (ov25 ? cand.ov25.play : cand.ov25.skip).hit++;
       total.n++;
       if (m.hit_25) total.hit25++;
       if (m.hit_15) total.hit15++;
@@ -1877,6 +1893,22 @@ app.get("/calibration", async (req, res) => {
     }
     for (const k of Object.keys(byRank)) finalize(byRank[k]);
     for (const k of Object.keys(byCombo)) finalize(byCombo[k]);
+    // O1.5 / O2.5 candidate calibration (PLAY = flag fires) vs base rate.
+    const pct = (h, n) => (n ? +(h / n * 100).toFixed(1) : 0);
+    const base15 = total.n ? total.hit15 / total.n : 0;
+    const base25 = total.n ? total.hit25 / total.n : 0;
+    const candBlock = (c, base) => ({
+      play: { n: c.play.n, hits: c.play.hit, actual: pct(c.play.hit, c.play.n),
+              lift: (base && c.play.n) ? +((c.play.hit / c.play.n) / base).toFixed(2) : 0 },
+      skip: { n: c.skip.n, hits: c.skip.hit, actual: pct(c.skip.hit, c.skip.n) },
+    });
+    const candidates = {
+      base15: +(base15 * 100).toFixed(1),
+      base25: +(base25 * 100).toFixed(1),
+      ov15: candBlock(cand.ov15, base15),  // actual = FH-over-1.5 hit rate
+      ov25: candBlock(cand.ov25, base25),  // actual = FH-over-2.5 hit rate
+      note: "Candidate flags recomputed inline from snap+prob (covers full history). ov15 actual=hit_15, ov25 actual=hit_25. PLAY = flag fires; compare play.actual vs base & play.lift.",
+    };
     const WOMEN_LEAGUE_NAMES = { 15020: "Liga MX Femenil", 16037: "Women's", 16046: "Arsenal Women / WSL", 16563: "Women's Internationals" };
     res.json({
       ok: true,
@@ -1896,6 +1928,7 @@ app.get("/calibration", async (req, res) => {
       },
       byRank,
       byCombo,
+      candidates,
     });
   } catch (e) {
     res.status(500).json({ ok: false, error: e.message });
