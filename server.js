@@ -742,6 +742,18 @@ function computeSignals(snap, hLast5, aLast5) {
   // Signal, 0 = Low.
   const rank = prob15 >= 45 ? 3 : prob15 >= 40 ? 2 : prob15 >= 30 ? 1 : 0;
 
+  // ── Over-1.5 / Over-2.5 first-half CANDIDATE signals ──────────────────────
+  // Three pre-game checks, all must clear: (1) combined season FH environment
+  // env_fh = both teams' scored_fh + conced_fh, (2) recent FH scoring l5_fh =
+  // home+away last-5 FH scored, (3) the model probability. Detects FH over-goal
+  // candidates independently of the A/B/C combo. Thresholds tuned per market.
+  const r4 = (v) => Math.round(v * 1e4) / 1e4;  // absorb binary-float drift at the boundary
+  const homeL5Scored = snap && snap.l5 && snap.l5.home ? (snap.l5.home.f || 0) : 0;
+  const envFh = r4((hSF || 0) + (hCF || 0) + (aSF || 0) + (aCF || 0));
+  const l5Fh  = r4(homeL5Scored + awayL5Scored);
+  const ov15Candidate = envFh >= 2.60 && l5Fh >= 1.4 && prob15 >= 38;
+  const ov25Candidate = envFh >= 2.85 && l5Fh >= 1.6 && prob25 >= 14.5;
+
   return {
     rank,
     label: RANK_LABELS[rank] || "Low",
@@ -750,10 +762,13 @@ function computeSignals(snap, hLast5, aLast5) {
     ci: homeL5Total + awayL5Total,  // combined intensity
     defCi: awayL5Total,              // away activity
     eligible: rank >= 2,
+    ov15Candidate, ov25Candidate, envFh, l5Fh,
     signals: {
       A: { met: sigA, label: "Mutual Instability", value: f2(homeL5Total) + " / " + f2(awayL5Total), threshold: "home L5 total >= 1.6 & away L5 total >= 1.4" },
       B: { met: sigB, label: "Away Team Scoring", value: f2(awayL5Scored), threshold: "away L5 FH >= 0.8" },
       C: { met: sigC, label: "Team Mismatch", value: f2(seasonGap), threshold: "season net-FH rating gap >= 0.5" },
+      O15: { met: ov15Candidate, label: "Over 1.5 FH candidate", value: "env " + f2(envFh) + " · L5 " + f2(l5Fh) + " · p15 " + prob15, threshold: "env-FH >= 2.60 & L5-FH >= 1.4 & prob15 >= 38" },
+      O25: { met: ov25Candidate, label: "Over 2.5 FH candidate", value: "env " + f2(envFh) + " · L5 " + f2(l5Fh) + " · p25 " + prob25, threshold: "env-FH >= 2.85 & L5-FH >= 1.6 & prob25 >= 14.5" },
     },
   };
 }
@@ -2552,6 +2567,7 @@ async function computePreds(tzOffset) {
             label: result.label, prob25: result.prob25, prob15: result.prob15,
             probSource: result.probSource, probSampleN: result.probSampleN, probCombo: result.probCombo,
             eligible: result.eligible, eligible25: result.eligible25, eligible15: result.eligible15, signals: result.signals,
+            ov15Candidate: result.ov15Candidate, ov25Candidate: result.ov25Candidate,
             snap: snap ? {
               fetchedAt: snap.fetchedAt,
               home: { name: snap.home.name, scored_fh: snap.home.scored_fh, conced_fh: snap.home.conced_fh, t1_pct: snap.home.t1_pct, cn010_avg: snap.home.cn010_avg, sot_avg: snap.home.sot_avg, ...(snap.home.xt ? { xt: snap.home.xt } : {}) },
@@ -2590,6 +2606,8 @@ async function computePreds(tzOffset) {
           ci:       frozen ? frozen.ci       : (result ? result.ci       : 0),
           defCi:    frozen ? frozen.defCi    : (result ? result.defCi    : 0),
           signals:  frozen ? frozen.signals  : (result ? result.signals  : {}),
+          ov15Candidate: frozen ? frozen.ov15Candidate : (result ? result.ov15Candidate : false),
+          ov25Candidate: frozen ? frozen.ov25Candidate : (result ? result.ov25Candidate : false),
           hLast5, aLast5, hAvgFH, aAvgFH,
           matchResult: isComplete ? { fhH, fhA, ftH, ftA, hit25: (fhH+fhA)>2, hit15: (fhH+fhA)>1 } : null,
         };
@@ -4734,6 +4752,13 @@ body{background:#f3f4f6;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',
   J += "  if(sigA&&sigB)h+='<div style=\"display:inline-block;background:#dc2626;color:#fff;font-size:11px;font-weight:700;padding:3px 9px;border-radius:6px;margin-right:4px\" title=\"Signal A+B: Mutual Instability + Away Scoring\">🔥</div>';";
   J += "  if(sigB)h+='<div style=\"display:inline-block;background:#15803d;color:#fff;font-size:11px;font-weight:700;padding:3px 9px;border-radius:6px;letter-spacing:.5px;margin-right:6px\" title=\"Signal B: Away Team Scoring\">🎯</div>';";
   J += "  return h;}";
+  // Over-1.5 / Over-2.5 FH candidate badges (the 3-rule filters: env-FH + recent FH + model prob).
+  J += "function candidatePill(m){if(!m)return '';var h='';";
+  J += "  var o15=m.ov15Candidate!=null?m.ov15Candidate:!!(m.signals&&m.signals.O15&&m.signals.O15.met);";
+  J += "  var o25=m.ov25Candidate!=null?m.ov25Candidate:!!(m.signals&&m.signals.O25&&m.signals.O25.met);";
+  J += "  if(o25)h+='<div style=\"display:inline-block;background:#b91c1c;color:#fff;font-size:10px;font-weight:800;padding:3px 8px;border-radius:6px;margin-right:4px\" title=\"Over 2.5 FH candidate — env-FH&ge;2.85, L5-FH&ge;1.6, prob25&ge;14.5\">O2.5</div>';";
+  J += "  if(o15)h+='<div style=\"display:inline-block;background:#1d4ed8;color:#fff;font-size:10px;font-weight:800;padding:3px 8px;border-radius:6px;margin-right:4px\" title=\"Over 1.5 FH candidate — env-FH&ge;2.60, L5-FH&ge;1.4, prob15&ge;38\">O1.5</div>';";
+  J += "  return h;}";
   J += "function patternScore(m,key){var p=m&&m.pattern?m.pattern:null;if(!p)return 0;return key==='prob25'?(Number(p.score25)||0):(Number(p.score15)||0);}";
   J += "function sortFor15(a,b){return ((b.prob15||0)-(a.prob15||0))|| (patternScore(b,'prob15')-patternScore(a,'prob15')) || ((b.prob25||0)-(a.prob25||0)) || ((b.ci||0)-(a.ci||0)) || ((b.rank||0)-(a.rank||0));}";
   J += "function sortFor25(a,b){return ((b.prob25||0)-(a.prob25||0))|| (patternScore(b,'prob25')-patternScore(a,'prob25')) || ((b.prob15||0)-(a.prob15||0)) || ((b.ci||0)-(a.ci||0)) || ((b.rank||0)-(a.rank||0));}";
@@ -5129,7 +5154,7 @@ body{background:#f3f4f6;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',
   J += "          +'<div style=\"font-size:10px;color:#9ca3af;text-transform:uppercase;letter-spacing:.7px;margin-bottom:5px\">'+esc(m.league)+' \u00b7 '+esc(dt)+mw+'</div>'";
   J += "          +sb";
   J += "        +'</div>'";
-  J += "        +'<div style=\"display:flex;align-items:center;gap:6px\">'+betPill(m)+'<div class=\"rank-pill '+rc+'\"><div class=\"rn\">'+m.rank+'/3</div><div class=\"rl\">'+esc(m.label)+'</div></div></div>'";
+  J += "        +'<div style=\"display:flex;align-items:center;gap:6px;flex-wrap:wrap;justify-content:flex-end\">'+candidatePill(m)+betPill(m)+'<div class=\"rank-pill '+rc+'\"><div class=\"rn\">'+m.rank+'/3</div><div class=\"rl\">'+esc(m.label)+'</div></div></div>'";
   J += "      +'</div>'";
   J += "    +ps+rb";
   J += "    +patternH";
