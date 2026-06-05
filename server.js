@@ -423,13 +423,15 @@ async function fetchLeagueList() {
         }
       }
     }
-    LEAGUE_NAMES = map;
-    INTERNATIONAL_SIDS = intl;
-    console.log("Mapped " + Object.keys(map).length + " season IDs (" + intl.size + " current international)");
+    if (Object.keys(map).length) {
+      LEAGUE_NAMES = map;
+      INTERNATIONAL_SIDS = intl;
+      console.log("Mapped " + Object.keys(map).length + " season IDs (" + intl.size + " current international)");
+    }
     if (list.length === 0) setTimeout(fetchLeagueList, 2 * 60 * 1000);
   } catch(e) {
     console.error("Failed to load league list: " + e.message);
-    LEAGUE_NAMES = {};
+    // Keep the existing registry on a refresh error — don't wipe a good map.
   } finally {
     LEAGUE_LIST_LOADING = false;
   }
@@ -5393,6 +5395,8 @@ app.listen(PORT, () => {
       console.log("Match cache warming in 5 min...");
     }
   }).catch(e => console.error("League list failed:", e.message));
+  // Re-fetch the league registry every 12h so newly-added leagues appear without a restart.
+  setInterval(() => { fetchLeagueList(); }, 12 * 60 * 60 * 1000);
 
   if (supabase) {
     // Restore frozen pre-match snapshots so completed matches survive restarts.
