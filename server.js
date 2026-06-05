@@ -1694,6 +1694,119 @@ app.get("/league-probs", (req, res) => {
   });
 });
 
+// ─── FLOOR-FILTER TEST — does a combined pre-game "floor" profile have lift? ──
+// Tests a candidate filter against the FULL clean cohort and — critically — against
+// the control group. Reports the hit rate among matches that PASS vs the base rate
+// (= lift), plus each sub-condition's own lift. The whole point: a floor that 90% of
+// WINNERS clear is only an edge if the LOSERS clear it much less often. Thresholds
+// are query params (defaults = the proposed "perfect storm" profile).
+app.get("/floor-test", async (req, res) => {
+  if (!supabase) return res.status(400).json({ ok: false, error: "Supabase not enabled" });
+  try {
+    const q = req.query;
+    const num = (k, d) => (q[k] != null && q[k] !== "") ? Number(q[k]) : d;
+    const T = {
+      l5_h_f:    num("l5_h_f", 0.40),
+      h_scored:  num("h_scored", 0.50),
+      a_scored:  num("a_scored", 0.22),
+      a_conced:  num("a_conced", 0.50),
+      ci_min:    num("ci_min", 1.60),
+      ci_max:    num("ci_max", 3.40),
+      defci_min: num("defci_min", 0.60),
+      defci_max: num("defci_max", 2.00),
+      p15_min:   num("p15_min", 36.0),
+      p15_max:   num("p15_max", 43.6),
+    };
+    const exclude = q.exclude_women === "true";
+    const WOMEN = [15020, 16037, 16046, 16563];
+    const all = [];
+    const PAGE = 1000;
+    for (let off = 0; ; off += PAGE) {
+      let qq = supabase.from("match_results")
+        .select("competition_id, prob15, ci, def_ci, hit_25, snap")
+        .not("hit_25", "is", null).not("snap", "is", null)
+        .not("snap->>fetchedAt", "eq", "historical-import")
+        .not("snap->>fetchedAt", "eq", "backfill");
+      if (exclude) qq = qq.not("competition_id", "in", `(${WOMEN.join(",")})`);
+      const { data, error } = await qq.range(off, off + PAGE - 1);
+      if (error) throw error;
+      if (!data || !data.length) break;
+      all.push(...data);
+      if (data.length < PAGE) break;
+    }
+    const rows = all.filter(m => {
+      const fa = m.snap && m.snap.fetchedAt ? String(m.snap.fetchedAt) : "";
+      return !fa.includes("(from history)");
+    });
+    const toPct = (v) => { const n = Number(v || 0); return n > 0 && n < 1 ? n * 100 : n; };
+    const feat = (m) => {
+      const s = m.snap || {}, h = s.home || {}, a = s.away || {}, l5 = s.l5 || {}, l5h = l5.home || {};
+      return {
+        l5_h_f: l5h.f != null ? Number(l5h.f) : null,
+        h_scored: h.scored_fh != null ? Number(h.scored_fh) : null,
+        a_scored: a.scored_fh != null ? Number(a.scored_fh) : null,
+        a_conced: a.conced_fh != null ? Number(a.conced_fh) : null,
+        ci: Number(m.ci || 0),
+        def_ci: Number(m.def_ci || 0),
+        p15: toPct(m.prob15),
+        hit: m.hit_25 ? 1 : 0,
+      };
+    };
+    const conds = {
+      "l5_h_f>=min":      (f) => f.l5_h_f != null && f.l5_h_f >= T.l5_h_f,
+      "h_scored_fh>=min": (f) => f.h_scored != null && f.h_scored >= T.h_scored,
+      "a_scored_fh>=min": (f) => f.a_scored != null && f.a_scored >= T.a_scored,
+      "a_conced_fh>=min": (f) => f.a_conced != null && f.a_conced >= T.a_conced,
+      "ci_in_range":      (f) => f.ci >= T.ci_min && f.ci <= T.ci_max,
+      "def_ci_in_range":  (f) => f.def_ci >= T.defci_min && f.def_ci <= T.defci_max,
+      "prob15_in_band":   (f) => f.p15 >= T.p15_min && f.p15 <= T.p15_max,
+    };
+    const feats = rows.map(feat);
+    const N = feats.length;
+    const totalHits = feats.reduce((s, f) => s + f.hit, 0);
+    const base = N ? totalHits / N : 0;
+    // Per-condition: hit rate among matches that PASS this one condition, plus how
+    // many of ALL hits vs ALL misses clear it (the control-group split).
+    const perCond = {};
+    for (const [name, fn] of Object.entries(conds)) {
+      let pass = 0, passHit = 0, hitsPass = 0, missPass = 0;
+      for (const f of feats) {
+        const ok = fn(f);
+        if (ok) { pass++; if (f.hit) passHit++; }
+        if (f.hit && ok) hitsPass++;
+        if (!f.hit && ok) missPass++;
+      }
+      perCond[name] = {
+        hitRateIfPass: pass ? +(passHit / pass * 100).toFixed(1) : 0,
+        lift: (pass && base) ? +((passHit / pass) / base).toFixed(2) : 0,
+        pctOfHitsClearing: totalHits ? +(hitsPass / totalHits * 100).toFixed(1) : 0,
+        pctOfMissesClearing: (N - totalHits) ? +(missPass / (N - totalHits) * 100).toFixed(1) : 0,
+      };
+    }
+    // Combined filter (ALL conditions).
+    let pass = 0, passHit = 0, fail = 0, failHit = 0;
+    for (const f of feats) {
+      const ok = Object.values(conds).every(fn => fn(f));
+      if (ok) { pass++; if (f.hit) passHit++; } else { fail++; if (f.hit) failHit++; }
+    }
+    res.json({
+      ok: true,
+      cohortN: N, totalHits, baseRate25: +(base * 100).toFixed(1),
+      filter: exclude ? "excluding women's leagues" : "all leagues",
+      thresholds: T,
+      perCondition: perCond,
+      combinedFilter: {
+        passN: pass,
+        hitRateIfPass: pass ? +(passHit / pass * 100).toFixed(1) : 0,
+        lift: (pass && base) ? +((passHit / pass) / base).toFixed(2) : 0,
+        coverageOfHits: totalHits ? +(passHit / totalHits * 100).toFixed(1) : 0,
+        hitRateIfFail: fail ? +(failHit / fail * 100).toFixed(1) : 0,
+      },
+      note: "VERDICT KEYS: combinedFilter.hitRateIfPass vs baseRate25 — if it clearly beats base (and the ~19.6% best combo) the floor is a real edge; if it ≈ baseRate25 the floors just describe normal matches. perCondition.pctOfMissesClearing is the control: a condition only discriminates if pctOfHitsClearing >> pctOfMissesClearing.",
+    });
+  } catch (e) { res.status(500).json({ ok: false, error: e.message }); }
+});
+
 // Clean-cohort calibration: matches with TRUE pre-game freeze (excludes
 // historical-import and backfill rows). Used to measure real forward accuracy.
 app.get("/calibration", async (req, res) => {
