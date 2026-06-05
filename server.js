@@ -5187,7 +5187,7 @@ body{background:#f3f4f6;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',
   J += "          +'<div style=\"font-size:10px;color:#9ca3af;text-transform:uppercase;letter-spacing:.7px;margin-bottom:5px\">'+esc(m.league)+' \u00b7 '+esc(dt)+mw+'</div>'";
   J += "          +sb";
   J += "        +'</div>'";
-  J += "        +'<div style=\"display:flex;align-items:center;gap:6px;flex-wrap:wrap;justify-content:flex-end\">'+candidatePill(m)+betPill(m)+'<div class=\"rank-pill '+rc+'\"><div class=\"rn\">'+m.rank+'/3</div><div class=\"rl\">'+esc(m.label)+'</div></div></div>'";
+  J += "        +'<div style=\"display:flex;align-items:center;gap:6px;flex-wrap:wrap;justify-content:flex-end\">'+candidatePill(m)+betPill(m)+'</div>'";
   J += "      +'</div>'";
   J += "    +ps+rb";
   J += "    +patternH";
