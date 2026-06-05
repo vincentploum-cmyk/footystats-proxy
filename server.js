@@ -4976,7 +4976,7 @@ body{background:#f3f4f6;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',
   J += "function renderLeagueList(){";
   J += "  var main=document.getElementById('mainView');";
   J += "  if(!activeDate){main.innerHTML='';return;}";
-  J += "  var dp=ALL.filter(function(p){return p.matchDate===activeDate && !p.missingStats;});";
+  J += "  var dp=ALL.filter(function(p){return p.matchDate===activeDate;});";
   J += "  var lmap={};dp.forEach(function(p){if(!lmap[p.league])lmap[p.league]=[];lmap[p.league].push(p);});";
   J += "  var ll=Object.entries(lmap).sort(function(a,b){return a[0].localeCompare(b[0]);});";
   J += "  if(!ll.length){main.innerHTML='<p style=\"color:#6b7280;text-align:center;padding:40px\">No matches found.</p>';return;}";
@@ -5000,7 +5000,7 @@ body{background:#f3f4f6;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',
   J += "  ll.forEach(function(e){";
   J += "    var lg=e[0],ms=e[1];";
   J += "    if(openLeague!==lg)return;";
-  J += "    var sorted=ms.slice().sort(sortDefault);";
+  J += "    var sorted=ms.slice().sort(function(a,b){return ((a.missingStats?1:0)-(b.missingStats?1:0))||sortDefault(a,b);});";
   J += "    sections+='<div class=\"league-section\"><div class=\"league-section-hdr\">'+esc(lg)+'</div>';";
   J += "    sorted.forEach(function(m){sections+=renderCard(m);});";
   J += "    sections+='</div>';";
@@ -5087,9 +5087,10 @@ body{background:#f3f4f6;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',
   J += "  var sb=m.status==='complete'?'<span style=\"background:#f3f4f6;color:#6b7280;border:1px solid #e5e7eb;font-size:10px;padding:2px 8px;border-radius:20px;font-weight:600\">Final</span>'";
   J += "    :m.status==='live'?'<span style=\"background:#fef9c3;color:#ca8a04;border:1px solid #fde047;font-size:10px;padding:2px 8px;border-radius:20px;font-weight:600\">\u25cf Live</span>'";
   J += "    :'<span style=\"background:#f0fdf4;color:#15803d;border:1px solid #a5d6a7;font-size:10px;padding:2px 8px;border-radius:20px;font-weight:600\">Upcoming</span>';";
+  J += "  var pv15=m.missingStats?'—':(m.prob15+'%'),pv25=m.missingStats?'—':(m.prob25+'%');";
   J += "  var ps='<div class=\"prob-strip\">'";
-  J += "    +'<div class=\"pp pp15\"><div class=\"pp-dot\"></div><span class=\"pp-lbl\">FH over 1.5</span><span class=\"pp-val\">'+m.prob15+'%</span></div>'";
-  J += "    +'<div class=\"pp pp25\"><div class=\"pp-dot\"></div><span class=\"pp-lbl\">FH over 2.5</span><span class=\"pp-val\">'+m.prob25+'%</span></div>'";
+  J += "    +'<div class=\"pp pp15\"><div class=\"pp-dot\"></div><span class=\"pp-lbl\">FH over 1.5</span><span class=\"pp-val\">'+pv15+'</span></div>'";
+  J += "    +'<div class=\"pp pp25\"><div class=\"pp-dot\"></div><span class=\"pp-lbl\">FH over 2.5</span><span class=\"pp-val\">'+pv25+'</span></div>'";
   J += "    +'</div>';";
   J += "  var rb='';";
   J += "  if(m.matchResult){";
@@ -5182,7 +5183,7 @@ body{background:#f3f4f6;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',
   J += "  +'</div>';";
   J += "  var patternH=patternBadges(m);";
   J += "  var mw=m.missingStats?'<span style=\"background:#fef3c7;color:#92400e;font-size:10px;padding:2px 6px;border-radius:4px;font-weight:600;margin-left:6px\">\u26a0 no stats</span>':'';";
-  J += "  return '<div class=\"card\">'";
+  J += "  return '<div class=\"card\"'+(m.missingStats?' style=\"opacity:.55\"':'')+'>'";
   J += "    +'<div class=\"card-accent\" style=\"background:'+accent+'\"></div>'";
   J += "    +'<div class=\"card-inner\">'";
   J += "      +'<div style=\"display:flex;align-items:flex-start;justify-content:space-between;gap:10px;margin-bottom:12px\">'";
