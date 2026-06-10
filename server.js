@@ -2614,35 +2614,43 @@ async function computePreds(tzOffset) {
         }
         // Use frozen snapshot if match is complete and we have one
         const frozen = isComplete ? CI_SNAPSHOT_CACHE[matchId] : null;
+        // A completed match must ONLY ever show a prediction that was frozen before
+        // kickoff. If it was never frozen (e.g. internationals whose stats only became
+        // computable after the window's earlier games were cached), do NOT fall back to
+        // the live `result` — that's recomputed from current, post-match data, i.e.
+        // look-ahead. Use the live result only while the match is still upcoming.
+        const pre = frozen || (!isComplete ? result : null);
+        const liveSnap = snap ? {
+          fetchedAt: snap.fetchedAt,
+          home: { name: snap.home.name, scored_fh: snap.home.scored_fh, conced_fh: snap.home.conced_fh, t1_pct: snap.home.t1_pct, cn010_avg: snap.home.cn010_avg, sot_avg: snap.home.sot_avg, ...(snap.home.xt ? { xt: snap.home.xt } : {}) },
+          away: { name: snap.away.name, scored_fh: snap.away.scored_fh, conced_fh: snap.away.conced_fh, t1_pct: snap.away.t1_pct, cn010_avg: snap.away.cn010_avg, sot_avg: snap.away.sot_avg, ...(snap.away.xt ? { xt: snap.away.xt } : {}) },
+          l5: l5snap,
+          ...(snap.prematch ? { prematch: snap.prematch } : {}),
+        } : null;
 
         const pred = {
           id: matchId, homeId, awayId,
           league: leagueName, leagueSid: parseInt(sid, 10),
           home: fix.home_name || "", away: fix.away_name || "",
           dt: (fix.date_unix || 0) * 1000,
-          matchDate, status: fix.status || "upcoming", missingStats: missing && !result,
-          snap: frozen ? frozen.snap : (snap ? {
-            fetchedAt: snap.fetchedAt,
-            home: { name: snap.home.name, scored_fh: snap.home.scored_fh, conced_fh: snap.home.conced_fh, t1_pct: snap.home.t1_pct, cn010_avg: snap.home.cn010_avg, sot_avg: snap.home.sot_avg, ...(snap.home.xt ? { xt: snap.home.xt } : {}) },
-            away: { name: snap.away.name, scored_fh: snap.away.scored_fh, conced_fh: snap.away.conced_fh, t1_pct: snap.away.t1_pct, cn010_avg: snap.away.cn010_avg, sot_avg: snap.away.sot_avg, ...(snap.away.xt ? { xt: snap.away.xt } : {}) },
-            l5: l5snap,
-            ...(snap.prematch ? { prematch: snap.prematch } : {}),
-          } : null),
-          rank:     frozen ? frozen.rank     : (result ? result.rank     : 0),
-          label:    frozen ? frozen.label    : (result ? result.label    : "Low"),
-          prob25:   frozen ? frozen.prob25   : (result ? result.prob25   : 10.0),
-          prob15:   frozen ? frozen.prob15   : (result ? result.prob15   : 31.4),
-          probSource:  frozen ? frozen.probSource  : (result ? result.probSource  : "global"),
-          probSampleN: frozen ? frozen.probSampleN : (result ? result.probSampleN : 0),
-          probCombo:   frozen ? frozen.probCombo   : (result ? result.probCombo   : null),
-          eligible: frozen ? frozen.eligible : (result ? result.eligible : false),
-          eligible25: frozen ? frozen.eligible25 : (result ? result.eligible25 : false),
-          eligible15: frozen ? frozen.eligible15 : (result ? result.eligible15 : false),
-          ci:       frozen ? frozen.ci       : (result ? result.ci       : 0),
-          defCi:    frozen ? frozen.defCi    : (result ? result.defCi    : 0),
-          signals:  frozen ? frozen.signals  : (result ? result.signals  : {}),
-          ov15Candidate: frozen ? frozen.ov15Candidate : (result ? result.ov15Candidate : false),
-          ov25Candidate: frozen ? frozen.ov25Candidate : (result ? result.ov25Candidate : false),
+          matchDate, status: fix.status || "upcoming",
+          missingStats: (missing && !result) || (isComplete && !frozen),
+          snap: frozen ? frozen.snap : (!isComplete ? liveSnap : null),
+          rank:     pre ? pre.rank     : 0,
+          label:    pre ? pre.label    : "Low",
+          prob25:   pre ? pre.prob25   : 10.0,
+          prob15:   pre ? pre.prob15   : 31.4,
+          probSource:  pre ? pre.probSource  : "global",
+          probSampleN: pre ? pre.probSampleN : 0,
+          probCombo:   pre ? pre.probCombo   : null,
+          eligible:   pre ? pre.eligible   : false,
+          eligible25: pre ? pre.eligible25 : false,
+          eligible15: pre ? pre.eligible15 : false,
+          ci:       pre ? pre.ci       : 0,
+          defCi:    pre ? pre.defCi    : 0,
+          signals:  pre ? pre.signals  : {},
+          ov15Candidate: pre ? pre.ov15Candidate : false,
+          ov25Candidate: pre ? pre.ov25Candidate : false,
           hLast5, aLast5, hAvgFH, aAvgFH,
           matchResult: isComplete ? { fhH, fhA, ftH, ftA, hit25: (fhH+fhA)>2, hit15: (fhH+fhA)>1 } : null,
         };
