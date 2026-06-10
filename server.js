@@ -582,10 +582,10 @@ function unixToLocalDate(unix, tzOffset) {
 // (rank-0 + mismatch) lifts FH>2.5 from 6.7% to 12.3% (n=211/254). C is
 // anti-additive with B (011 prob25 falls to 5.4%) — the per-combo probs below
 // encode that, so a high rank never overrides a low calibrated probability.
-// n by combo: 000=254, 001=211, 010=172, 011=112, 100=9, 101=25, 110=46, 111=40.
-// (100 borrows the stabler A-only 2-combo value; n=9 made its raw rate unreliable.)
-const PROB15_BY_COMBO = { "000": 26.0, "001": 39.3, "010": 43.6, "011": 39.3, "100": 35.3, "101": 36.0, "110": 50.0, "111": 37.5 };
-const PROB25_BY_COMBO = { "000":  6.7, "001": 12.3, "010": 14.5, "011":  5.4, "100": 14.7, "101": 20.0, "110": 19.6, "111": 20.0 };
+// n by combo: 000=317, 001=289, 010=195, 011=135, 100=11, 101=31, 110=49, 111=48. (n=1075, women excluded)
+// (100 borrows the stabler A-only 2-combo value; n=11 still too thin for a direct read — using 2-combo "10" n=42.)
+const PROB15_BY_COMBO = { "000": 24.3, "001": 36.0, "010": 42.6, "011": 34.1, "100": 38.1, "101": 38.7, "110": 49.0, "111": 37.5 };
+const PROB25_BY_COMBO = { "000":  6.6, "001": 11.8, "010": 15.4, "011":  4.4, "100": 14.3, "101": 19.4, "110": 18.4, "111": 16.7 };
 const RANK_LABELS = { 0: "Low", 1: "Signal", 2: "Fire", 3: "Fire" };
 
 function numOrNull(v) {

@@ -122,20 +122,20 @@ season FH stats (always present) + `l5` (null on thin leagues → `l5_fh = 0` �
 ### Probability Tables
 
 Combo-keyed (`PROB15_BY_COMBO` / `PROB25_BY_COMBO` in `server.js`, key = bit(A)+bit(B)+bit(C)),
-recalibrated on the **clean live cohort (n=869, women excluded)** via `/signalc-validate`:
+recalibrated on the **clean live cohort (n=1075, women excluded)** via `/signalc-validate`:
 
 | Combo (A B C) | n | prob15 (FH>1.5) | prob25 (FH>2.5) |
 |-------|---|-----------------|-----------------|
-| 110 — A+B, no mismatch | 46 | **50.0%** | 19.6% |
-| 010 — B only | 172 | 43.6% | 14.5% |
-| 001 — mismatch only (rank-0 rescue) | 211 | 39.3% | **12.3%** |
-| 011 — B + mismatch | 112 | 39.3% | 5.4% (C hurts B) |
-| 111 — all three | 40 | 37.5% | 20.0% |
-| 101 — A + mismatch | 25 | 36.0% | 20.0% |
-| 100 — A only | 9* | 35.3% | 14.7% |
-| 000 — neither | 254 | 26.0% | 6.7% |
+| 110 — A+B, no mismatch | 49 | **49.0%** | 18.4% |
+| 010 — B only | 195 | 42.6% | 15.4% |
+| 001 — mismatch only (rank-0 rescue) | 289 | 36.0% | **11.8%** |
+| 011 — B + mismatch | 135 | 34.1% | 4.4% (C hurts B) |
+| 111 — all three | 48 | 37.5% | 16.7% |
+| 101 — A + mismatch | 31 | 38.7% | 19.4% |
+| 100 — A only | 11* | 38.1% | 14.3% |
+| 000 — neither | 317 | 24.3% | 6.6% |
 
-\* combo 100 borrows the stabler A-only 2-combo value (raw n=9 was unreliable).
+\* combo 100 borrows the stabler A-only 2-combo value (raw n=11 still too thin — using 2-combo "10" n=42).
 
 Key findings:
 - **C (team mismatch) only adds value where A+B are silent.** In combo `00` (rank-0) it
