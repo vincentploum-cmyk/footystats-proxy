@@ -1734,7 +1734,11 @@ app.get("/floor-test", async (req, res) => {
   if (!supabase) return res.status(400).json({ ok: false, error: "Supabase not enabled" });
   try {
     const q = req.query;
-    const num = (k, d) => (q[k] != null && q[k] !== "") ? Number(q[k]) : d;
+    // Robust: a missing OR un-parseable param falls back to its default instead of
+    // becoming NaN (NaN in a `>=` comparison silently rejects every row → passN 0).
+    const num = (k, d) => { const n = Number(q[k]); return (q[k] != null && q[k] !== "" && Number.isFinite(n)) ? n : d; };
+    // ?drop=ci_in_range,prob15_in_band → exclude those conditions from the combined filter.
+    const dropped = new Set(String(q.drop || "").split(",").map(s => s.trim()).filter(Boolean));
     const T = {
       l5_h_f:    num("l5_h_f", 0.40),
       h_scored:  num("h_scored", 0.50),
@@ -1813,10 +1817,11 @@ app.get("/floor-test", async (req, res) => {
         pctOfMissesClearing: (N - totalHits) ? +(missPass / (N - totalHits) * 100).toFixed(1) : 0,
       };
     }
-    // Combined filter (ALL conditions).
+    // Combined filter (all conditions EXCEPT any named in ?drop=).
+    const active = Object.entries(conds).filter(([name]) => !dropped.has(name));
     let pass = 0, passHit = 0, fail = 0, failHit = 0;
     for (const f of feats) {
-      const ok = Object.values(conds).every(fn => fn(f));
+      const ok = active.every(([, fn]) => fn(f));
       if (ok) { pass++; if (f.hit) passHit++; } else { fail++; if (f.hit) failHit++; }
     }
     res.json({
@@ -1824,6 +1829,8 @@ app.get("/floor-test", async (req, res) => {
       cohortN: N, totalHits, baseRate25: +(base * 100).toFixed(1),
       filter: exclude ? "excluding women's leagues" : "all leagues",
       thresholds: T,
+      activeConditions: active.map(([name]) => name),
+      droppedConditions: [...dropped],
       perCondition: perCond,
       combinedFilter: {
         passN: pass,
