@@ -8,11 +8,15 @@ A Node.js/Express proxy server that predicts first-half (FH) goals in football m
 
 ## Architecture
 
-**Single-file monolith:** All application logic lives in `server.js` (~870 lines). No build step, no transpilation, no framework — vanilla JS throughout.
+**Near-single-file monolith:** Almost all logic lives in `server.js`. No build step, no
+transpilation, no framework — vanilla JS throughout. The one carve-out is `lib/freeze.js`:
+the pre-game freeze invariant, extracted so it has a single source of truth and a test.
 
 ```
 server.js          — Express server, API proxy, prediction engine, HTML frontend
-package.json       — Dependencies and start script
+lib/freeze.js      — Pre-game freeze contract (candidate flags + frozen-vs-live rule)
+scripts/           — Offline tools: ov25_score.py (scorer), test_freeze.js (invariant test)
+package.json       — Dependencies; `npm start`, `npm test`
 .github/workflows/ — Keep-alive cron ping (every 20 min)
 ```
 
@@ -264,6 +268,28 @@ matches are shown but their probabilities use the men's table.
   pre-kickoff for live rows — look-ahead-free. They are NOT valid for backfill/historical-import
   rows (those rows often lack `snap.l5` or carry stale form).
 - **Never recalibrate on tainted rows.** Always filter to live captures.
+
+### Pre-game freeze contract — THE invariant (do not break)
+
+This is the most important rule in the codebase: **a prediction shown for a completed
+match must be exactly what was frozen before kickoff — never recomputed from current
+(post-match) data.** Violating it silently inflates the very hit rates we bet on.
+
+Two pure functions in **`lib/freeze.js`** are the single source of truth, used by the
+live engine (`computeSignals`), the snapshot restore (`loadFrozenSnapshots`), and the
+`/calibration` + `/history` readouts — kept in one place so these paths can't drift
+apart (a past drift wiped the candidate pills on restart):
+
+- `selectPregamePrediction(frozen, result, isComplete)` — a completed match uses the
+  frozen snapshot **only**; the live `result` is usable **only while still upcoming**.
+  Completed + never-frozen → `null` (shown as no-stats, NOT a post-game recompute).
+- `computeOverCandidates(snap, prob15, prob25)` — O1.5/O2.5 candidate flags from
+  pre-game inputs only (env_fh, l5_fh, prob); the match result is never an input.
+
+**`scripts/test_freeze.js` (`npm test`) locks these invariants** — run it before any
+change near the freeze/snapshot/candidate paths; it fails loudly if look-ahead returns.
+When editing candidate-flag or freeze logic, change **`lib/freeze.js`**, never re-inline
+the formula at a call site.
 
 ### Deprecated / removed signals
 
