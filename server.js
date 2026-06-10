@@ -282,16 +282,18 @@ async function recalibrateLeagueProbs() {
 
 // Phase 3: per-league signal-combination probabilities
 // Cache shape: { "<compId>:<combo2chars>": { n, prob25, prob15 } }
-// combo is bit(A) + bit(B) + bit(C) — the three live signals (see computeSignals).
+// combo is bit(A) + bit(B) — the two live signals (see computeSignals). This now
+// matches the Supabase compute_league_combo_buckets() RPC's 2-char key, so per-league
+// overrides line up again (they fell back to global while the model carried Signal C).
 const LEAGUE_COMBO_MIN_N    = 20;
 let   LEAGUE_COMBO_CACHE    = {};
 let   LEAGUE_COMBO_LAST_LOAD  = { at: 0, rows: 0, error: null };
 let   LEAGUE_COMBO_LAST_RECAL = { at: 0, buckets: 0, written: 0, error: null };
 
 function comboFromSignals(sigs) {
-  if (!sigs) return "000";
+  if (!sigs) return "00";
   const bit = (k) => (sigs[k] && sigs[k].met) ? "1" : "0";
-  return bit("A") + bit("B") + bit("C");
+  return bit("A") + bit("B");
 }
 
 async function loadLeagueComboCache() {
@@ -577,15 +579,15 @@ function unixToLocalDate(unix, tzOffset) {
 }
 
 // Multi-signal probabilities — combo-keyed: bit(A)+bit(B)+bit(C).
-// Recalibrated on the clean live cohort (n=869, women excluded) via /signalc-validate.
-// Signal C (team mismatch) only adds value where A+B are silent: combo "001"
-// (rank-0 + mismatch) lifts FH>2.5 from 6.7% to 12.3% (n=211/254). C is
-// anti-additive with B (011 prob25 falls to 5.4%) — the per-combo probs below
-// encode that, so a high rank never overrides a low calibrated probability.
-// n by combo: 000=317, 001=289, 010=195, 011=135, 100=11, 101=31, 110=49, 111=48. (n=1075, women excluded)
-// (100 borrows the stabler A-only 2-combo value; n=11 still too thin for a direct read — using 2-combo "10" n=42.)
-const PROB15_BY_COMBO = { "000": 24.3, "001": 36.0, "010": 42.6, "011": 34.1, "100": 38.1, "101": 38.7, "110": 49.0, "111": 37.5 };
-const PROB25_BY_COMBO = { "000":  6.6, "001": 11.8, "010": 15.4, "011":  4.4, "100": 14.3, "101": 19.4, "110": 18.4, "111": 16.7 };
+// Combo-keyed probabilities — key = bit(A)+bit(B) (2-char). Recalibrated on the
+// clean live cohort (n=1075, women excluded) via /signalc-validate.
+// Signal C (team mismatch) was REMOVED: on the full cohort its standalone lift fell
+// to ~1.0 (no edge) and B+C was anti-additive (below base rate), and the directional
+// split that would have rescued it added complexity for a marginal rank-0-only gain.
+// A+B carry the real lift (A 1.72, B 1.38) and ranking is monotonic without C.
+// n by combo: 00=606, 01=330, 10=42, 11=97 (women excluded).
+const PROB15_BY_COMBO = { "00": 29.9, "01": 39.1, "10": 38.1, "11": 43.3 };
+const PROB25_BY_COMBO = { "00":  9.1, "01": 10.9, "10": 14.3, "11": 17.5 };
 const RANK_LABELS = { 0: "Low", 1: "Signal", 2: "Fire", 3: "Fire" };
 
 function numOrNull(v) {
@@ -727,20 +729,9 @@ function computeSignals(snap, hLast5, aLast5) {
   // Signal B: Away Team Scoring (away team moderately active)
   const sigB = hasL5 && awayL5Scored >= 0.8;
 
-  // Signal C: Team Mismatch — one side much better than the other, measured by the
-  // season net-FH-rating gap |(home scored_fh - conced_fh) - (away scored_fh - conced_fh)|.
-  // Uses season stats frozen pre-game, so it can fire even when l5 is null (thin
-  // leagues). Validated on the rank-0 cohort: lifts no-signal games ~2x on FH>2.5.
-  // It is anti-additive with B — the combo prob table reflects that.
-  const num = (v) => (v != null && !isNaN(Number(v))) ? Number(v) : null;
-  const hS = (snap && snap.home) || {}, aS = (snap && snap.away) || {};
-  const hSF = num(hS.scored_fh), hCF = num(hS.conced_fh), aSF = num(aS.scored_fh), aCF = num(aS.conced_fh);
-  const hasGap = hSF != null && hCF != null && aSF != null && aCF != null;
-  const seasonGap = hasGap ? Math.abs((hSF - hCF) - (aSF - aCF)) : 0;
-  const sigC = hasGap && seasonGap >= 0.5;
-
-  // Combo-keyed probabilities (bit(A)+bit(B)+bit(C)).
-  const combo = (sigA ? "1" : "0") + (sigB ? "1" : "0") + (sigC ? "1" : "0");
+  // Combo-keyed probabilities (bit(A)+bit(B)). Signal C (team mismatch) was removed —
+  // it had no live edge and B+C was anti-additive; A+B alone rank monotonically.
+  const combo = (sigA ? "1" : "0") + (sigB ? "1" : "0");
   const prob15 = PROB15_BY_COMBO[combo];
   const prob25 = PROB25_BY_COMBO[combo];
 
@@ -767,7 +758,6 @@ function computeSignals(snap, hLast5, aLast5) {
     signals: {
       A: { met: sigA, label: "Mutual Instability", value: f2(homeL5Total) + " / " + f2(awayL5Total), threshold: "home L5 total >= 1.6 & away L5 total >= 1.4" },
       B: { met: sigB, label: "Away Team Scoring", value: f2(awayL5Scored), threshold: "away L5 FH >= 0.8" },
-      C: { met: sigC, label: "Team Mismatch", value: f2(seasonGap), threshold: "season net-FH rating gap >= 0.5" },
       O15: { met: ov15Candidate, label: "Over 1.5 FH candidate", value: "env " + f2(envFh) + " · L5 " + f2(l5Fh) + " · p15 " + prob15, threshold: "env-FH >= 2.60 & L5-FH >= 1.4 & prob15 >= 38" },
       O25: { met: ov25Candidate, label: "Over 2.5 FH candidate", value: "env " + f2(envFh) + " · L5 " + f2(l5Fh) + " · p25 " + prob25, threshold: "env-FH >= 2.85 & L5-FH >= 1.6 & prob25 >= 14.5" },
     },
@@ -1872,10 +1862,10 @@ app.get("/calibration", async (req, res) => {
         byRank[r].sumP25 += p25;
         byRank[r].sumP15 += p15;
       }
-      // Per-combo bucket (3-bit: A+B+C). Old rows lack signals.C → treated as C=0.
+      // Per-combo bucket (2-bit: A+B). Signal C removed from the model.
       const sigs = m.signals || {};
       const bit = (k) => (sigs[k] && sigs[k].met) ? "1" : "0";
-      const combo = bit("A") + bit("B") + bit("C");
+      const combo = bit("A") + bit("B");
       if (!byCombo[combo]) byCombo[combo] = { n: 0, hit25: 0, hit15: 0, sumP25: 0, sumP15: 0 };
       byCombo[combo].n++;
       if (m.hit_25) byCombo[combo].hit25++;
@@ -1983,7 +1973,7 @@ app.get("/signal-backtest", async (req, res) => {
     const met = (m, k) => !!(m.signals && m.signals[k] && m.signals[k].met);
 
     const perSignal = {};
-    for (const k of ["A", "B", "C"]) {
+    for (const k of ["A", "B"]) {
       const fired = all.filter(m => met(m, k));
       const quiet = all.filter(m => !met(m, k));
       const fHit = fired.length ? fired.filter(m => m.hit_25).length / fired.length : 0;
@@ -2024,7 +2014,7 @@ app.get("/signal-backtest", async (req, res) => {
     // which combinations actually carry the predictive weight.
     const byCombo = {};
     for (const m of all) {
-      const c = ["A", "B", "C"].filter(k => met(m, k)).join("") || "(none)";
+      const c = ["A", "B"].filter(k => met(m, k)).join("") || "(none)";
       if (!byCombo[c]) byCombo[c] = { n: 0, hit25: 0, hit15: 0 };
       byCombo[c].n++;
       if (m.hit_25) byCombo[c].hit25++;
@@ -2264,9 +2254,10 @@ app.get("/admin/export-dataset", async (req, res) => {
         is_women: WOMENS_LEAGUE_IDS.has(m.competition_id) ? 1 : 0,
         date_unix: m.date_unix || "", date_iso: m.date_unix ? new Date(m.date_unix * 1000).toISOString().slice(0, 10) : "",
         home_name: m.home_name || "", away_name: m.away_name || "", fetchedAt: s.fetchedAt || "", has_l5: s.l5 ? 1 : 0,
-        // fired signals / rank / combo (3-char bit(A)bit(B)bit(C))
-        sigA: bit(sg, "A"), sigB: bit(sg, "B"), sigC: bit(sg, "C"),
-        combo: "" + bit(sg, "A") + bit(sg, "B") + bit(sg, "C"), rank: m.rank == null ? "" : m.rank,
+        // fired signals / rank / combo (2-char bit(A)bit(B); Signal C removed from model —
+        // raw season stats below still let you study the mismatch offline)
+        sigA: bit(sg, "A"), sigB: bit(sg, "B"),
+        combo: "" + bit(sg, "A") + bit(sg, "B"), rank: m.rank == null ? "" : m.rank,
         prob15: num(m.prob15), prob25: num(m.prob25), ci: num(m.ci), def_ci: num(m.def_ci),
         // home season stats
         h_scored_fh: num(h.scored_fh), h_conced_fh: num(h.conced_fh), h_t1_pct: num(h.t1_pct), h_cn010: num(h.cn010_avg), h_sot: num(h.sot_avg),
@@ -4950,7 +4941,7 @@ body{background:#f3f4f6;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',
   J += "  d.matches.forEach(function(m){";
   J += "    var dStr=m.date_unix?new Date(m.date_unix*1000).toISOString().slice(0,10):'';";
   J += "    var sigs=m.signals||{};";
-  J += "    var sigStr=['A','B','C'].map(function(k){return sigs[k]&&sigs[k].met?k:'\u00b7';}).join('');";
+  J += "    var sigStr=['A','B'].map(function(k){return sigs[k]&&sigs[k].met?k:'\u00b7';}).join('');";
   J += "    var ov15=!!m.ov15Candidate,ov25=!!m.ov25Candidate;";  // server-computed (lib/freeze.js)
   J += "    var cb=function(lbl,hit){return '<span style=\"display:inline-block;background:'+(hit?'#15803d':'#b91c1c')+';color:#fff;font-size:10px;font-weight:700;padding:2px 6px;border-radius:5px\">'+lbl+(hit?' \u2713':' \u2717')+'</span>';};";
   J += "    var leftH=(ov25?cb('O2.5',!!m.hit_25):'')+(ov15?cb('O1.5',!!m.hit_15):'')+betPill({prob25:Number(m.prob25)||0,prob15:Number(m.prob15)||0,eligible25:!!m.eligible25,eligible15:!!m.eligible15,snap:m.snap,signals:m.signals});";
@@ -5177,7 +5168,7 @@ body{background:#f3f4f6;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',
   J += "    return '<div class=\"team-box\"><div class=\"team-role\">'+esc(role)+'</div><div class=\"team-name\">'+esc(name)+'</div>'+fs+fhBar+'<div class=\"stat-grid\">'+chips+'</div></div>';";
   J += "  }";
   J += "  var sigsH='<div class=\"signals\">';";
-  J += "  ['A','B','C'].forEach(function(k){";
+  J += "  ['A','B'].forEach(function(k){";
   J += "    var s=m.signals[k];if(!s)return;";
   J += "    sigsH+='<div class=\"sig '+(s.met?'sig-y':'sig-n')+'\">'";
   J += "      +'<div class=\"sig-dot\"></div>'+esc(k)+' \u00b7 '+esc(s.label)";
@@ -5235,7 +5226,7 @@ body{background:#f3f4f6;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',
   J += "function renderBBRow(m,probKey,goalLabel,idx){";
   J += "  var rc=rankCls(m.rank);";
   J += "  var dt=m.dt?new Date(m.dt).toLocaleDateString('en-GB',{weekday:'short',day:'2-digit',month:'short'}):'';";
-  J += "  var sigs='';if(m.signals){['A','B','C'].forEach(function(k){if(m.signals[k]&&m.signals[k].met)sigs+=k+' ';});}";
+  J += "  var sigs='';if(m.signals){['A','B'].forEach(function(k){if(m.signals[k]&&m.signals[k].met)sigs+=k+' ';});}";
   J += "  var ptag=patternBadgeForRow(m,probKey);";
   J += "  var h='<div style=\"display:flex;align-items:center;gap:10px;padding:10px 12px;border-bottom:1px solid #f3f4f6\">';";
   J += "  h+='<div style=\"font-size:18px;font-weight:800;color:#d1d5db;width:24px;text-align:center\">'+(idx+1)+'</div>';";
@@ -5311,7 +5302,7 @@ body{background:#f3f4f6;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',
   J += "    if(!dayMatches.length)return;";
   J += "    var best=dayMatches[0];var rc=rankCls(best.rank);";
   J += "    var dt=best.dt?new Date(best.dt).toLocaleDateString('en-GB',{weekday:'short',day:'2-digit',month:'short'}):'';";
-  J += "    var sigs='';if(best.signals){['A','B','C'].forEach(function(k){if(best.signals[k]&&best.signals[k].met)sigs+=k+' ';});}";
+  J += "    var sigs='';if(best.signals){['A','B'].forEach(function(k){if(best.signals[k]&&best.signals[k].met)sigs+=k+' ';});}";
   J += "    h+='<div style=\"background:#fff;border:1px solid #e5e7eb;border-radius:12px;padding:12px 14px;margin-bottom:10px\">';";
   J += "    h+='<div style=\"font-size:11px;color:#7c3aed;font-weight:700;text-transform:uppercase;letter-spacing:.5px;margin-bottom:6px\">'+(DAY_LABELS[di]||d)+' \u2014 '+esc(dt)+'</div>';";
   J += "    h+='<div style=\"display:flex;justify-content:space-between;align-items:center;margin-bottom:4px\">';";

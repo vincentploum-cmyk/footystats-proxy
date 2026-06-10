@@ -26,7 +26,7 @@ package.json       — Dependencies; `npm start`, `npm test`
 |---------|---------|
 | **safeFetch / rate limiting** | Wraps API calls with timeout, caching, and rate-limit detection |
 | **In-memory caches** | `FIXTURE_CACHE`, `LEAGUE_MATCHES_CACHE`, `TEAM_STATS_CACHE`, `SERVER_MATCH_CACHE` with TTLs |
-| **Prediction engine** | `buildLast5()` → `last5Form()` → `computeSignals()` pipeline; 3 signals — A + B (last-5 FH form) and C (season mismatch gap). `extractStats()` builds the season-stat `snap` frozen pre-game. |
+| **Prediction engine** | `buildLast5()` → `last5Form()` → `computeSignals()` pipeline; 2 signals — A + B (last-5 FH form). `extractStats()` builds the season-stat `snap` frozen pre-game. |
 | **buildHTML()** | Server-side HTML/CSS/JS generation (inline, no templates) |
 | **Routes** | `/` (HTML shell), `/preds` (JSON API), `/cache-status`, `/debug`, `/api/*` (passthrough) |
 
@@ -65,36 +65,41 @@ There is no test suite, linter, or build step configured.
 - `dotenv` — Environment variable loading
 - `node-fetch@2` — HTTP client (CommonJS-compatible v2)
 
-## Prediction Algorithm (3-Signal Ranking)
+## Prediction Algorithm (2-Signal Ranking)
 
 Rank is **derived from the calibrated probability**, not from counting signals, so rank
 and probability always move together (a higher rank is always a higher-probability match).
 It is tiered on `prob15` (FH-over-1.5, the primary bet): `>=45 → 3`, `>=40 → 2`, `>=30 → 1`,
-else `0`. 🔥 Fire (2–3) → 📢 Signal (1) → Low (0). `eligible` = rank ≥ 2. This replaced the
-old "rank = signals fired" count, which could disagree with probability because Signal C is
-anti-additive with B (a high signal-count combo like `011` carries a *low* probability).
-The match list sorts by rank, which — because rank is a probability tier — is probability order.
+else `0`. 🔥 Fire (2–3) → 📢 Signal (1) → Low (0). `eligible` = rank ≥ 2. On the A+B table
+the max prob15 is 43.3% (combo 11), so the live range is rank 0–2; tier 3 stays defined but
+unreachable. The match list sorts by probability (`prob25 → prob15 → ci → rank`).
 
 ### Signals
 
-A and B are **last-5 FH form** signals (read from `snap.l5`, pre-kickoff). C is a
-**season-stat mismatch** signal (read from `snap.home`/`snap.away`, frozen pre-game).
+A and B are **last-5 FH form** signals (read from `snap.l5`, pre-kickoff). They are the
+**only two production signals.** (Signal C — Team Mismatch — was removed; see below.)
 
 | Signal | Name | Rule | Data source |
 |--------|------|------|-------------|
 | A | Mutual Instability | `snap.l5.home.t >= 1.6` AND `snap.l5.away.t >= 1.4` | Last-5 FH form (pre-kickoff) |
 | B | Away Team Scoring | `snap.l5.away.f >= 0.8` | Last-5 FH form (pre-kickoff) |
-| C | Team Mismatch | `\|(home.scored_fh − home.conced_fh) − (away.scored_fh − away.conced_fh)\| >= 0.5` | Season stats (frozen pre-game) |
 
 `snap.l5.home.t` / `snap.l5.away.t` are each team's last-5 FH **total** (scored + conceded
 per game); `snap.l5.away.f` is the away team's last-5 FH **scored** average.
 
-**A and B require `snap.l5`** (both teams had ≥ 3 recent games — `last5Form()` returns null
-otherwise). **C does NOT require `snap.l5`** — it reads season stats, so it can fire on
-thin-coverage leagues where `l5` is null (its one cross-over benefit for the blind spot).
+**Both A and B require `snap.l5`** (both teams had ≥ 3 recent games — `last5Form()` returns
+null otherwise). On thin-coverage leagues where `l5` is null, neither fires (combo `00`) —
+the known blind spot. The O1.5/O2.5 candidate flags (below) are the only pre-game read there.
+
+> **Signal C (Team Mismatch) was removed (2026-06).** On the full live cohort (n≈1022) its
+> standalone FH>2.5 lift fell to ~1.0 (no edge), and B+C was *anti-additive* — below base
+> rate. A directional split (home-stronger helps, away-stronger fades) showed a marginal
+> rank-0-only gain but didn't justify the complexity. A+B carry the real lift (A 1.72, B 1.38)
+> and rank monotonically without C. `/signalc-validate` and `/mismatch-holdout` still compute
+> C from `snap` (independent of the live model) if you want to revisit it.
 
 `computeSignals(snap, hLast5, aLast5)` returns:
-- `rank` = signals fired (0–3), `label` = Low / Signal / Fire
+- `rank` = probability tier (0–2; tier 3 unreachable on the A+B table), `label` = Low / Signal / Fire
 - `prob15`, `prob25` = global combo-table probabilities (see below)
 - `ci` = combined intensity (`homeL5Total + awayL5Total`) — used for display/sorting
 - `defCi` = away last-5 FH total (`awayL5Total`)
@@ -102,11 +107,11 @@ thin-coverage leagues where `l5` is null (its one cross-over benefit for the bli
 - `ov15Candidate` / `ov25Candidate` = FH over-1.5 / over-2.5 **candidate** flags (see below);
   also `envFh` (= both teams' season `scored_fh + conced_fh`) and `l5Fh` (= home+away
   last-5 FH scored) — the two combined inputs they use
-- `signals` = `{ A: {…}, B: {…}, C: {…}, O15: {…}, O25: {…} }`
+- `signals` = `{ A: {…}, B: {…}, O15: {…}, O25: {…} }`
 
 ### Over-1.5 / Over-2.5 FH candidate signals
 
-Separate from the A/B/C combo, two **candidate** flags detect FH over-goal targets via three
+Separate from the A/B combo, two **candidate** flags detect FH over-goal targets via three
 pre-game checks that must all clear (rounded to absorb float drift at the boundary):
 
 | Flag | env_fh (`Σ scored_fh+conced_fh`) | l5_fh (`Σ last-5 FH scored`) | model prob |
@@ -121,46 +126,38 @@ season FH stats (always present) + `l5` (null on thin leagues → `l5_fh = 0` �
 
 ### Probability Tables
 
-Combo-keyed (`PROB15_BY_COMBO` / `PROB25_BY_COMBO` in `server.js`, key = bit(A)+bit(B)+bit(C)),
+Combo-keyed (`PROB15_BY_COMBO` / `PROB25_BY_COMBO` in `server.js`, key = bit(A)+bit(B)),
 recalibrated on the **clean live cohort (n=1075, women excluded)** via `/signalc-validate`:
 
-| Combo (A B C) | n | prob15 (FH>1.5) | prob25 (FH>2.5) |
-|-------|---|-----------------|-----------------|
-| 110 — A+B, no mismatch | 49 | **49.0%** | 18.4% |
-| 010 — B only | 195 | 42.6% | 15.4% |
-| 001 — mismatch only (rank-0 rescue) | 289 | 36.0% | **11.8%** |
-| 011 — B + mismatch | 135 | 34.1% | 4.4% (C hurts B) |
-| 111 — all three | 48 | 37.5% | 16.7% |
-| 101 — A + mismatch | 31 | 38.7% | 19.4% |
-| 100 — A only | 11* | 38.1% | 14.3% |
-| 000 — neither | 317 | 24.3% | 6.6% |
-
-\* combo 100 borrows the stabler A-only 2-combo value (raw n=11 still too thin — using 2-combo "10" n=42).
+| Combo (A B) | n | prob15 (FH>1.5) | prob25 (FH>2.5) | rank |
+|-------|---|-----------------|-----------------|------|
+| 11 — A+B | 97 | **43.3%** | **17.5%** | 2 (Fire) |
+| 01 — B only | 330 | 39.1% | 10.9% | 1 (Signal) |
+| 10 — A only | 42 | 38.1% | 14.3% | 1 (Signal) |
+| 00 — neither | 606 | 29.9% | 9.1% | 0 (Low) |
 
 Key findings:
-- **C (team mismatch) only adds value where A+B are silent.** In combo `00` (rank-0) it
-  lifts FH>2.5 from 6.7% → 12.3% and FH>1.5 from 26% → 39.3% (n=211 vs 254). This held
-  out-of-sample (`/mismatch-holdout`, `/rank0-holdout`): train→test lift was stable/positive.
-- **C is anti-additive with B**: among B-only games a big mismatch *lowers* FH>2.5 to 5.4%
-  (one-sided games stay one-sided). The combo table encodes this — never read C as +1 quality.
-- **A+B (110) remains the strongest FH>2.5/FH>1.5 combo.** A alone is still worthless.
-- betPill is signal-based: 🔥 when A+B fire, 🎯 when B fires. **C fires no bet pill** — it
-  reshapes probabilities/ranking only.
+- **A+B (combo 11) is the strongest FH>2.5/FH>1.5 combo** (17.5% / 43.3%, ~1.9x base). The
+  O2.5 candidate pill effectively requires it (only combo 11 clears `prob25 >= 14.5`).
+- **Ranking is monotonic** — rank 2 (A+B) > rank 1 (A or B) > rank 0 (neither) on both markets.
+  No combo can outrank a stronger one (the old C-driven rank-2-below-rank-1 inversion is gone).
+- **A alone is near baseline** (combo 10: O2.5 ≈ base). B carries the FH>1.5 edge; A+B together
+  carry FH>2.5.
+- betPill is signal-based: 🔥 when A+B fire, 🎯 when B fires.
 
-Recalibrate via `/signalc-validate` (full 8-combo table + holdout stability + C's marginal
-lift within each A+B combo). Re-run when the cohort roughly doubles.
+Recalibrate via `/signalc-validate` (it still reports the full A/B/C breakdown, holdout
+stability, and C's marginal lift — useful for re-checking the C-removal decision). Re-run
+when the cohort roughly doubles. The live model reads only the 4-combo A+B table above.
 
 ### combo string format
 
-`comboFromSignals()` returns a **3-char string**: bit(A) + bit(B) + bit(C).
-e.g. "111" = all three, "001" = mismatch only, "010" = B only, "000" = neither.
-`applyLeagueProb()` uses this 3-char key. **NOTE:** the Supabase
-`compute_league_combo_buckets()` RPC still emits the old **2-char** key (it predates C),
-so 3-char league-combo lookups miss and gracefully fall back to the global recalibrated
-8-combo table. (The coarse per-league *rank* override was removed — see PR #60 — so the
-fallback chain is now simply league-combo → global.) Per-league combo overrides stay
-dormant until that RPC is updated to bit(A)+bit(B)+bit(C); the global table covers all
-combos meanwhile.
+`comboFromSignals()` returns a **2-char string**: bit(A) + bit(B).
+e.g. "11" = A+B, "01" = B only, "10" = A only, "00" = neither.
+`applyLeagueProb()` uses this 2-char key, which **now matches** the Supabase
+`compute_league_combo_buckets()` RPC's 2-char key (it predates C) — so per-league combo
+overrides line up again (they fell back to global while the model carried the 3-char Signal-C
+key). The coarse per-league *rank* override was removed (PR #60), so the fallback chain is
+league-combo → global.
 
 ### Clean data — what to trust
 
@@ -300,6 +297,7 @@ the formula at a call site.
 
 | Signal (old) | Reason dropped |
 |--------------|---------------|
+| C — Team Mismatch (`\|net-FH gap\| ≥ 0.5`, season stats) | No live edge on full cohort (lift ~1.0); anti-additive with B (B+C below base rate). Directional split was marginal/rank-0-only — not worth the complexity. Removed 2026-06 → model is A+B only. |
 | E — Home Profile (`t1_pct≥25 & scored_fh≥0.94`, season stats) | Replaced by last-5 form model (A+B); the A+E setup was the prior generation |
 | Old B — Attack vs Leak (`hF>1.0 & aA>1.0`) | n=19 on clean data, too thin |
 | Old C — Both Scoring (`hF>0.8 & aF>0.8`) | Below baseline on clean data (36.4% FH>1.5 vs 38.1% base) |
@@ -424,10 +422,10 @@ All learning that needs to survive restarts must use Supabase.
 - The app handles rate limiting gracefully by serving cached data — preserve
   this behavior in all modifications
 - `PREV_SEASON` mappings need manual updates when new seasons start
-- **Signals A and B use last-5 FH form** read from `snap.l5`; **Signal C uses season
-  stats** (`scored_fh`/`conced_fh`) from `snap.home`/`snap.away`. When `snap.l5` is absent,
-  A and B can't fire but **C still can** (it reads season stats), so rank may be 1 (combo
-  `001`) on thin leagues. `computeSignals(snap, hLast5, aLast5)` reads both directly.
+- **Signals A and B use last-5 FH form** read from `snap.l5`. When `snap.l5` is absent
+  (thin leagues), neither can fire → combo `00`, rank 0. `computeSignals(snap, hLast5, aLast5)`
+  reads `snap.l5` directly. (Signal C, which read season stats and could fire when `l5` was
+  null, was removed — see the Signals section and Deprecated.)
 - **`snap.l5` is self-reconstructed only** (from `LEAGUE_MATCHES_CACHE`). There is **no
   native FootyStats last-5 HT stat** to fall back on — `scoredAVGHT_*_5` fields do not
   exist in the team-stats API (verified via `/debug-raw-api` verdict). When the cache is
@@ -437,12 +435,11 @@ All learning that needs to survive restarts must use Supabase.
   for thin leagues. Not yet a live signal; being calibrated via `/prematch-mine` as a
   fallback for when `l5` is null. Backfill historical rows with `/admin/backfill-prematch`
   (additive — merges only a `prematch` sub-object into snap, never touches l5/home/away).
-- **Signal letters are reused across generations.** The current production Signal C is
-  **Team Mismatch** (season net-FH *rating gap* ≥ 0.5). Do NOT confuse it with the *dropped*
-  old "Signal C — Both Scoring" (`hF>0.8 & aF>0.8`, below-baseline — see Deprecated) or with
-  the dropped season-stat **Signal E** (Home Profile, `t1_pct`/`scored_fh` *levels*). Today's
-  C is a *difference* between the two teams, validated as a rank-0 rescue (`/signalc-validate`,
-  `/mismatch-holdout`) — it is a different construct from the level-based E.
+- **Signal C (Team Mismatch) was removed (2026-06)** — no live edge on the full cohort and
+  anti-additive with B (see the Signals section). The production model is A + B only. Don't
+  re-wire C without fresh out-of-sample validation that the *directional* version (home-stronger
+  helps / away-stronger fades) clears base rate on a held-out split; the absolute-gap version
+  is dead. `/signalc-validate` and `/mismatch-holdout` still compute it from `snap` for that check.
 - **Do NOT reintroduce the old level-based Signal E** (`t1_pct`/`scored_fh` levels), the old
   "Both Scoring"/"Both Open"/"Attack vs Leak" signals, or Signal D — all dropped on clean data
   for thin samples / below-baseline lift. See "Deprecated / removed signals".
@@ -452,8 +449,8 @@ All learning that needs to survive restarts must use Supabase.
   threshold recalibration or model retraining
 - **Match ordering is probability-first**: `prob25 → prob15 → ci → rank` (in `computePreds`
   and the client day / best-bets sorts). The per-combo calibrated probability is the source
-  of truth — because Signal C is anti-additive, rank count can disagree (a rank-2 `011` can
-  sort below a rank-1 `010`). `ci`/`rank` are only tiebreakers now, not the primary key.
+  of truth. On the A+B table rank and probability agree (monotonic), so `ci`/`rank` are just
+  tiebreakers.
 - `computeSignals()` returns `ci` (combined intensity = `homeL5Total + awayL5Total`) and
   `defCi` (away last-5 FH total) — keep them in the return object, they feed display and the
   sort tiebreak
@@ -463,14 +460,14 @@ All learning that needs to survive restarts must use Supabase.
   `eligible15` remain as informational prob-tier flags only; nothing gates on them
   (`betPill` is signal-based).
 - The 🔥/🎯 badges (`betPill`) are **signal-based** (🔥 = A+B both fire, 🎯 = B fires),
-  not prob-based. **Signal C deliberately fires no betPill** — it reshapes the combo
-  probability and ranking only, so wiring C never minted new 🔥/🎯 bets.
-- `snap.l5` carries the last-5 inputs signals A and B use — preserve it in the snapshot path;
-  `snap.home`/`snap.away` `scored_fh`/`conced_fh` carry the inputs Signal C uses.
-- **combo string is 3 chars** (`bit(A) + bit(B) + bit(C)`) — do not revert to 2-char.
-  `comboFromSignals()` and `applyLeagueProb()` use it (the Supabase combo RPC still emits
-  2-char and falls back gracefully — see "combo string format").
+  not prob-based.
+- `snap.l5` carries the last-5 inputs signals A and B use — preserve it in the snapshot path.
+  `snap.home`/`snap.away` `scored_fh`/`conced_fh` are still captured (they feed the O1.5/O2.5
+  candidate `env_fh`), just no longer used by a core signal.
+- **combo string is 2 chars** (`bit(A) + bit(B)`) — matches the Supabase combo RPC's 2-char
+  key. `comboFromSignals()` and `applyLeagueProb()` use it. (Reverted from the 3-char Signal-C
+  key when C was removed — see "combo string format".)
 - **To realign stored rows with the current model**, use `/admin/recompute-signals`
-  (runs the real `computeSignals()`). The old `/admin/backfill-signal-d` route was
-  removed — it wrote a phantom Signal C and a 3-signal rank.
+  (runs the real `computeSignals()`). Run it after deploying the C-removal so stored combos,
+  ranks, and probs match the A+B model (old rows carry 3-char combos / C-based ranks).
 - **Backfill guard**: both admin upsert routes use `ignoreDuplicates: true` — do not remove this
