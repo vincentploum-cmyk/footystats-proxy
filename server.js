@@ -3,6 +3,8 @@ require("dotenv").config();
 const express = require("express");
 const cors    = require("cors");
 const fetch   = require("node-fetch");
+// Pre-game freeze contract (the integrity invariant) — single source of truth.
+const { computeOverCandidates, selectPregamePrediction } = require("./lib/freeze");
 
 const app  = express();
 app.use(cors());
@@ -183,25 +185,16 @@ async function loadFrozenSnapshots() {
     for (const r of (data || [])) {
       if (!r.match_id || CI_SNAPSHOT_CACHE[r.match_id]) continue;
       const rank = r.rank || 0;
-      // Recompute the O1.5/O2.5 candidate flags from the frozen PRE-GAME snap so they
-      // survive a restart (loadFrozenSnapshots previously dropped them → completed
-      // cards lost their pills). Reading the frozen snap = still pre-game, no look-ahead.
-      const sn = r.snap || {}, h = sn.home || {}, a = sn.away || {}, l5 = sn.l5 || {}, l5h = l5.home || {}, l5a = l5.away || {};
-      const n0 = (v) => { const x = Number(v); return Number.isFinite(x) ? x : 0; };
-      const r4 = (v) => Math.round(v * 1e4) / 1e4;
-      const envFh = r4(n0(h.scored_fh) + n0(h.conced_fh) + n0(a.scored_fh) + n0(a.conced_fh));
-      const l5Fh = r4(n0(l5h.f) + n0(l5a.f));
-      let p15 = Number(r.prob15) || 0, p25 = Number(r.prob25) || 0;
-      if (p15 > 0 && p15 < 1) p15 *= 100;
-      if (p25 > 0 && p25 < 1) p25 *= 100;
+      // Recompute candidate flags from the frozen PRE-GAME snap (single source of
+      // truth) so they survive a restart with no look-ahead.
+      const oc = computeOverCandidates(r.snap, r.prob15, r.prob25);
       CI_SNAPSHOT_CACHE[r.match_id] = {
         ci: Number(r.ci) || 0, defCi: Number(r.def_ci) || 0,
         rank, label: RANK_LABELS[rank] || "Low",
         prob25: Number(r.prob25) || 0, prob15: Number(r.prob15) || 0,
         probSource: "frozen", probSampleN: 0, probCombo: null,
         eligible: rank >= 2, signals: r.signals || {}, snap: r.snap || null,
-        ov15Candidate: envFh >= 2.60 && l5Fh >= 1.4 && p15 >= 38,
-        ov25Candidate: envFh >= 2.85 && l5Fh >= 1.6 && p25 >= 14.5,
+        ov15Candidate: oc.ov15Candidate, ov25Candidate: oc.ov25Candidate,
       };
       n++;
     }
@@ -758,16 +751,9 @@ function computeSignals(snap, hLast5, aLast5) {
   const rank = prob15 >= 45 ? 3 : prob15 >= 40 ? 2 : prob15 >= 30 ? 1 : 0;
 
   // ── Over-1.5 / Over-2.5 first-half CANDIDATE signals ──────────────────────
-  // Three pre-game checks, all must clear: (1) combined season FH environment
-  // env_fh = both teams' scored_fh + conced_fh, (2) recent FH scoring l5_fh =
-  // home+away last-5 FH scored, (3) the model probability. Detects FH over-goal
-  // candidates independently of the A/B/C combo. Thresholds tuned per market.
-  const r4 = (v) => Math.round(v * 1e4) / 1e4;  // absorb binary-float drift at the boundary
-  const homeL5Scored = snap && snap.l5 && snap.l5.home ? (snap.l5.home.f || 0) : 0;
-  const envFh = r4((hSF || 0) + (hCF || 0) + (aSF || 0) + (aCF || 0));
-  const l5Fh  = r4(homeL5Scored + awayL5Scored);
-  const ov15Candidate = envFh >= 2.60 && l5Fh >= 1.4 && prob15 >= 38;
-  const ov25Candidate = envFh >= 2.85 && l5Fh >= 1.6 && prob25 >= 14.5;
+  // Detect FH over-goal candidates from pre-game inputs only (see lib/freeze.js,
+  // the single source of truth shared with the restore + calibration paths).
+  const { envFh, l5Fh, ov15Candidate, ov25Candidate } = computeOverCandidates(snap, prob15, prob25);
 
   return {
     rank,
@@ -1871,10 +1857,8 @@ app.get("/calibration", async (req, res) => {
     let total = { n: 0, hit25: 0, hit15: 0, sumP25: 0, sumP15: 0 };
     // Normalize prob to percentage: old rows stored as 11.5, new rows as 0.115
     const toPct = (v) => { const n = Number(v || 0); return n > 0 && n < 1 ? n * 100 : n; };
-    // O1.5 / O2.5 candidate flags recomputed inline from snap+prob (same rule as
-    // computeSignals), so this covers the full history without needing a recompute.
-    const num0 = (v) => { const n = Number(v); return Number.isFinite(n) ? n : 0; };
-    const r4 = (v) => Math.round(v * 1e4) / 1e4;
+    // O1.5 / O2.5 candidate split via lib/freeze.js (single source of truth),
+    // recomputed from each row's snap so it covers the full history.
     const cand = { ov15: { play: { n: 0, hit: 0 }, skip: { n: 0, hit: 0 } },
                    ov25: { play: { n: 0, hit: 0 }, skip: { n: 0, hit: 0 } } };
     for (const m of all) {
@@ -1898,12 +1882,9 @@ app.get("/calibration", async (req, res) => {
       if (m.hit_15) byCombo[combo].hit15++;
       byCombo[combo].sumP25 += p25;
       byCombo[combo].sumP15 += p15;
-      // O1.5 / O2.5 candidate split (same thresholds as the live signal).
-      const sn = m.snap || {}, h = sn.home || {}, a = sn.away || {}, l5 = sn.l5 || {}, l5h = l5.home || {}, l5a = l5.away || {};
-      const envFh = r4(num0(h.scored_fh) + num0(h.conced_fh) + num0(a.scored_fh) + num0(a.conced_fh));
-      const l5Fh = r4(num0(l5h.f) + num0(l5a.f));
-      const ov15 = envFh >= 2.60 && l5Fh >= 1.4 && p15 >= 38;
-      const ov25 = envFh >= 2.85 && l5Fh >= 1.6 && p25 >= 14.5;
+      // O1.5 / O2.5 candidate split — single source of truth (lib/freeze.js).
+      const oc = computeOverCandidates(m.snap, m.prob15, m.prob25);
+      const ov15 = oc.ov15Candidate, ov25 = oc.ov25Candidate;
       (ov15 ? cand.ov15.play : cand.ov15.skip).n++;
       if (m.hit_15) (ov15 ? cand.ov15.play : cand.ov15.skip).hit++;
       (ov25 ? cand.ov25.play : cand.ov25.skip).n++;
@@ -2210,6 +2191,13 @@ app.get("/history", async (req, res) => {
       b.expected25 = b.n ? +(b.expSum25 / b.n).toFixed(1) : 0;
       b.expected15 = b.n ? +(b.expSum15 / b.n).toFixed(1) : 0;
       delete b.expSum25; delete b.expSum15;
+    }
+    // Attach candidate flags server-side (single source of truth) so the client
+    // doesn't re-derive them — recomputed from each row's frozen pre-game snap.
+    for (const m of all) {
+      const oc = computeOverCandidates(m.snap, m.prob15, m.prob25);
+      m.ov15Candidate = oc.ov15Candidate;
+      m.ov25Candidate = oc.ov25Candidate;
     }
     res.json({
       ok: true,
@@ -2632,7 +2620,7 @@ async function computePreds(tzOffset) {
         // computable after the window's earlier games were cached), do NOT fall back to
         // the live `result` — that's recomputed from current, post-match data, i.e.
         // look-ahead. Use the live result only while the match is still upcoming.
-        const pre = frozen || (!isComplete ? result : null);
+        const pre = selectPregamePrediction(frozen, result, isComplete);
         const liveSnap = snap ? {
           fetchedAt: snap.fetchedAt,
           home: { name: snap.home.name, scored_fh: snap.home.scored_fh, conced_fh: snap.home.conced_fh, t1_pct: snap.home.t1_pct, cn010_avg: snap.home.cn010_avg, sot_avg: snap.home.sot_avg, ...(snap.home.xt ? { xt: snap.home.xt } : {}) },
@@ -4963,12 +4951,7 @@ body{background:#f3f4f6;font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',
   J += "    var dStr=m.date_unix?new Date(m.date_unix*1000).toISOString().slice(0,10):'';";
   J += "    var sigs=m.signals||{};";
   J += "    var sigStr=['A','B','C'].map(function(k){return sigs[k]&&sigs[k].met?k:'\u00b7';}).join('');";
-  J += "    var sn=m.snap||{},hh=sn.home||{},aa=sn.away||{},l5=sn.l5||{},l5h=l5.home||{},l5a=l5.away||{};";
-  J += "    var n0=function(v){var x=Number(v);return isFinite(x)?x:0;};";
-  J += "    var envFh=Math.round((n0(hh.scored_fh)+n0(hh.conced_fh)+n0(aa.scored_fh)+n0(aa.conced_fh))*1e4)/1e4;";
-  J += "    var l5Fh=Math.round((n0(l5h.f)+n0(l5a.f))*1e4)/1e4;";
-  J += "    var p15=Number(m.prob15)||0,p25=Number(m.prob25)||0;if(p15>0&&p15<1)p15*=100;if(p25>0&&p25<1)p25*=100;";
-  J += "    var ov15=envFh>=2.6&&l5Fh>=1.4&&p15>=38,ov25=envFh>=2.85&&l5Fh>=1.6&&p25>=14.5;";
+  J += "    var ov15=!!m.ov15Candidate,ov25=!!m.ov25Candidate;";  // server-computed (lib/freeze.js)
   J += "    var cb=function(lbl,hit){return '<span style=\"display:inline-block;background:'+(hit?'#15803d':'#b91c1c')+';color:#fff;font-size:10px;font-weight:700;padding:2px 6px;border-radius:5px\">'+lbl+(hit?' \u2713':' \u2717')+'</span>';};";
   J += "    var leftH=(ov25?cb('O2.5',!!m.hit_25):'')+(ov15?cb('O1.5',!!m.hit_15):'')+betPill({prob25:Number(m.prob25)||0,prob15:Number(m.prob15)||0,eligible25:!!m.eligible25,eligible15:!!m.eligible15,snap:m.snap,signals:m.signals});";
   J += "    h+='<div class=\"hist-row\" data-mid=\"'+m.match_id+'\" style=\"cursor:pointer;background:#fff;border:1px solid #e5e7eb;border-radius:8px;padding:10px 12px;display:flex;gap:10px;align-items:center;font-size:12px;margin-bottom:6px\">';";
