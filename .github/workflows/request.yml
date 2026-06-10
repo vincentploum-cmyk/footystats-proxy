@@ -6,11 +6,12 @@ on:
     # and GitHub Actions cron is "best effort" (can be delayed several minutes
     # under load), so we run more frequently than the spin-down threshold.
     - cron: '*/10 * * * *'
+  workflow_dispatch:
 
 jobs:
   request:
     runs-on: ubuntu-latest
     steps:
+      - uses: actions/checkout@v4
       - name: Ping Render
-        run: |
-          curl -fsS --max-time 30 https://footystats-proxy.onrender.com/cache-status > /dev/null || true
+        run: ./scripts/keep-awake.sh
