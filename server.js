@@ -183,12 +183,25 @@ async function loadFrozenSnapshots() {
     for (const r of (data || [])) {
       if (!r.match_id || CI_SNAPSHOT_CACHE[r.match_id]) continue;
       const rank = r.rank || 0;
+      // Recompute the O1.5/O2.5 candidate flags from the frozen PRE-GAME snap so they
+      // survive a restart (loadFrozenSnapshots previously dropped them → completed
+      // cards lost their pills). Reading the frozen snap = still pre-game, no look-ahead.
+      const sn = r.snap || {}, h = sn.home || {}, a = sn.away || {}, l5 = sn.l5 || {}, l5h = l5.home || {}, l5a = l5.away || {};
+      const n0 = (v) => { const x = Number(v); return Number.isFinite(x) ? x : 0; };
+      const r4 = (v) => Math.round(v * 1e4) / 1e4;
+      const envFh = r4(n0(h.scored_fh) + n0(h.conced_fh) + n0(a.scored_fh) + n0(a.conced_fh));
+      const l5Fh = r4(n0(l5h.f) + n0(l5a.f));
+      let p15 = Number(r.prob15) || 0, p25 = Number(r.prob25) || 0;
+      if (p15 > 0 && p15 < 1) p15 *= 100;
+      if (p25 > 0 && p25 < 1) p25 *= 100;
       CI_SNAPSHOT_CACHE[r.match_id] = {
         ci: Number(r.ci) || 0, defCi: Number(r.def_ci) || 0,
         rank, label: RANK_LABELS[rank] || "Low",
         prob25: Number(r.prob25) || 0, prob15: Number(r.prob15) || 0,
         probSource: "frozen", probSampleN: 0, probCombo: null,
         eligible: rank >= 2, signals: r.signals || {}, snap: r.snap || null,
+        ov15Candidate: envFh >= 2.60 && l5Fh >= 1.4 && p15 >= 38,
+        ov25Candidate: envFh >= 2.85 && l5Fh >= 1.6 && p25 >= 14.5,
       };
       n++;
     }
