@@ -1549,8 +1549,11 @@ app.get("/admin/backfill-results", async (req, res) => {
 
   const dryRun = req.query.dryRun === "1";
   const limit = Math.max(1, Math.min(1000, parseInt(req.query.limit || "300", 10)));
-  // recheckZeros: re-resolve rows already stored as 0-0 (the premature-completion
-  // false misses — see isResultFinal). Default mode resolves only hit_25 IS NULL.
+  // recheckZeros: re-resolve rows whose stored HALF-TIME score is 0-0 — these are the
+  // suspect ones for hit_15/hit_25 (both derived from the HT total). Covers BOTH the
+  // premature-completion 0-0s (FT also 0-0) AND rows where FootyStats had the FT right
+  // but the HT missing/0-0 (e.g. USL2: FT 5-2 but HT recorded 0-0, real HT 3-0). Only
+  // corrects rows whose re-fetched HT is now non-zero. Default mode resolves hit_25 IS NULL.
   const recheckZeros = req.query.recheckZeros === "1";
   const t0 = Date.now();
 
@@ -1561,13 +1564,13 @@ app.get("/admin/backfill-results", async (req, res) => {
     for (let off = 0; ; off += PAGE) {
       let q = supabase
         .from("match_results")
-        .select("match_id, competition_id, date_unix, ft_home, ft_away")
+        .select("match_id, competition_id, date_unix, ht_home, ht_away")
         .gte("date_unix", cutoffSec)
         .not("snap", "is", null)
         .not("snap->>fetchedAt", "eq", "historical-import")
         .not("snap->>fetchedAt", "eq", "backfill")
         .range(off, off + PAGE - 1);
-      q = recheckZeros ? q.eq("ft_home", 0).eq("ft_away", 0) : q.is("hit_25", null);
+      q = recheckZeros ? q.eq("ht_home", 0).eq("ht_away", 0) : q.is("hit_25", null);
       const { data, error } = await q;
       if (error) throw error;
       if (!data || data.length === 0) break;
@@ -1582,9 +1585,9 @@ app.get("/admin/backfill-results", async (req, res) => {
       for (let off = 0; ; off += PAGE) {
         const { data, error } = await supabase
           .from("match_results")
-          .select("match_id, competition_id, date_unix, ft_home, ft_away")
+          .select("match_id, competition_id, date_unix, ht_home, ht_away")
           .is("snap", null)
-          .eq("ft_home", 0).eq("ft_away", 0)
+          .eq("ht_home", 0).eq("ht_away", 0)
           .gte("date_unix", cutoffSec)
           .range(off, off + PAGE - 1);
         if (error) throw error;
@@ -1657,10 +1660,11 @@ app.get("/admin/backfill-results", async (req, res) => {
         // Only record genuinely-final results (same freeze gate as computePreds): a 0-0
         // `incomplete` match isn't final, so we never write a placeholder 0-0 / false MISS.
         if (!isResultFinal(m.status, isPlayedMatch(m, nowSecs), ftH + ftA)) { notPlayed++; continue; }
-        // recheckZeros: the stored row is 0-0. Only correct it if the league-matches
-        // score is now non-zero (the real result has since posted) — leave genuine
-        // 0-0s untouched. This is what un-poisons the premature-completion false misses.
-        if (recheckZeros && (ftH + ftA) === 0) { stillZero++; continue; }
+        // recheckZeros: the stored row has a 0-0 HALF-TIME. Only correct it if the
+        // re-fetched HT is now non-zero — leave genuine 0-0 HTs untouched. This un-poisons
+        // both the premature-completion 0-0s and the FT-right-but-HT-missing rows (the hit
+        // flags come from the HT total, so a wrong 0-0 HT is the actual false-MISS source).
+        if (recheckZeros && (fhH + fhA) === 0) { stillZero++; continue; }
         const fhTotal = fhH + fhA;
         const { error } = await supabase.from("match_results").update({
           ht_home: fhH, ht_away: fhA, ft_home: ftH, ft_away: ftA,
