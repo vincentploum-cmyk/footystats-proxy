@@ -272,7 +272,7 @@ This is the most important rule in the codebase: **a prediction shown for a comp
 match must be exactly what was frozen before kickoff — never recomputed from current
 (post-match) data.** Violating it silently inflates the very hit rates we bet on.
 
-Two pure functions in **`lib/freeze.js`** are the single source of truth, used by the
+Three pure functions in **`lib/freeze.js`** are the single source of truth, used by the
 live engine (`computeSignals`), the snapshot restore (`loadFrozenSnapshots`), and the
 `/calibration` + `/history` readouts — kept in one place so these paths can't drift
 apart (a past drift wiped the candidate pills on restart):
@@ -282,6 +282,13 @@ apart (a past drift wiped the candidate pills on restart):
   Completed + never-frozen → `null` (shown as no-stats, NOT a post-game recompute).
 - `computeOverCandidates(snap, prob15, prob25)` — O1.5/O2.5 candidate flags from
   pre-game inputs only (env_fh, l5_fh, prob); the match result is never an input.
+- `isResultFinal(status, isPlayed, ftGoals)` — gates when a match counts as final
+  (recordable). `complete` → final; `incomplete` → final **only** if played AND it has a
+  posted score (`ftGoals > 0`). A 0-0 `incomplete` match is "score not posted yet", so it
+  stays pending — never lock in a placeholder 0-0 / false MISS (it can't be overwritten
+  later, since `/admin/backfill-results` only touches `hit_25 IS NULL`). `computePreds`'
+  `isComplete` flows through this, so it gates both the result display and persistence.
+  Already-poisoned 0-0 rows are re-resolved with `/admin/backfill-results?recheckZeros=1`.
 
 **`scripts/test_freeze.js` (`npm test`) locks these invariants** — run it before any
 change near the freeze/snapshot/candidate paths; it fails loudly if look-ahead returns.
@@ -354,7 +361,7 @@ for the last timer run.
 | `GET /admin/export-dataset` | CSV/JSON | Flat one-row-per-match export of the clean live cohort (all pre-game features + l5 + prematch + signals/combo/rank + results) for offline analysis — gated; `?format=json` |
 | `GET /supabase-status` | JSON | Supabase connection + persistence + self-capture status |
 | `GET /debug-raw-api?sid=N` | JSON | Raw FootyStats fields for a season + `verdict` on pre-match predictor availability |
-| `GET /admin/backfill-results` | JSON | Resolve pending rows (snap frozen, no result) from league-matches scores — gated; `dryRun=1` / `limit=N` |
+| `GET /admin/backfill-results` | JSON | Resolve pending rows (snap frozen, no result) from league-matches scores — gated; `dryRun=1` / `limit=N`. `recheckZeros=1` re-resolves rows already stored as 0-0 (premature-completion false misses) against current scores — only corrects rows whose real score is now non-zero |
 | `GET /admin/backfill-prematch` | JSON | Merge `snap.prematch` predictors onto live rows from league-matches — gated; additive, never touches l5/signals; `dryRun=1` / `limit=N` |
 | `GET /api/*` | JSON | Passthrough proxy — gated by `LOAD_DATASET_TOKEN` (fails closed if unset) |
 | `GET /admin/*` | JSON | Dataset load / backfill / recalibrate — gated by `LOAD_DATASET_TOKEN` (fails closed if unset) |

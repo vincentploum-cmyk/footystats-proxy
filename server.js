@@ -4,7 +4,7 @@ const express = require("express");
 const cors    = require("cors");
 const fetch   = require("node-fetch");
 // Pre-game freeze contract (the integrity invariant) — single source of truth.
-const { computeOverCandidates, selectPregamePrediction } = require("./lib/freeze");
+const { computeOverCandidates, selectPregamePrediction, isResultFinal } = require("./lib/freeze");
 
 const app  = express();
 app.use(cors());
@@ -1534,6 +1534,9 @@ app.get("/admin/backfill-results", async (req, res) => {
 
   const dryRun = req.query.dryRun === "1";
   const limit = Math.max(1, Math.min(1000, parseInt(req.query.limit || "300", 10)));
+  // recheckZeros: re-resolve rows already stored as 0-0 (the premature-completion
+  // false misses — see isResultFinal). Default mode resolves only hit_25 IS NULL.
+  const recheckZeros = req.query.recheckZeros === "1";
   const t0 = Date.now();
 
   try {
@@ -1541,15 +1544,16 @@ app.get("/admin/backfill-results", async (req, res) => {
     const PAGE = 300;
     const cutoffSec = Math.floor(Date.now() / 1000) - 365 * 86400;
     for (let off = 0; ; off += PAGE) {
-      const { data, error } = await supabase
+      let q = supabase
         .from("match_results")
-        .select("match_id, competition_id, date_unix")
-        .is("hit_25", null)
+        .select("match_id, competition_id, date_unix, ft_home, ft_away")
         .gte("date_unix", cutoffSec)
         .not("snap", "is", null)
         .not("snap->>fetchedAt", "eq", "historical-import")
         .not("snap->>fetchedAt", "eq", "backfill")
         .range(off, off + PAGE - 1);
+      q = recheckZeros ? q.eq("ft_home", 0).eq("ft_away", 0) : q.is("hit_25", null);
+      const { data, error } = await q;
       if (error) throw error;
       if (!data || data.length === 0) break;
       pending.push(...data);
@@ -1580,7 +1584,7 @@ app.get("/admin/backfill-results", async (req, res) => {
       byComp[r.competition_id].push(r);
     }
 
-    let processed = 0, written = 0, notPlayed = 0, notFound = 0, noFhData = 0, errs = 0;
+    let processed = 0, written = 0, notPlayed = 0, notFound = 0, noFhData = 0, errs = 0, stillZero = 0;
     const errors = [];
 
     for (const [compId, rs] of Object.entries(byComp)) {
@@ -1607,13 +1611,19 @@ app.get("/admin/backfill-results", async (req, res) => {
         processed++;
         const m = byId[String(r.match_id)];
         if (!m) { notFound++; continue; }
-        if (!isPlayedMatch(m, nowSecs)) { notPlayed++; continue; }
         const fhH = parseInt(m.ht_goals_team_a, 10);
         const fhA = parseInt(m.ht_goals_team_b, 10);
         // API returns -1 for unavailable HT data — can't compute a hit, skip.
         if (!(fhH >= 0) || !(fhA >= 0)) { noFhData++; continue; }
         const ftH = parseInt(m.homeGoalCount || 0, 10);
         const ftA = parseInt(m.awayGoalCount || 0, 10);
+        // Only record genuinely-final results (same freeze gate as computePreds): a 0-0
+        // `incomplete` match isn't final, so we never write a placeholder 0-0 / false MISS.
+        if (!isResultFinal(m.status, isPlayedMatch(m, nowSecs), ftH + ftA)) { notPlayed++; continue; }
+        // recheckZeros: the stored row is 0-0. Only correct it if the league-matches
+        // score is now non-zero (the real result has since posted) — leave genuine
+        // 0-0s untouched. This is what un-poisons the premature-completion false misses.
+        if (recheckZeros && (ftH + ftA) === 0) { stillZero++; continue; }
         const fhTotal = fhH + fhA;
         const { error } = await supabase.from("match_results").update({
           ht_home: fhH, ht_away: fhA, ft_home: ftH, ft_away: ftA,
@@ -1633,13 +1643,16 @@ app.get("/admin/backfill-results", async (req, res) => {
 
     res.json({
       ok: errs === 0,
+      mode: recheckZeros ? "recheck-zeros" : "pending",
       pendingTotal: pending.length,
       resolvableCandidates: resolvable.length,
-      processed, written, notPlayed, notFound, noFhData, errs,
+      processed, written, notPlayed, notFound, noFhData, stillZero, errs,
       remaining: resolvable.length - processed,
       elapsedMs: Date.now() - t0,
       errors,
-      note: "Resolved pending rows from league-matches final scores. Only result fields written; snap/signals/rank preserved. Re-run until remaining hits 0.",
+      note: recheckZeros
+        ? "Re-resolved rows stored as 0-0 against current league-matches scores. Only rows whose real score is now non-zero were corrected (stillZero = left untouched). Only result fields written; snap/signals/rank preserved."
+        : "Resolved pending rows from league-matches final scores. Only result fields written; snap/signals/rank preserved. Re-run until remaining hits 0.",
     });
   } catch (e) {
     res.status(500).json({ ok: false, error: e.message });
@@ -2577,11 +2590,15 @@ async function computePreds(tzOffset) {
         // Phase 2: override prob25/prob15 with league-specific values when n>=30
         if (result) applyLeagueProb(result, parseInt(sid, 10));
 
-        const isComplete = fix.status === "complete" || (fix.status === "incomplete" && isPlayedMatch(fix, nowSecs));
         const fhH = parseInt(fix.ht_goals_team_a || 0, 10);
         const fhA = parseInt(fix.ht_goals_team_b || 0, 10);
         const ftH = parseInt(fix.homeGoalCount   || 0, 10);
         const ftA = parseInt(fix.awayGoalCount   || 0, 10);
+        // A match counts as final (recordable) only via the freeze contract: `complete`
+        // status, OR `incomplete` + past kickoff + a POSTED score. A 0-0 `incomplete`
+        // match is "score not posted yet" — it stays pending so we never lock in a
+        // placeholder 0-0 / false MISS (see lib/freeze.js isResultFinal).
+        const isComplete = isResultFinal(fix.status, isPlayedMatch(fix, nowSecs), ftH + ftA);
 
         // l5snap = whatever snap.l5 was set to: self-reconstructed or native API fallback.
         const l5snap = snap ? snap.l5 : null;

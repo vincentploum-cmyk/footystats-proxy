@@ -2,7 +2,7 @@
 // Locks the pre-game freeze contract (lib/freeze.js). If any change re-introduces
 // look-ahead, this fails. Run: `node scripts/test_freeze.js` (or `npm test`).
 const assert = require("assert");
-const { computeOverCandidates, selectPregamePrediction } = require("../lib/freeze");
+const { computeOverCandidates, selectPregamePrediction, isResultFinal } = require("../lib/freeze");
 
 let failures = 0;
 function check(name, fn) {
@@ -63,6 +63,18 @@ check("missing snap -> no candidates, no throw", () => {
   const oc = computeOverCandidates(null, 50, 20);
   assert.ok(!oc.ov15Candidate && !oc.ov25Candidate);
 });
+
+// ── isResultFinal — don't record a placeholder 0-0 ──────────────────────────
+check("complete status is always final (even 0-0)", () =>
+  assert.strictEqual(isResultFinal("complete", false, 0), true));
+check("incomplete + played + posted score -> final", () =>
+  assert.strictEqual(isResultFinal("incomplete", true, 2), true));
+check("incomplete + played + 0-0 -> NOT final (score not posted yet)", () =>
+  assert.strictEqual(isResultFinal("incomplete", true, 0), false));
+check("incomplete + NOT played (upcoming) -> NOT final, even with a score", () =>
+  assert.strictEqual(isResultFinal("incomplete", false, 3), false));
+check("unknown/suspended status -> NOT final", () =>
+  assert.strictEqual(isResultFinal("suspended", true, 4), false));
 
 if (failures) { console.error("\n" + failures + " freeze-invariant test(s) FAILED"); process.exit(1); }
 console.log("\nAll freeze-invariant tests passed.");
