@@ -499,6 +499,15 @@ async function fetchLeagueMatches(sid) {
   return data;
 }
 
+// Single match by id — fallback for backfill when a row's match isn't in the
+// league-matches window (stale competition_id / older season). Uncached, one-off
+// use; safeFetch handles rate limiting (returns null when limited). FootyStats
+// returns the match object in `data`.
+async function fetchMatch(matchId) {
+  const res = await safeFetch(BASE + "/match?match_id=" + matchId + "&key=" + KEY);
+  return res && res.data ? res.data : null;
+}
+
 async function fetchTeamStats(sid) {
   const now = Date.now();
   if (TEAM_STATS_CACHE[sid] && (now - TEAM_STATS_CACHE[sid].ts) < TTL_TEAMS) return TEAM_STATS_CACHE[sid].data;
@@ -1559,6 +1568,25 @@ app.get("/admin/backfill-results", async (req, res) => {
       pending.push(...data);
       if (data.length < PAGE) break;
     }
+    // recheckZeros also covers no-stats rows (null snap): they don't pollute the
+    // cohort (calibration requires a snap) but a wrong 0-0 can still show in History.
+    // Null snaps can't be historical-import/backfill (those carry a snap), so no
+    // fetchedAt filter is needed here.
+    if (recheckZeros) {
+      for (let off = 0; ; off += PAGE) {
+        const { data, error } = await supabase
+          .from("match_results")
+          .select("match_id, competition_id, date_unix, ft_home, ft_away")
+          .is("snap", null)
+          .eq("ft_home", 0).eq("ft_away", 0)
+          .gte("date_unix", cutoffSec)
+          .range(off, off + PAGE - 1);
+        if (error) throw error;
+        if (!data || data.length === 0) break;
+        pending.push(...data);
+        if (data.length < PAGE) break;
+      }
+    }
     // Only rows we can locate (have competition_id) and whose kickoff has passed
     // by > 2h (same played-threshold as isPlayedMatch) — future matches stay pending.
     const nowSecs = Math.floor(Date.now() / 1000);
@@ -1609,7 +1637,10 @@ app.get("/admin/backfill-results", async (req, res) => {
 
       for (const r of rs) {
         processed++;
-        const m = byId[String(r.match_id)];
+        let m = byId[String(r.match_id)];
+        // Fallback: row's match isn't in the league-matches window (stale season).
+        // Fetch it directly by id. safeFetch returns null while rate-limited.
+        if (!m && Date.now() >= RATE_LIMITED_UNTIL) m = await fetchMatch(r.match_id);
         if (!m) { notFound++; continue; }
         const fhH = parseInt(m.ht_goals_team_a, 10);
         const fhA = parseInt(m.ht_goals_team_b, 10);
