@@ -693,11 +693,17 @@ function derivePatternContext(pred) {
   if (Number(pred && pred.prob25) <= 5.4) { score25 -= 2; pushUnique(cautions, "weak calibrated 2.5 bucket"); }
   if (pmO15 != null && pmO15 <= 27) { score15 -= 1; score25 -= 1; pushUnique(cautions, "cold prematch over 1.5 signal"); }
 
+  // The "Strong/Live setup" tags are a soft, uncalibrated pattern heuristic — only
+  // surface them when the calibrated candidate pill for that market also fires, so the
+  // badge can never claim "strong" on a match the model rates at base rate (the pattern
+  // score still feeds sorting via score15/score25; only the visible badge is gated).
+  const o15Fires = !!(pred && pred.ov15Candidate);
+  const o25Fires = !!(pred && pred.ov25Candidate);
   return {
     score15,
     score25,
-    tag15: score15 >= 5 ? "Strong 1.5 setup" : (score15 >= 3 ? "Live 1.5 setup" : ""),
-    tag25: score25 >= 6 ? "Strong 2.5 setup" : (score25 >= 4 ? "Live 2.5 setup" : ""),
+    tag15: o15Fires ? (score15 >= 5 ? "Strong 1.5 setup" : (score15 >= 3 ? "Live 1.5 setup" : "")) : "",
+    tag25: o25Fires ? (score25 >= 6 ? "Strong 2.5 setup" : (score25 >= 4 ? "Live 2.5 setup" : "")) : "",
     cautionTag: cautions.length && (score15 <= 0 || score25 <= 0) ? "Caution trap" : "",
     reasons15: reasons15.slice(0, 3),
     reasons25: reasons25.slice(0, 3),
