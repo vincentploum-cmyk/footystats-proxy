@@ -923,6 +923,13 @@ app.get("/supabase-status", (req, res) => {
 // Recomputes rank using current 4-signal logic so historical data matches runtime.
 const WOMENS_LEAGUE_IDS = new Set([15020, 16037, 16046, 16563]);
 
+// USL leagues (USA) are ALWAYS excluded from the analysis cohort — FootyStats has no
+// reliable half-time data for them, which produced false 0-0 HT misses (the HT can't be
+// recovered from the API). Matched by name so it catches every USL tier (Championship /
+// League One / League Two / W / Super League) without hardcoding each competition_id.
+// (Unlike the women's exclusion, this is unconditional — it's a data-quality drop.)
+const isExcludedCohortLeague = (leagueName) => /\bUSL\b/i.test(String(leagueName || ""));
+
 function parseCsvDataset(buf) {
   const text = buf.toString("utf8");
   // Character-level RFC-4180 parse: handles quoted commas, escaped quotes (""),
@@ -1783,7 +1790,7 @@ app.get("/floor-test", async (req, res) => {
     const PAGE = 1000;
     for (let off = 0; ; off += PAGE) {
       let qq = supabase.from("match_results")
-        .select("competition_id, prob15, ci, def_ci, hit_25, snap")
+        .select("competition_id, prob15, ci, def_ci, hit_25, snap, league_name")
         .not("hit_25", "is", null).not("snap", "is", null)
         .not("snap->>fetchedAt", "eq", "historical-import")
         .not("snap->>fetchedAt", "eq", "backfill");
@@ -1796,7 +1803,7 @@ app.get("/floor-test", async (req, res) => {
     }
     const rows = all.filter(m => {
       const fa = m.snap && m.snap.fetchedAt ? String(m.snap.fetchedAt) : "";
-      return !fa.includes("(from history)");
+      return !fa.includes("(from history)") && !isExcludedCohortLeague(m.league_name);  // drop USL (no reliable HT)
     });
     const toPct = (v) => { const n = Number(v || 0); return n > 0 && n < 1 ? n * 100 : n; };
     const feat = (m) => {
@@ -1881,7 +1888,7 @@ app.get("/calibration", async (req, res) => {
     for (let off = 0; ; off += PAGE) {
       let q = supabase
         .from("match_results")
-        .select("rank, prob25, prob15, hit_25, hit_15, signals, snap, competition_id")
+        .select("rank, prob25, prob15, hit_25, hit_15, signals, snap, competition_id, league_name")
         .not("hit_25", "is", null)
         .not("snap", "is", null)
         .not("snap->>fetchedAt", "eq", "historical-import")
@@ -1892,7 +1899,7 @@ app.get("/calibration", async (req, res) => {
       const { data, error } = await q.range(off, off + PAGE - 1);
       if (error) throw error;
       if (!data || data.length === 0) break;
-      all.push(...data);
+      all.push(...data.filter(r => !isExcludedCohortLeague(r.league_name)));  // drop USL (no reliable HT)
       if (data.length < PAGE) break;
     }
     const byRank = {};
@@ -2007,7 +2014,7 @@ app.get("/signal-backtest", async (req, res) => {
     for (let off = 0; ; off += PAGE) {
       let q = supabase
         .from("match_results")
-        .select("rank, prob25, prob15, hit_25, hit_15, signals, snap, competition_id")
+        .select("rank, prob25, prob15, hit_25, hit_15, signals, snap, competition_id, league_name")
         .not("hit_25", "is", null)
         .not("snap", "is", null)
         .not("snap->>fetchedAt", "eq", "historical-import")
@@ -2018,7 +2025,7 @@ app.get("/signal-backtest", async (req, res) => {
       const { data, error } = await q.range(off, off + PAGE - 1);
       if (error) throw error;
       if (!data || data.length === 0) break;
-      all.push(...data);
+      all.push(...data.filter(r => !isExcludedCohortLeague(r.league_name)));  // drop USL (no reliable HT)
       if (data.length < PAGE) break;
     }
     const n = all.length;
@@ -2291,7 +2298,7 @@ app.get("/admin/export-dataset", async (req, res) => {
     }
     const rows = all.filter(m => {
       const fa = m.snap && m.snap.fetchedAt ? String(m.snap.fetchedAt) : "";
-      return !fa.includes("(from history)");
+      return !fa.includes("(from history)") && !isExcludedCohortLeague(m.league_name);  // drop USL (no reliable HT)
     });
 
     const num = (v) => (v == null || v === "" || isNaN(Number(v))) ? "" : Number(v);
@@ -2753,7 +2760,7 @@ app.get("/last5-mine", async (req, res) => {
     for (let off = 0; ; off += PAGE) {
       const { data, error } = await supabase
         .from("match_results")
-        .select("hit_25, hit_15, snap")
+        .select("hit_25, hit_15, snap, league_name")
         .not("hit_25", "is", null)
         .not("snap", "is", null)
         .not("snap->>fetchedAt", "eq", "historical-import")
@@ -2761,7 +2768,7 @@ app.get("/last5-mine", async (req, res) => {
         .range(off, off + PAGE - 1);
       if (error) throw error;
       if (!data || data.length === 0) break;
-      all.push(...data);
+      all.push(...data.filter(r => !isExcludedCohortLeague(r.league_name)));  // drop USL (no reliable HT)
       if (data.length < PAGE) break;
     }
     const cohortAll = all.length;
@@ -2857,7 +2864,7 @@ app.get("/prematch-mine", async (req, res) => {
     for (let off = 0; ; off += PAGE) {
       const { data, error } = await supabase
         .from("match_results")
-        .select("hit_25, hit_15, snap")
+        .select("hit_25, hit_15, snap, league_name")
         .not("hit_25", "is", null)
         .not("snap", "is", null)
         .not("snap->>fetchedAt", "eq", "historical-import")
@@ -2865,7 +2872,7 @@ app.get("/prematch-mine", async (req, res) => {
         .range(off, off + PAGE - 1);
       if (error) throw error;
       if (!data || data.length === 0) break;
-      all.push(...data);
+      all.push(...data.filter(r => !isExcludedCohortLeague(r.league_name)));  // drop USL (no reliable HT)
       if (data.length < PAGE) break;
     }
     const cohortAll = all.length;
@@ -2961,7 +2968,7 @@ app.get("/season-mine", async (req, res) => {
     for (let off = 0; ; off += PAGE) {
       const { data, error } = await supabase
         .from("match_results")
-        .select("hit_25, hit_15, date_unix, snap")
+        .select("hit_25, hit_15, date_unix, snap, league_name")
         .not("hit_25", "is", null)
         .not("snap", "is", null)
         .not("snap->>fetchedAt", "eq", "historical-import")
@@ -2969,7 +2976,7 @@ app.get("/season-mine", async (req, res) => {
         .range(off, off + PAGE - 1);
       if (error) throw error;
       if (!data || data.length === 0) break;
-      all.push(...data);
+      all.push(...data.filter(r => !isExcludedCohortLeague(r.league_name)));  // drop USL (no reliable HT)
       if (data.length < PAGE) break;
     }
     const cohort = all.filter(m => m.snap && m.snap.home && m.snap.away && m.date_unix);
@@ -3204,7 +3211,7 @@ app.get("/last5-rank0", async (req, res) => {
     for (let off = 0; ; off += PAGE) {
       const { data, error } = await supabase
         .from("match_results")
-        .select("hit_25, hit_15, snap")
+        .select("hit_25, hit_15, snap, league_name")
         .not("hit_25", "is", null)
         .not("snap", "is", null)
         .not("snap->>fetchedAt", "eq", "historical-import")
@@ -3212,7 +3219,7 @@ app.get("/last5-rank0", async (req, res) => {
         .range(off, off + PAGE - 1);
       if (error) throw error;
       if (!data || data.length === 0) break;
-      all.push(...data);
+      all.push(...data.filter(r => !isExcludedCohortLeague(r.league_name)));  // drop USL (no reliable HT)
       if (data.length < PAGE) break;
     }
     const cohortAll = all.length;
@@ -3309,7 +3316,7 @@ app.get("/rank0-overs", async (req, res) => {
     for (let off = 0; ; off += PAGE) {
       const { data, error } = await supabase
         .from("match_results")
-        .select("hit_25, hit_15, snap")
+        .select("hit_25, hit_15, snap, league_name")
         .not("hit_25", "is", null)
         .not("snap", "is", null)
         .not("snap->>fetchedAt", "eq", "historical-import")
@@ -3317,7 +3324,7 @@ app.get("/rank0-overs", async (req, res) => {
         .range(off, off + PAGE - 1);
       if (error) throw error;
       if (!data || data.length === 0) break;
-      all.push(...data);
+      all.push(...data.filter(r => !isExcludedCohortLeague(r.league_name)));  // drop USL (no reliable HT)
       if (data.length < PAGE) break;
     }
     const withL5 = all.filter(m => m.snap && m.snap.l5 && m.snap.l5.home && m.snap.l5.away);
@@ -3441,7 +3448,7 @@ app.get("/rank0-holdout", async (req, res) => {
     for (let off = 0; ; off += PAGE) {
       const { data, error } = await supabase
         .from("match_results")
-        .select("hit_25, hit_15, date_unix, snap")
+        .select("hit_25, hit_15, date_unix, snap, league_name")
         .not("hit_25", "is", null)
         .not("date_unix", "is", null)
         .not("snap", "is", null)
@@ -3450,7 +3457,7 @@ app.get("/rank0-holdout", async (req, res) => {
         .range(off, off + PAGE - 1);
       if (error) throw error;
       if (!data || data.length === 0) break;
-      all.push(...data);
+      all.push(...data.filter(r => !isExcludedCohortLeague(r.league_name)));  // drop USL (no reliable HT)
       if (data.length < PAGE) break;
     }
     const withL5 = all.filter(m => m.snap && m.snap.l5 && m.snap.l5.home && m.snap.l5.away && m.date_unix);
@@ -3552,7 +3559,7 @@ app.get("/mismatch-holdout", async (req, res) => {
     for (let off = 0; ; off += PAGE) {
       const { data, error } = await supabase
         .from("match_results")
-        .select("hit_25, hit_15, date_unix, snap")
+        .select("hit_25, hit_15, date_unix, snap, league_name")
         .not("hit_25", "is", null)
         .not("date_unix", "is", null)
         .not("snap", "is", null)
@@ -3561,7 +3568,7 @@ app.get("/mismatch-holdout", async (req, res) => {
         .range(off, off + PAGE - 1);
       if (error) throw error;
       if (!data || data.length === 0) break;
-      all.push(...data);
+      all.push(...data.filter(r => !isExcludedCohortLeague(r.league_name)));  // drop USL (no reliable HT)
       if (data.length < PAGE) break;
     }
     const live = all.filter(m => m.snap && m.snap.home && m.snap.away && m.date_unix);
@@ -3685,7 +3692,7 @@ app.get("/signalc-validate", async (req, res) => {
     for (let off = 0; ; off += PAGE) {
       const { data, error } = await supabase
         .from("match_results")
-        .select("hit_25, hit_15, date_unix, snap")
+        .select("hit_25, hit_15, date_unix, snap, league_name")
         .not("hit_25", "is", null)
         .not("date_unix", "is", null)
         .not("snap", "is", null)
@@ -3694,7 +3701,7 @@ app.get("/signalc-validate", async (req, res) => {
         .range(off, off + PAGE - 1);
       if (error) throw error;
       if (!data || data.length === 0) break;
-      all.push(...data);
+      all.push(...data.filter(r => !isExcludedCohortLeague(r.league_name)));  // drop USL (no reliable HT)
       if (data.length < PAGE) break;
     }
 
