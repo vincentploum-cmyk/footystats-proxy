@@ -1707,6 +1707,70 @@ app.get("/admin/backfill-results", async (req, res) => {
   }
 });
 
+// Diagnostic: find leagues with the USL-style half-time data gap — HT systematically
+// near-zero while FT scores are healthy (FootyStats not posting HT → false 0-0 misses).
+// Read-only. Per league: avgHt vs avgFt; a low htFtRatio with real scoring is the tell.
+// `suspect` = enough rows + real FT scoring + HT total < 15% of FT total. Gated.
+app.get("/admin/ht-audit", async (req, res) => {
+  const expected = process.env.LOAD_DATASET_TOKEN;
+  if (!expected) return res.status(503).json({ ok: false, error: "admin token not configured" });
+  if (req.query.token !== expected) return res.status(403).json({ ok: false, error: "invalid token" });
+  if (!supabase) return res.status(400).json({ ok: false, error: "Supabase not enabled" });
+
+  const minN = Math.max(1, parseInt(req.query.minN || "10", 10));
+  try {
+    const all = [];
+    const PAGE = 1000;
+    for (let off = 0; ; off += PAGE) {
+      const { data, error } = await supabase
+        .from("match_results")
+        .select("competition_id, league_name, ht_home, ht_away, ft_home, ft_away")
+        .not("hit_25", "is", null)
+        .not("snap", "is", null)
+        .not("snap->>fetchedAt", "eq", "historical-import")
+        .not("snap->>fetchedAt", "eq", "backfill")
+        .range(off, off + PAGE - 1);
+      if (error) throw error;
+      if (!data || data.length === 0) break;
+      all.push(...data);
+      if (data.length < PAGE) break;
+    }
+    const g = {};
+    for (const r of all) {
+      const key = r.league_name || "(unknown)";
+      const b = g[key] || (g[key] = { league: key, competition_id: r.competition_id, n: 0, sumHt: 0, sumFt: 0, ht00: 0, ht00ftHi: 0 });
+      const ht = (parseInt(r.ht_home, 10) || 0) + (parseInt(r.ht_away, 10) || 0);
+      const ft = (parseInt(r.ft_home, 10) || 0) + (parseInt(r.ft_away, 10) || 0);
+      b.n++; b.sumHt += ht; b.sumFt += ft;
+      if (ht === 0) { b.ht00++; if (ft >= 3) b.ht00ftHi++; }
+    }
+    const leagues = Object.values(g).filter(b => b.n >= minN).map(b => {
+      const avgHt = +(b.sumHt / b.n).toFixed(2), avgFt = +(b.sumFt / b.n).toFixed(2);
+      const htFtRatio = avgFt > 0 ? +(avgHt / avgFt).toFixed(2) : 0;
+      return {
+        league: b.league, competition_id: b.competition_id, n: b.n,
+        avgHt, avgFt, htFtRatio,
+        pctHt00: +(b.ht00 / b.n * 100).toFixed(0),
+        ht00_ft3plus: b.ht00ftHi,                       // HT 0-0 but FT >= 3 (smoking gun)
+        alreadyExcluded: isExcludedCohortLeague(b.league),
+        // The tell: real FT scoring (avgFt >= 0.8) but HT total < 15% of it.
+        suspect: avgFt >= 0.8 && htFtRatio < 0.15,
+      };
+    });
+    leagues.sort((a, b) => a.htFtRatio - b.htFtRatio || b.ht00_ft3plus - a.ht00_ft3plus);
+    res.json({
+      ok: true,
+      cohortRows: all.length,
+      leaguesScanned: leagues.length,
+      suspects: leagues.filter(l => l.suspect),
+      newSuspects: leagues.filter(l => l.suspect && !l.alreadyExcluded),
+      note: "suspect = avgFt>=0.8 AND htFtRatio<0.15 (HT total near-zero while FT scores are healthy = FootyStats not posting HT). Healthy leagues sit ~0.35-0.45. newSuspects = suspect leagues NOT yet in isExcludedCohortLeague(). Use ?minN=N to change the min sample.",
+    });
+  } catch (e) {
+    res.status(500).json({ ok: false, error: e.message });
+  }
+});
+
 // NOTE: the former /admin/backfill-signal-d route was removed. It recomputed a
 // phantom Signal C and a 3-signal rank (0–3) against tables that never existed
 // (PROB*_BY_COMBO), contradicting the live 2-signal A+B engine. To realign
