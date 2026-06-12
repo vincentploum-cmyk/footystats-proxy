@@ -361,7 +361,7 @@ for the last timer run.
 | `GET /admin/export-dataset` | CSV/JSON | Flat one-row-per-match export of the clean live cohort (all pre-game features + l5 + prematch + signals/combo/rank + results) for offline analysis — gated; `?format=json` |
 | `GET /supabase-status` | JSON | Supabase connection + persistence + self-capture status |
 | `GET /debug-raw-api?sid=N` | JSON | Raw FootyStats fields for a season + `verdict` on pre-match predictor availability |
-| `GET /admin/backfill-results` | JSON | Resolve pending rows (snap frozen, no result) from league-matches scores — gated; `dryRun=1` / `limit=N`. `recheckZeros=1` re-resolves rows already stored as 0-0 (premature-completion false misses) against current scores — only corrects rows whose real score is now non-zero |
+| `GET /admin/backfill-results` | JSON | Resolve pending rows (snap frozen, no result) from league-matches scores — gated; `dryRun=1` / `limit=N`. `recheckZeros=1` re-resolves rows already stored as 0-0 (premature-completion false misses) against current scores — only corrects rows whose real score is now non-zero; also covers no-stats (null-snap) rows so History is correct, and falls back to a direct `/match?match_id=` fetch for rows outside the league-matches window |
 | `GET /admin/backfill-prematch` | JSON | Merge `snap.prematch` predictors onto live rows from league-matches — gated; additive, never touches l5/signals; `dryRun=1` / `limit=N` |
 | `GET /api/*` | JSON | Passthrough proxy — gated by `LOAD_DATASET_TOKEN` (fails closed if unset) |
 | `GET /admin/*` | JSON | Dataset load / backfill / recalibrate — gated by `LOAD_DATASET_TOKEN` (fails closed if unset) |
