@@ -923,12 +923,14 @@ app.get("/supabase-status", (req, res) => {
 // Recomputes rank using current 4-signal logic so historical data matches runtime.
 const WOMENS_LEAGUE_IDS = new Set([15020, 16037, 16046, 16563]);
 
-// USL leagues (USA) are ALWAYS excluded from the analysis cohort — FootyStats has no
-// reliable half-time data for them, which produced false 0-0 HT misses (the HT can't be
-// recovered from the API). Matched by name so it catches every USL tier (Championship /
-// League One / League Two / W / Super League) without hardcoding each competition_id.
+// USA lower-tier leagues with no reliable half-time data in FootyStats (FT correct but
+// HT recorded ~0-0, which produces false 0-0 HT misses — hit_15/hit_25 come from the HT
+// total, and the HT can't be recovered from the API). These are ALWAYS excluded from the
+// analysis cohort. Found via /admin/ht-audit (htFtRatio near 0 while FT scoring is healthy):
+//   USL (all tiers, ratio ~0.14) · WPSL (~0.06) · NPSL (~0.11).
+// Matched by name so it catches every USL tier without hardcoding competition_ids.
 // (Unlike the women's exclusion, this is unconditional — it's a data-quality drop.)
-const isExcludedCohortLeague = (leagueName) => /\bUSL\b/i.test(String(leagueName || ""));
+const isExcludedCohortLeague = (leagueName) => /\b(?:USL|WPSL|NPSL)\b/i.test(String(leagueName || ""));
 
 function parseCsvDataset(buf) {
   const text = buf.toString("utf8");
