@@ -231,21 +231,23 @@ scored/conceded per game, 0–40'). These **cannot be backfilled** — team seas
 cumulative, so re-fetching later leaks post-match games (the look-ahead trap). They only
 populate going forward; `/season-mine` uses them with a train/test date split.
 
-### USL Leagues — Excluded from the Cohort (unreliable half-time data)
+### USA Lower-Tier Leagues — Excluded from the Cohort (unreliable half-time data)
 
-USL leagues (USA — Championship / League One / League Two / W / Super League) are
-**always excluded from the analysis cohort.** FootyStats has **no reliable half-time
-score** for them: matches come back with the FT correct but the HT recorded as 0-0
+USL (all tiers — Championship / League One / League Two / W / Super League), **WPSL**, and
+**NPSL** are **always excluded from the analysis cohort.** FootyStats has **no reliable
+half-time score** for them: matches come back with the FT correct but the HT recorded as 0-0
 (e.g. Appalachian FT 5-2, real HT 3-0, stored HT 0-0). Since `hit_15`/`hit_25` are
 derived from the HT total, those are **false misses** that can't be recovered from the
-API (the re-fetch keeps returning 0-0). Matched by **name** (`/\bUSL\b/i` on
-`league_name`), so it catches every USL tier without hardcoding competition_ids.
+API (the re-fetch keeps returning 0-0). Found via `/admin/ht-audit` (`htFtRatio` near 0
+while FT scoring is healthy: USL ~0.14, WPSL ~0.06, NPSL ~0.11). Matched by **name**
+(`/\b(?:USL|WPSL|NPSL)\b/i` on `league_name`), so it catches every USL tier without
+hardcoding competition_ids. Re-run `/admin/ht-audit` as the cohort grows to catch new ones.
 
 Unlike the women's exclusion (opt-in via `?exclude_women=true`), this one is
 **unconditional** — applied in every cohort route: `/calibration`, `/signal-backtest`,
 `/signalc-validate`, `/floor-test`, `/prematch-mine`, `/season-mine`, `/last5-mine`,
 `/corner-mine`, `/rank0-overs`, `/rank0-holdout`, `/mismatch-holdout`, and
-`/admin/export-dataset` (via the `isExcludedCohortLeague()` helper). USL matches are
+`/admin/export-dataset` (via the `isExcludedCohortLeague()` helper). These matches are
 still **served live** like any league — only the model-fitting/analysis cohort drops them.
 
 ### Women's Leagues — Excluded from Signal Calibration
